@@ -22,8 +22,8 @@
 //      glyph — a title's shape is never invented into a state.
 //   3. else the pane's own Claude session transcript's mtime: written
 //      within the threshold -> working, else waiting. The session is the one
-//      Claude Code records for this pane (claudePanes.mjs); only a CLI that
-//      recorded none falls back to the cwd's most recent transcript. No
+//      whose CLI was started in this window (claudePanes.mjs); only a window
+//      with no such CLI falls back to the cwd's most recent transcript. No
 //      transcript at all (a non-Claude agent) -> waiting.
 //
 // Never writes into a window — read-only session-list/filesystem queries only.
@@ -37,7 +37,7 @@
 // (plans/agent-platform-core.md). Keying on the pane rather than on
 // Claude's own session_id is what makes the hook path work for Codex and
 // Antigravity at all: neither sends a session id.
-import { claudeSessionsByPane } from "./claudePanes.mjs";
+import { claudeSessionsByWindow } from "./claudePanes.mjs";
 import { classifyFromHook, reduceHookEvent } from "./hookStatus.mjs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -181,7 +181,7 @@ function recordHookEvent(event) {
 // directory share a project dir, so "its most recent transcript" is whichever
 // session wrote last - both panes would read that one session's activity.
 async function paneTranscript(pane) {
-  const own = (await claudeSessionsByPane()).get(pane.paneId);
+  const own = (await claudeSessionsByWindow()).get(pane.paneId);
   if (own) {
     const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(own.cwd ?? pane.cwd));
     try {
