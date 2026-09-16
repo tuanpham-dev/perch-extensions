@@ -29,6 +29,17 @@ let openSessionWindow: ((sessionName: string, opts?: { createCwd?: string }) => 
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 
+// The subset of the host's MenuItem / SidebarPanelHostProps this panel uses
+// (structural copies of client/src/types.ts in the main perch repo).
+interface MenuItem {
+  label: string;
+  onClick: () => void;
+}
+
+interface SidebarPanelHostProps {
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+}
+
 // ---- Types (mirror server.js's responses) ----
 
 interface StatusResponse {
@@ -134,7 +145,7 @@ function readSendAutoSubmit(): boolean {
 
 // ---- GitHubPanel (registerSidebarPanel component) ----
 
-function GitHubPanel() {
+function GitHubPanel({ showMenu }: SidebarPanelHostProps) {
   const [cwd, setCwd] = useState<string | null>(() => getActiveContext?.().cwd ?? null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [prs, setPrs] = useState<PrRow[]>([]);
@@ -142,6 +153,7 @@ function GitHubPanel() {
   const [error, setError] = useState<string | null>(null);
   const [busyBranch, setBusyBranch] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!onDidChangeContext) return;
@@ -181,19 +193,30 @@ function GitHubPanel() {
     refresh();
   }, [refresh]);
 
+  // `preset` undefined means "not chosen yet": the registry couldn't be read
+  // when the button was clicked, so it is read again here and a core without
+  // it fails after the worktree exists, as before the picker.
   const startWork = useCallback(
-    async (kind: "issue" | "pr", number: number, title: string) => {
+    async (kind: "issue" | "pr", number: number, title: string, preset: AgentLaunchPreset | null | undefined) => {
       if (!cwd) return;
       const branch = kind === "issue" ? `issue-${number}-${shortSlug(title)}` : `pr-${number}`;
       setBusyBranch(branch);
       setStartError(null);
+      setNote(null);
       try {
-        const result = await apiPost<{ path: string; branch: string }>("/worktree", { cwd, branch, kind, number });
+        const result = await apiPost<{ path: string; branch: string; note?: string | null }>("/worktree", {
+          cwd,
+          branch,
+          kind,
+          number,
+        });
         const sessionName = sessionNameFor(branch);
         openSessionWindow?.(sessionName, { createCwd: result.path });
+        // A fallback base or a reused branch is worth saying out loud - the
+        // worktree is real either way, but not quite what the user expected.
+        if (result.note) setNote(result.note);
 
-        const presets = await agentPresets();
-        const preset = presets[0];
+        if (preset === undefined) preset = (await agentPresets())[0] ?? null;
         if (preset) {
           await sendToAgent(sessionName, preset.command, true, { retries: 12, retryDelayMs: 400 });
           let body: string;
@@ -212,6 +235,36 @@ function GitHubPanel() {
       }
     },
     [cwd],
+  );
+
+  // With more than one agent in the registry, Start work asks which to use
+  // instead of silently taking the first (same as the sibling jira
+  // extension): offering only entry [0] made every other agent unreachable.
+  // One agent, or no showMenu from the host, keeps the direct path.
+  const handleStartClick = useCallback(
+    async (kind: "issue" | "pr", number: number, title: string, event: { clientX: number; clientY: number }) => {
+      // Read before awaiting: the menu is placed at the click.
+      const { clientX, clientY } = event;
+      let presets: AgentLaunchPreset[];
+      try {
+        presets = await agentPresets();
+      } catch {
+        void startWork(kind, number, title, undefined);
+        return;
+      }
+      if (presets.length <= 1 || !showMenu) {
+        void startWork(kind, number, title, presets[0] ?? null);
+        return;
+      }
+      showMenu(clientX, clientY, [
+        ...presets.map((preset) => ({
+          label: preset.name,
+          onClick: () => void startWork(kind, number, title, preset),
+        })),
+        { label: "No agent (worktree only)", onClick: () => void startWork(kind, number, title, null) },
+      ]);
+    },
+    [showMenu, startWork],
   );
 
   if (error) {
@@ -241,6 +294,7 @@ function GitHubPanel() {
   return (
     <div className="github-panel">
       {startError && <div className="github-error">{startError}</div>}
+      {note && <div className="github-empty">{note}</div>}
       <div className="github-section-header">PULL REQUESTS</div>
       {prs.length === 0 && <div className="github-empty">No open pull requests.</div>}
       <ul className="github-list">
@@ -262,7 +316,7 @@ function GitHubPanel() {
                 className="icon-button"
                 title="Start work: create a worktree session for this PR"
                 disabled={busyBranch === branch}
-                onClick={() => void startWork("pr", pr.number, pr.title)}
+                onClick={(e) => void handleStartClick("pr", pr.number, pr.title, e)}
               >
                 <Icon name={busyBranch === branch ? "loading" : "git-branch"} />
               </button>
@@ -288,7 +342,7 @@ function GitHubPanel() {
                 className="icon-button"
                 title="Start work: create a worktree session for this issue"
                 disabled={busyBranch === branch}
-                onClick={() => void startWork("issue", issue.number, issue.title)}
+                onClick={(e) => void handleStartClick("issue", issue.number, issue.title, e)}
               >
                 <Icon name={busyBranch === branch ? "loading" : "git-branch"} />
               </button>
@@ -309,7 +363,7 @@ interface ExtensionContext {
     icon?: string;
     location?: "tab" | "explorer" | "run" | "commands";
     focusBinding?: string;
-    component: () => ReturnType<typeof GitHubPanel>;
+    component: (props: SidebarPanelHostProps) => ReturnType<typeof GitHubPanel>;
   }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
