@@ -36,10 +36,6 @@ Needs a Perch build that provides the `registerAppOverlay` extension point and t
 
 ## Install
 
-```sh
-npm run pack
-```
+In Perch, open the **Extensions** sidebar tab (`Ctrl+Shift+X`), find One-Hand Operation under **Available**, and click **Install**. Perch lists this repo's published catalog by default, so no registry setup is needed.
 
-Then, in Perch's Extensions sidebar tab:
-- **Registry (recommended):** click the gear icon, add this repo's `dist/` folder as a source, and click Install on One-Hand Operation.
-- **Manual:** click "Install from .perch" and pick `dist/one-hand-<version>.perch`.
+**From source:** run `npm install && npm run pack` in this repo, then either add its `dist/` folder as a source (gear icon, "Manage registries") and install from **Available**, or click "Install from .perch" and pick `dist/one-hand-<version>.perch`.

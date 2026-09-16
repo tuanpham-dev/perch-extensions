@@ -4,7 +4,7 @@
   "publisher": "perch",
   "version": "1.2.1",
   "displayName": "AI Command Search",
-  "description": "Natural language to shell command using the AI configured in Settings \u2192 AI: \"AI: Generate Command\" in the palette (or a \"??\" quick-switcher query) types the generated command at the prompt for review \u2014 never runs it.",
+  "description": "Natural language to shell command using the AI configured in Settings \u2192 AI Providers: \"AI: Generate Command\" in the palette (or a \"??\" quick-switcher query) types the generated command at the prompt for review - never runs it.",
   "icon": "./icon.svg",
   "perch": {
     "client": "./dist/client.js",
@@ -18,7 +18,7 @@
           "type": "string",
           "format": "ai-profile",
           "default": "",
-          "description": "Which configured AI turns a request into a shell command. \u201cApp default\u201d follows Settings \u2192 AI's own default; a small, fast model is usually enough for one command."
+          "description": "Which configured AI turns a request into a shell command. \u201cApp default\u201d follows the default set in Settings \u2192 AI Providers; a small, fast model is usually enough for one command."
         },
         "aiCommand.aiModel": {
           "type": "string",

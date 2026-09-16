@@ -20,7 +20,7 @@
         "oneHand.actions": {
           "type": "string",
           "default": "",
-          "description": "Which command each gesture runs, as JSON (edited with the picker below — empty means the defaults: swipe left = next tab, right = previous tab, up = quick switcher, double tap and long press unbound)."
+          "description": "Which command each gesture runs, as JSON (edited with the picker below - empty means the defaults: swipe left = next tab, right = previous tab, up = quick switcher, double tap and long press unbound)."
         }
       }
     }

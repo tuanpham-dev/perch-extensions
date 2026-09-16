@@ -6,21 +6,23 @@ A dedicated editor tab for `.prompt.md` files, with AI refinement and AI-suggest
 
 - **Command palette** (`Ctrl+Shift+P`) → "Prompts: New Prompt" opens an empty draft tab for the active session.
 - **Tab group dropdown** → click the arrow on a session's group chip in the tab bar (the menu listing its windows) and choose **New Prompt Here** to start a draft for *that* session, whichever tab you currently have focused. Each session gets its own draft tab, and the draft remembers which directory it belongs to, so saving always lands in the right tree.
-- Write the prompt, press **Refine** to have a local AI CLI tighten it up (your text is replaced; the tab is marked unsaved so nothing is written yet).
+- Write the prompt, press **Refine** to have the configured AI tighten it up (your text is replaced; the tab is marked unsaved so nothing is written yet).
 - Press **Save**. On a new draft the AI proposes a kebab-case filename from the content and saves straight to `plans/prompts/<name>.prompt.md` under the active session's working directory. If that name is taken — or the AI call fails — a small dialog asks you to name it yourself.
-- **Reopen any prompt** by right-clicking it in the FILES tree and choosing **Edit Prompt**. A plain click still opens the file in nvim, and the markdown preview is still available from the hover icon.
-- **Open in Editor** in the tab's toolbar hands the file to nvim whenever you'd rather edit it there.
+- **Reopen any prompt** by right-clicking it in the FILES tree and choosing **Edit Prompt**. A plain click still opens the file the usual way (your editor from Settings → Editor, nvim by default), and the markdown preview is still available from the hover icon.
+- **Open in Editor** in the tab's toolbar hands the file to that editor whenever you'd rather edit it there.
 
-The tab reloads the file when you switch back to it (unless you have unsaved changes), so edits made in nvim or by an agent show up without reopening.
+The tab reloads the file when you switch back to it (unless you have unsaved changes), so edits made in your editor or by an agent show up without reopening.
 
 ## Settings
 
 | Setting | Default | What it does |
 |---|---|---|
+| `prompts.aiProfile` | app default | Which configured AI refines and names prompts. |
+| `prompts.aiModel` | empty | Model for refining and naming; empty uses that AI's own model. |
 | `prompts.refineInstruction` | see Settings | The instruction sent to the AI when you press Refine. |
 | `prompts.directory` | `plans/prompts` | Where new prompts are saved, relative to the session's working directory. |
 
-Which AI runs Refine is **not** set here — it comes from **Settings → AI Providers**, shared with every other AI feature in the app. A CLI provider must be installed and authenticated on the **server** machine, since it runs there, not in the browser. Expect a few seconds per Refine.
+The AIs to choose from are set up in **Settings → AI Providers**, shared with every other AI feature in the app. A CLI provider must be installed and authenticated on the **server** machine, since it runs there, not in the browser. Expect a few seconds per Refine.
 
 Nothing from the AI's reply is ever executed: the refined text lands in the editor, and the suggested filename is reduced to `[a-z0-9-]` before it's used.
 

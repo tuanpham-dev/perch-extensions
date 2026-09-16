@@ -1,5 +1,5 @@
 // Build-time alias target for bare `import ... from "react"` in bundled
-// extensions (see ../../build.mjs) — inlined into each extension's own
+// extensions (see ../build.mjs) — inlined into each extension's own
 // dist/client.js, but every export here is the exact function/object
 // reference from the host's already-loaded React instance
 // (window.__perchModules, set in client/src/main.tsx before any

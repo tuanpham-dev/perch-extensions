@@ -41,8 +41,8 @@ The in-repo file wins the way `.editorconfig` and `.nvmrc` beat user-level confi
 `jira.projectMap` is skipped rather than treated as an error.
 
 Setting **`jira.projectJql` bypasses this entirely** - the query replaces the project section
-outright and no key is resolved. The section is headed `PROJECT QUERY` instead of the key when
-that happens, so the bypass is visible.
+outright and no key is resolved. The Project pane is captioned `Custom query` instead of the key
+when that happens, so the bypass is visible.
 
 ## "Start work"
 
@@ -63,13 +63,13 @@ So `{key}-{slug}` gives `CAP-123-fix-header-alignment`, and `{type}/{key}` gives
 `feature/CAP-123`.
 
 The worktree is then opened as a session, and an agent from **Settings → AI Providers** is started
-in it and handed the issue key, summary and description as a second message. With more than
-one agent configured, Start work opens a menu to pick which - and, for an agent that has a
-skip-permissions flag, a **Skip permission prompts** row you can tick first, so yolo mode is
-a checkbox rather than a second copy of the agent in the list. "No agent (worktree only)"
-skips starting one. The agent's launch command is always submitted; the issue context
-follows `jira.sendAutoSubmit`
-(default off - you review before pressing Enter).
+in it and handed a brief as a second message: the issue key, summary, type, status, priority,
+labels, link, description and the most recent comments (up to `jira.commentLimit`, oldest
+first). With more than one agent configured, Start work opens a menu to pick which, and "No
+agent (worktree only)" skips starting one. Whether the agent runs without permission prompts
+is not asked here: the app's one Yolo/Manual switch in **Settings → AI Providers** decides it.
+The agent's launch command is always submitted; the issue context follows
+`jira.sendAutoSubmit` (default off - you review before pressing Enter).
 
 With `jira.updateIssueOnStartWork` on, it also moves the issue to `jira.inProgressStatus` and
 assigns it to you if it is unassigned. Neither is fatal: the worktree exists either way, so a
@@ -88,8 +88,9 @@ Jira-side failure is reported as a note in the panel rather than as a failed "St
 | `jira.jql` | `""` | Replaces the "assigned to me" query. Empty means `assignee = currentUser() AND statusCategory != Done` |
 | `jira.projectJql` | `""` | Replaces the project query, bypassing the project-key chain |
 | `jira.maxResults` | `30` | How many issues each section fetches |
+| `jira.commentLimit` | `20` | How many of the issue's most recent comments "Start work" hands the agent. `0` sends none |
 | `jira.branchTemplate` | `{key}-{slug}` | Branch name for "Start work" - `{key}`, `{slug}`, `{type}` |
-| `jira.worktreeLocation` | `{repo}/.worktrees/{branch}` | Where "Start work" creates its worktree - same convention as the bundled Worktrees extension |
+| `jira.worktreeLocation` | `{repo}/.worktrees/{branch}` | Where "Start work" creates its worktree - same convention as the app's own worktree location (Settings → Behavior) |
 | `jira.sendAutoSubmit` | `false` | Submit the issue context to the agent immediately, instead of typing it for review |
 | `jira.updateIssueOnStartWork` | `false` | Let "Start work" transition and assign the issue in Jira |
 | `jira.inProgressStatus` | `In Progress` | Target status for that transition |

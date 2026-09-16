@@ -46,7 +46,7 @@ export function activate({ router, getSettings, ai, host }) {
 
     try {
       // aiCommand.aiProfile names one of the AIs configured in Settings →
-      // AI; empty (the default) lets the app's default profile answer.
+      // AI Providers; empty (the default) lets the app's default profile answer.
       const settings = (await getSettings?.()) ?? {};
       const profileId =
         typeof settings["aiCommand.aiProfile"] === "string" ? settings["aiCommand.aiProfile"].trim() : "";

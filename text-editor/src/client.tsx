@@ -1,9 +1,12 @@
 // text-editor: a Monaco-based file viewer — the VS Code editor, with its find
 // widget, multi-cursor, folding and IntelliSense — plus save-back to disk, for
-// a quick edit without a round-trip through nvim. Registered "preview" by
-// default (a FILES click still opens nvim; this is reached via the hover
-// Preview icon, the context menu, or Shift+Enter); textEditor.openOnClick
-// switches it to "default" mode instead.
+// a quick edit without a round-trip through nvim. Registered as a host editor
+// (registerEditor, id "monaco"): the host's own `editor` setting in Settings →
+// Editor decides which editor a FILES-tree click, a git diff or a merge
+// conflict opens in, so choosing Monaco there routes them here and leaving it
+// on nvim routes nothing. On an older host without registerEditor it falls
+// back to a preview viewer (the hover Preview icon, the context menu, or
+// Shift+Enter).
 //
 // Only this file and its small siblings are loaded eagerly at activation.
 // Monaco itself arrives from dist/chunks/monaco.js the first time a tab mounts

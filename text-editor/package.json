@@ -39,7 +39,7 @@
             "Always hide"
           ],
           "default": "auto",
-          "description": "Whether the editor draws the minimap — the code overview down the right edge. Auto shows it on desktop and hides it on phones and tablets, where it only eats width. Diffs and merge conflicts never show one."
+          "description": "Whether the editor draws the minimap - the code overview down the right edge. Auto shows it on desktop and hides it on phones and tablets, where it only eats width. Diffs and merge conflicts never show one."
         },
         "textEditor.lineNumbers": {
           "type": "string",
@@ -56,12 +56,12 @@
             "Hidden"
           ],
           "default": "auto",
-          "description": "How the editor numbers its lines. Relative counts the distance from the cursor, with the cursor's own line showing its absolute number \u2014 what makes vim's counted motions (`5j`, `d3k`) readable. Auto uses relative while vim keybindings are on and absolute otherwise. Applies to the editor and the merge view; a diff always numbers both sides absolutely."
+          "description": "How the editor numbers its lines. Relative counts the distance from the cursor, with the cursor's own line showing its absolute number - what makes vim's counted motions (`5j`, `d3k`) readable. Auto uses relative while vim keybindings are on and absolute otherwise. Applies to the editor and the merge view; a diff always numbers both sides absolutely."
         },
         "textEditor.vim": {
           "type": "boolean",
           "default": false,
-          "description": "Use vim keybindings in the editor, the merge view, and the editable side of a diff. `:w` saves, `:q` closes the tab (`:q!` discards unsaved changes), `:wq` does both. A status line under the editor shows the current mode. Some chords belong to the app and never reach vim — Ctrl+P, Ctrl+W, Ctrl+Shift+P, Ctrl+1-8 and Ctrl+\\ — all rebindable in Settings → Keyboard Shortcuts."
+          "description": "Use vim keybindings in the editor, the merge view, and the editable side of a diff. `:w` saves, `:q` closes the tab (`:q!` discards unsaved changes), `:wq` does both. A status line under the editor shows the current mode. Some chords belong to the app and never reach vim - Ctrl+P, Ctrl+W, Ctrl+Shift+P, Ctrl+1-8 and Ctrl+\\ among them - all rebindable in the Keyboard Shortcuts editor (gear menu)."
         }
       }
     }

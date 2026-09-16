@@ -12,11 +12,12 @@ Optional [Perch](https://github.com/tuanpham-dev/perch) extensions, packaged as 
 | Agent Tasks | an AGENT TASKS sidebar tab that orchestrates several agents: runs of dependency-ordered tasks, each worked by a supervised agent in its own session and worktree, with a coordinator inbox, decision gates and an `agent-task` CLI workers report through; completion comes from the agent's hooks, the CLI or a liveness sweep | first-party (Perch) | MIT |
 | Automations | an AUTOMATIONS section in the Run tab: ask the AI, create an Agent Tasks task or start a worker on a daily, interval or cron schedule, or when an Agent Tasks task completes, fails, blocks, opens a gate or loses its worker; runs on the server with no browser open | first-party (Perch) | MIT |
 | Custom Sidebar Tabs | your own sidebar tabs, each with a name and an icon, that you fill by dragging panes into them; create, rename, re-icon or delete them from the tab strip's right-click menu, the command palette or Settings; deleting a tab sends its panes back where they came from, and disabling the extension keeps where they were | first-party (Perch) | MIT |
+| Ghostty Terminal Engine | the ghostty-web (WASM) terminal renderer as a **Ghostty** option under Settings → Terminal; without it Perch uses its bundled xterm.js engine | first-party (Perch) | MIT |
 | tmux Terminal Backend | runs the app's terminals in tmux instead of the bundled daemon (Settings → Terminal Backend), so sessions started with tmux anywhere show up in the app; one app window per tmux pane, history replayed through control mode, windows sized for the view used last; needs tmux 3.2+ | first-party (Perch) | MIT |
 | Text Editor | Monaco (the VS Code editor, lazy-loaded), selectable in Settings → Editor as what opens files, git diffs and merge conflicts — real TextMate highlighting matching VS Code/code-server, TS/JS/JSON/CSS/HTML IntelliSense, inline conflict resolution, optional vim keybindings, and save-back to disk | first-party (Perch) | MIT |
 | GitHub | GITHUB sidebar tab: open PRs/issues for the active repo, with "Start work" creating a worktree session (optionally priming an agent) | first-party (Perch) | MIT |
 | Jira | JIRA sidebar tab: issues assigned to you and the active repo's project, with "Start work" creating a worktree session (optionally priming an agent and moving the issue to In Progress) | first-party (Perch) | MIT |
-| AI Command Search | natural language → shell command via a local AI CLI (Claude Code / Codex / Gemini / custom) | first-party (Perch) | MIT |
+| AI Command Search | natural language → shell command via the AI configured in Settings → AI Providers | first-party (Perch) | MIT |
 | Prompts | `.prompt.md` editor tab with AI refine + AI-suggested filenames | first-party (Perch) | MIT |
 | Full Keyboard | on-screen keyboard | first-party (Perch) | MIT |
 | One-Hand Operation | bottom gesture bar (swipe, double tap, long press) | first-party (Perch) | MIT |
@@ -43,7 +44,7 @@ One extension, four selectable font groups (Fira Code, JetBrains Mono, Cascadia 
 
 ### Symbols Nerd Font
 
-A companion, not a replacement: the symbols-only Nerd Font face (10,413 icon glyphs, no letters or digits), meant for the **Secondary font** slot in Settings → Terminal so it backs whichever font you actually type in. Perch bundled this face until core commit `56e7c22` removed it from the default stack, which is where the tofu boxes in starship / powerlevel10k prompts and `eza` listings came from; installing this puts the glyphs back for any primary font, including core's own IBM Plex Mono.
+A companion, not a replacement: the symbols-only Nerd Font face (10,413 icon glyphs, no letters or digits), meant for the **Secondary font** slot in Settings → Terminal so it backs whichever font you actually type in. Perch used to bundle this face until it was removed from the default font stack, which is where the tofu boxes in starship / powerlevel10k prompts and `eza` listings came from; installing this puts the glyphs back for any primary font, including core's own IBM Plex Mono.
 
 The woff2 is converted without subsetting from that exact removed file — see the extension's `README.md` for the regeneration command.
 
@@ -58,7 +59,11 @@ npm run pack
 
 ## Registry (recommended)
 
-`dist/` is itself a valid registry source — no separate publishing step needed. In Perch:
+Perch already knows this registry: its built-in default is this repo's GitHub Pages catalog (see [Hosting the registry on GitHub Pages](#hosting-the-registry-on-github-pages)). Open the **Extensions** sidebar tab (`Ctrl+Shift+X`), find the extension under **Available**, and click Install.
+
+### A local build as a source
+
+`dist/` is itself a valid registry source — no separate publishing step needed, which is handy while developing an extension. In Perch:
 
 1. Open the **Extensions** sidebar tab (`Ctrl+Shift+X`).
 2. Click the gear icon → "Manage registries".
@@ -71,7 +76,7 @@ Re-running `npm run pack` after editing a theme/font and clicking the refresh ic
 
 For a shareable, always-online registry, this repo publishes `dist/` to GitHub Pages via [`.github/workflows/pages.yml`](.github/workflows/pages.yml). The workflow runs `npm run pack` and deploys the built catalog on every push to `main` — `dist/` is never committed (it's `.gitignore`d); it's regenerated in CI.
 
-Perch fetches the catalog server-side, so no CORS config is needed. Once Pages is live, add this URL as a registry source in the Extensions tab:
+Perch fetches the catalog server-side, so no CORS config is needed. This URL is Perch's built-in default registry, so once Pages is live every Perch install lists these extensions without adding a source (the server's `EXTENSION_REGISTRY` env var overrides it, or disables it when set empty):
 
 ```
 https://tuanpham-dev.github.io/perch-extensions/

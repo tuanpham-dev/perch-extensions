@@ -4,7 +4,7 @@
   "publisher": "perch",
   "version": "1.0.0",
   "displayName": "Symbols Nerd Font",
-  "description": "The symbols-only Nerd Font face (powerline separators, Font Awesome, Devicons, Octicons, Material and more — 10,413 glyphs, bundled, MIT, see LICENSE.txt). Pick it as the Secondary font under Settings → Terminal to add glyph coverage to whichever font you already use.",
+  "description": "The symbols-only Nerd Font face (powerline separators, Font Awesome, Devicons, Octicons, Material and more - 10,413 glyphs, bundled, MIT, see LICENSE.txt). Pick it as the Secondary font under Settings → Terminal to add glyph coverage to whichever font you already use.",
   "icon": "./icon.svg",
   "contributes": {
     "fonts": [

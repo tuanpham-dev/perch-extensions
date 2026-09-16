@@ -1,8 +1,9 @@
 // prompts: a reusable editor tab for `.prompt.md` files.
 //
 // Three entry points, deliberately leaving the FILES-tree click alone (a
-// plain click still opens nvim, and terminal "file:line" links keep their
-// line jump — which a file-open interceptor would have swallowed):
+// plain click still opens the editor chosen in Settings → Editor, and
+// terminal "file:line" links keep their line jump — which a file-open
+// interceptor would have swallowed):
 //   • "Prompts: New Prompt" command  → an Untitled draft tab
 //   • FILES-tree "Edit Prompt" item  → the editor for an existing prompt
 //   • host-side re-opens of the same (viewer, path) reuse the same tab

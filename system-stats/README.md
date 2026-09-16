@@ -1,6 +1,6 @@
 # System Stats
 
-Shows how much memory the host is using in Perch's status bar (`6.1 / 23.4 GB`). Click the reading for a popover with:
+Shows how much memory the host is using in Perch's status bar (`6.1 / 23.4 GB`, or just `6.1` on a phone's compact bar). Click the reading for a popover with:
 
 - **CPU** - a line chart of usage over the last 2 minutes, with core count, load average and CPU model
 - **Memory** and **Swap** (swap only when the host has any)

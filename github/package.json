@@ -4,7 +4,7 @@
   "publisher": "perch",
   "version": "1.1.1",
   "displayName": "GitHub",
-  "description": "A GITHUB sidebar tab listing the active repo's open pull requests and issues, with a \"Start work\" action that creates a worktree session for one — optionally priming an agent on it. Backed by the `gh` CLI; no credentials of its own.",
+  "description": "A GITHUB sidebar tab listing the active repo's open pull requests and issues, with a \"Start work\" action that creates a worktree session for one - optionally priming an agent on it. Backed by the `gh` CLI; no credentials of its own.",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
@@ -13,12 +13,12 @@
         "github.worktreeLocation": {
           "type": "string",
           "default": "{repo}/.worktrees/{branch}",
-          "description": "Where a \"Start work\" worktree is created. {repo} is the repository root, {branch} the branch name (path separators in it replaced with '-'). Same convention as the bundled Worktrees extension."
+          "description": "Where a \"Start work\" worktree is created. {repo} is the repository root, {branch} the branch name (path separators in it replaced with '-'). Same convention as the app's own worktree location in Settings → Behavior."
         },
         "github.sendAutoSubmit": {
           "type": "boolean",
           "default": false,
-          "description": "Submit the issue/PR context to the agent immediately after \"Start work\". Off (default) types it into the pane for you to review before pressing Enter — the agent's own launch command is always submitted either way."
+          "description": "Submit the issue/PR context to the agent immediately after \"Start work\". Off (default) types it into the pane for you to review before pressing Enter - the agent's own launch command is always submitted either way."
         }
       }
     }

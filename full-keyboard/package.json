@@ -33,16 +33,16 @@
           "default": "whenShown",
           "enum": ["never", "whenShown", "always"],
           "enumItemLabels": [
-            "Never — keep the OS keyboard",
+            "Never - keep the OS keyboard",
             "While the keyboard is showing (floating: only when expanded)",
-            "Always — even when the floating toggle is collapsed"
+            "Always - even when the floating toggle is collapsed"
           ],
           "description": "When to hide the device's native on-screen keyboard. \"While showing\" keeps the OS keyboard available when the floating toggle is collapsed; \"Always\" hides it whenever the terminal is focused, so the floating toggle is your only keyboard. Fixed mode treats \"While showing\" and \"Always\" the same (it's always docked). The terminal stays focusable either way, so hardware keys and the mic key keep working."
         },
         "fullKeyboard.topKeys": {
           "type": "string",
           "default": "",
-          "description": "The special-key top bar layout, as JSON (edited with the layout editor below — empty means the default layout)."
+          "description": "The special-key top bar layout, as JSON (edited with the layout editor below - empty means the default layout)."
         }
       }
     }

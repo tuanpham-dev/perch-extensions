@@ -8,14 +8,10 @@ The **vscode-icons** file-icon theme — SVG icons for common file types, langua
 
 ## Source
 
-[vscode-icons/vscode-icons](https://github.com/vscode-icons/vscode-icons), MIT-licensed; see `LICENSE.txt`. Icon theme JSON and ~1,150 SVG icons vendored unmodified (path separators normalized to `/`).
+[vscode-icons/vscode-icons](https://github.com/vscode-icons/vscode-icons), MIT-licensed; see `LICENSE.txt`. Icon theme JSON and ~1,550 SVG icons vendored unmodified (path separators normalized to `/`).
 
 ## Install
 
-```sh
-npm run pack
-```
+In Perch, open the **Extensions** sidebar tab (`Ctrl+Shift+X`), find VSCode Icons under **Available**, and click **Install**. Perch lists this repo's published catalog by default, so no registry setup is needed.
 
-Then, in Perch's Extensions sidebar tab:
-- **Registry (recommended):** click the gear icon, add this repo's `dist/` folder as a source, and click Install on VSCode Icons.
-- **Manual:** click "Install from .perch" and pick `dist/vscode-icons-<version>.perch`.
+**From source:** run `npm install && npm run pack` in this repo, then either add its `dist/` folder as a source (gear icon, "Manage registries") and install from **Available**, or click "Install from .perch" and pick `dist/vscode-icons-<version>.perch`.

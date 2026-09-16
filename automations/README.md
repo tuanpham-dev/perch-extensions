@@ -65,9 +65,3 @@ liveness sweep - see the Agent Tasks README for the worker contract and the full
 
 `~/.config/perch/automations/automations.json` (or under `$XDG_CONFIG_HOME`): every
 automation with its last run, result and next run. Written `0600`, temp-then-rename.
-
-## Known limits
-
-- Disabling Agent Tasks does not close its socket on the Perch core this was built
-  against (a server extension gets no stop signal), so event rows keep working until it is
-  re-enabled or the server restarts. Removing it and restarting does show the note.

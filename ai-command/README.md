@@ -1,6 +1,6 @@
 # AI Command Search
 
-Natural language → shell command, powered by an AI CLI already installed on the machine running perch. The generated command is typed at your prompt for review — it is **never executed automatically**.
+Natural language → shell command, powered by the AI configured in Settings → AI Providers. The generated command is typed at your prompt for review — it is **never executed automatically**.
 
 ## Usage
 
@@ -13,6 +13,6 @@ The text is inserted through the app's own session API, so it works on the bundl
 
 ## Which AI
 
-This extension has no provider setting of its own. It asks whatever is configured in **Settings → AI Providers**, shared with every other AI feature in the app — the `claude`, `codex` or `agy` CLIs, the Anthropic or OpenAI HTTP APIs, or a custom command. Change it once there and every feature follows.
+Providers are set up once in **Settings → AI Providers**, shared with every other AI feature in the app - an installed agent's CLI (Claude Code and Codex come with the bundled agents), the Anthropic or OpenAI HTTP APIs, or a custom command. By default this extension uses the app's default AI; its own settings can point it at a different configured AI (`aiCommand.aiProfile`) and model (`aiCommand.aiModel`).
 
 A CLI provider must be installed and authenticated on the **server** machine — it runs there, not in the browser. Expect a few seconds of startup latency per request; a small, fast model helps.

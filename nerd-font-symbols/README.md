@@ -10,13 +10,9 @@ It contains **no letters or digits**, which is the point: it sits *behind* which
 
 ## Install
 
-```sh
-npm run pack
-```
+In Perch, open the **Extensions** sidebar tab (`Ctrl+Shift+X`), find Symbols Nerd Font under **Available**, and click **Install**. Perch lists this repo's published catalog by default, so no registry setup is needed.
 
-Then, in Perch's Extensions sidebar tab:
-- **Registry (recommended):** click the gear icon, add this repo's `dist/` folder as a source, and click Install on Symbols Nerd Font.
-- **Manual:** click "Install from .perch" and pick `dist/nerd-font-symbols-<version>.perch`.
+**From source:** run `npm install && npm run pack` in this repo, then either add its `dist/` folder as a source (gear icon, "Manage registries") and install from **Available**, or click "Install from .perch" and pick `dist/nerd-font-symbols-<version>.perch`.
 
 ## Use it
 
@@ -39,12 +35,12 @@ The font file only downloads once the family is actually present in your font st
 
 ## Source
 
-`fonts/symbols-nerd-font-mono-400-normal.woff2` (1,177,504 bytes) is converted — **without subsetting** — from `SymbolsNerdFontMono-Regular.ttf` (2,507,556 bytes), the exact file Perch itself bundled until commit `56e7c22` removed it from core. All 10,413 glyphs and the format-12 cmap survive the conversion.
+`fonts/symbols-nerd-font-mono-400-normal.woff2` (1,177,504 bytes) is converted — **without subsetting** — from `SymbolsNerdFontMono-Regular.ttf` (2,507,556 bytes), the exact file Perch itself bundled until commit `56e7c22` removed it from core. That commit predates Perch's public history, so it is only reachable from a pre-rename clone. All 10,413 glyphs and the format-12 cmap survive the conversion.
 
 To regenerate it from that same source:
 
 ```sh
-git -C /path/to/perch show 56e7c22^:client/public/fonts/SymbolsNerdFontMono-Regular.ttf > /tmp/symbols.ttf
+git -C /path/to/pre-rename-clone show 56e7c22^:client/public/fonts/SymbolsNerdFontMono-Regular.ttf > /tmp/symbols.ttf
 npm install --no-save wawoff2
 node -e "const{compress}=require('wawoff2');const fs=require('fs');compress(fs.readFileSync('/tmp/symbols.ttf')).then(w=>fs.writeFileSync('fonts/symbols-nerd-font-mono-400-normal.woff2',Buffer.from(w)))"
 ```

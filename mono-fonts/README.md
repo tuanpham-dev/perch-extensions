@@ -14,12 +14,8 @@ OFL-1.1 licensed; see `LICENSE.txt` for the per-family copyright notices and lic
 
 ## Install
 
-```sh
-npm run pack
-```
+In Perch, open the **Extensions** sidebar tab (`Ctrl+Shift+X`), find Popular Monospace Fonts under **Available**, and click **Install**. Perch lists this repo's published catalog by default, so no registry setup is needed.
 
-Then, in Perch's Extensions sidebar tab:
-- **Registry (recommended):** click the gear icon, add this repo's `dist/` folder as a source, and click Install on Popular Monospace Fonts.
-- **Manual:** click "Install from .perch" and pick `dist/mono-fonts-<version>.perch`.
+**From source:** run `npm install && npm run pack` in this repo, then either add its `dist/` folder as a source (gear icon, "Manage registries") and install from **Available**, or click "Install from .perch" and pick `dist/mono-fonts-<version>.perch`.
 
 Then pick a font group from Settings → Terminal.

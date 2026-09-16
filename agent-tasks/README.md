@@ -41,7 +41,7 @@ uncommitted or untracked files asks a second time before it is forced out.
    way, and the only way to report a failure.
 2. **The agent's own `stop` hook**, for an agent that never uses `agent-task` at all. When its
    turn ends, core delivers a `stop` event for its window and the task completes as succeeded.
-   This needs the agent's hooks installed: **Settings → AI Providers → Install for me**. A turn
+   This needs the agent's hooks installed: turn on **Agent status hooks** in **Settings → AI Providers**. A turn
    you interrupt (Esc) does not count.
 
    Once a worker has used any `agent-task` verb - even just `dispatch-show` - it speaks the
@@ -148,9 +148,6 @@ through it, just as it could run the agent directly.
 
 ## Known limits
 
-- Disabling the extension stops its control socket and sweep only on a Perch core that
-  calls a server extension's `deactivate()`. On an older core they keep running until the
-  extension is enabled again or the server restarts.
 - An agent that never uses `agent-task` is finished by its first turn end, so if it stops to ask
   you something in chat, its task completes early. Agents following the brief do not hit this.
 - The control socket lives under the config directory. A config directory path long enough to

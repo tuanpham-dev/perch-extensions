@@ -4,7 +4,7 @@
   "publisher": "perch",
   "version": "1.0.2",
   "displayName": "GUI Apps",
-  "description": "Run Linux GUI apps on the server and view/control them in the browser through xpra — adaptive, low-latency HTML5 remote display (much faster than X11 forwarding or VNC). Requires xpra installed on the host; see this extension's README.",
+  "description": "Run Linux GUI apps on the server and view/control them in the browser through xpra - adaptive, low-latency HTML5 remote display (much faster than X11 forwarding or VNC). Requires xpra installed on the host; see this extension's README.",
   "icon": "./icon.svg",
   "perch": {
     "client": "./dist/client.js",
@@ -45,7 +45,7 @@
           "default": "seamless",
           "enum": ["seamless", "desktop"],
           "enumItemLabels": ["Individual apps", "Full desktop"],
-          "description": "Individual apps: each launched app is its own window, composited by xpra directly. Full desktop: streams one whole desktop environment (its own window manager, taskbar, wallpaper) — needed for xfce4 or similar; don't launch a full desktop environment in Individual apps mode, its window manager will fight xpra's own. Takes effect on the next Start (stop first to switch an already-running session)."
+          "description": "Individual apps: each launched app is its own window, composited by xpra directly. Full desktop: streams one whole desktop environment (its own window manager, taskbar, wallpaper) - needed for xfce4 or similar; don't launch a full desktop environment in Individual apps mode, its window manager will fight xpra's own. Takes effect on the next Start (stop first to switch an already-running session)."
         },
         "gui.desktopCommand": {
           "type": "string",
@@ -57,7 +57,7 @@
           "default": "auto",
           "enum": ["auto", "fixed"],
           "enumItemLabels": ["Follow browser window", "Fixed size"],
-          "description": "Follow browser window: the remote display resizes to fill your browser tab/window, including when using xpra's own Fullscreen toggle — but xpra recalculates DPI on every resize, which can make the cursor and UI elements balloon in size at some window sizes. Fixed size: the display stays at its initial resolution and DPI never changes (the image scales to fit your window instead of resizing natively) — use this if you hit the oversized-cursor issue. Takes effect on the next Start."
+          "description": "Follow browser window: the remote display resizes to fill your browser tab/window, including when using xpra's own Fullscreen toggle - but xpra recalculates DPI on every resize, which can make the cursor and UI elements balloon in size at some window sizes. Fixed size: the display stays at its initial resolution and DPI never changes (the image scales to fit your window instead of resizing natively) - use this if you hit the oversized-cursor issue. Takes effect on the next Start."
         }
       }
     }

@@ -47,7 +47,8 @@ needs to know what an agent is), in priority order:
    signal, never guessed as a state. The app's window records carry no title today, on
    the bundled daemon or the tmux backend, so this step is dormant and the state comes
    from the hooks above or the transcript below.
-3. **Transcript recency**, for whichever cwd/session Claude Code itself last wrote to
+3. **Transcript recency**, for the Claude Code session running in that window (from
+   `~/.claude/sessions/`), or else the cwd's most recently written transcript
    — written within `agentMonitor.waitingThresholdSeconds` (default 45) means working,
    otherwise waiting. No transcript at all (a non-Claude agent with no title match
    either) means waiting. The mtime is read fresh on every poll; only the choice of
@@ -74,10 +75,11 @@ set is not carried over - add the program to Settings → AI Providers instead.
 ## Agent hooks (optional, but recommended)
 
 **This version moves hooks into the app itself.** They are no longer this extension's
-business: **Settings → AI Providers** generates the snippet for each agent's own config file,
-copies it for you to paste, or installs it on a press - with a timestamped backup
-first, touching only its own entries, and never a hook you wrote by hand. It also says
-when the installed hooks need reinstalling, and which extensions asked for what.
+business: **Settings → AI Providers** has one **Agent status hooks** switch that installs
+them into every agent's own config file (and keeps them in step while it is on), plus
+a snippet per agent to copy or install on a press - with a timestamped backup
+first, touching only its own entries, and never a hook you wrote by hand. It also shows
+which extensions asked for what.
 
 What you get once the app's hooks are installed, beyond what this extension could do
 before:
@@ -101,7 +103,7 @@ before:
   is loopback-only with its own header check, where this extension's old route relied
   on a request with no `Origin` passing the gate.
 
-Per-tool-call events (`tool call start`) are behind a toggle in Settings → AI Providers that
-is off by default - they fire once per tool call. With it off, this extension falls
+Per-tool-call events (`tool call start`) are behind the **Also hook every tool call** toggle
+in Settings → AI Providers, off by default - they fire once per tool call. With it off, this extension falls
 back to transcript timing for "working", exactly as it does when no hooks are
 installed at all.

@@ -19,15 +19,15 @@ bracket-pair colorization, go-to-definition within the file, and the command pal
 
 ## Loading
 
-Monaco is **lazy-loaded**. Having this extension enabled costs ~20 KB up front; the
-editor bundle (~7.5 MB, all grammars included) is fetched the first time you actually open an editor tab, and each
+Monaco is **lazy-loaded**. Having this extension enabled costs ~45 KB up front; the
+editor bundle (~7.7 MB, all grammars included) is fetched the first time you actually open an editor tab, and each
 language-service worker only when a file of that kind is opened. Nothing is downloaded in a
 session where you only use terminals.
 
 | Artifact | Size | Fetched |
 |---|---:|---|
-| `dist/client.js` | 19 KB | at activation |
-| `dist/chunks/monaco.js` | 7.5 MB | first editor tab |
+| `dist/client.js` | 43 KB | at activation |
+| `dist/chunks/monaco.js` | 7.7 MB | first editor tab |
 | `dist/chunks/monaco.css` + `codicon.ttf` | 291 KB | first editor tab |
 | `dist/workers/editor.worker.js` | 297 KB | first editor tab |
 | `dist/workers/ts.worker.js` | 6.7 MB | first TS/JS file |
@@ -158,7 +158,7 @@ shown here, such as a binary one.
 
 ## Vim mode
 
-**Settings → Text Editor → Vim keybindings** turns the editor modal. It is off by default,
+`textEditor.vim` (**Settings → Text Editor**) turns the editor modal. It is off by default,
 and toggling it applies to tabs that are already open — no reload.
 
 It covers three surfaces: the file editor, the merge-conflict view, and the editable side of
@@ -191,8 +191,8 @@ counts, visual mode, `/` search and `:s` substitution all behave as they do ther
 
 ### Chords the app keeps
 
-A handful of chords are handled by Perch before the editor ever sees the key, so their
-vim meanings are unavailable while the editor has focus:
+Perch's global shortcuts are handled before the editor ever sees the key, so their vim
+meanings are unavailable while the editor has focus. The ones most likely to collide:
 
 | Chord | App action | Vim meaning you lose |
 |---|---|---|
@@ -205,8 +205,9 @@ vim meanings are unavailable while the editor has focus:
 | `` Ctrl+` `` | Toggle Terminal Panel | — |
 | `Ctrl+,` | Open Settings | — |
 
-All of these are rebindable in **Settings → Keyboard Shortcuts**, so if you want `Ctrl+W`
-back for window commands, move the app's binding elsewhere.
+All of these, and the rest of the app's chords, are listed and rebindable in the **Keyboard
+Shortcuts** editor (gear menu), so if you want `Ctrl+W` back for window commands, move the
+app's binding elsewhere.
 
 Everything else reaches vim, including the chords a vim user misses most: `Ctrl+R` redo,
 `Ctrl+V` visual block, `Ctrl+O`/`Ctrl+I` jumplist and `Ctrl+A`/`Ctrl+X` increment. One chord
@@ -251,5 +252,6 @@ changes (closing a dirty tab confirms first).
 ## Notes on mobile
 
 Monaco renders and scrolls on a phone, and the minimap is turned off automatically on touch
-devices, but its touch text-selection is weaker than a native editor's — nvim remains a tap
-away through the FILES-tree click.
+devices, but its touch text-selection is weaker than a native editor's. With Monaco selected, a
+FILES-tree click opens it too; to edit in nvim instead, switch **Settings → Editor** back to
+nvim.

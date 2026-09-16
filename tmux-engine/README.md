@@ -6,7 +6,7 @@ After installing, choose **tmux** under **Settings -> Terminal Backend** and res
 
 How the app's model maps onto tmux:
 
-- A session is a tmux session. Each tmux **pane** is one app window, so a split tmux window shows up as one tab per pane (named `window·pane`).
+- A session is a tmux session. Each tmux **pane** is one app window, so a split tmux window shows up as one tab per pane (the first pane keeps the window's name, the others are named `window·pane`).
 - Terminal output streams through tmux's control mode (`tmux -C`), one connection per session you are viewing. Opening a tab replays the pane's history, colors and cursor.
 - Window sizes follow the view used most recently, like tmux's own `window-size latest`: attaching, typing, clicking or focusing an app tab claims the window, and a real tmux terminal used after that takes it back.
 - Your `~/.tmux.conf` applies as usual. The shell, key bindings and what survives a reboot (for example tmux-resurrect) come from tmux, so the app's bundled daemon settings don't apply.
