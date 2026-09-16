@@ -195,9 +195,9 @@ function buildBranch(template: string, issue: IssueRow): string {
 // (Settings → AI Providers), shared with every other extension that needs to know
 // what an agent is. This extension never shipped an agents setting of its
 // own, so unlike github and agent-monitor there is no deprecated value to
-// prefer and none is read - resolveAgentPresets still falls back to the
-// presets it ships with if the registry cannot be read at all (an older
-// core).
+// prefer and none is read. There are no built-in presets either: when the
+// registry cannot be read (an older core without it), resolveAgentPresets
+// rejects.
 //
 // The registry is a fetch, so unlike the old JSON setting it cannot be
 // parsed inline during render. Cached at module level with a short TTL: the
@@ -208,8 +208,8 @@ let cachedPresets: AgentLaunchPreset[] = [];
 let cachedPresetsAt = 0;
 let presetsInFlight: Promise<AgentLaunchPreset[]> | null = null;
 
-// Cached-or-fetched, and never rejects (resolveAgentPresets degrades on its
-// own). Concurrent callers share one request.
+// Cached-or-fetched; a failed fetch rejects (resolveAgentPresets does not
+// degrade) and is not cached. Concurrent callers share one request.
 function agentPresets(): Promise<AgentLaunchPreset[]> {
   if (Date.now() - cachedPresetsAt < PRESETS_TTL_MS) return Promise.resolve(cachedPresets);
   if (presetsInFlight) return presetsInFlight;
@@ -233,11 +233,16 @@ function useAgentPresets(): AgentLaunchPreset[] {
   const [presets, setPresets] = useState(cachedPresets);
   useEffect(() => {
     let alive = true;
-    void agentPresets().then((next) => {
-      // Same array reference when nothing was re-fetched, so this cannot
-      // loop through the effect.
-      if (alive) setPresets(next);
-    });
+    agentPresets().then(
+      (next) => {
+        // Same array reference when nothing was re-fetched, so this cannot
+        // loop through the effect.
+        if (alive) setPresets(next);
+      },
+      () => {
+        // Tooltip wording only; Start work handles the failure itself.
+      },
+    );
     return () => {
       alive = false;
     };
@@ -627,7 +632,14 @@ function IssueList({ issues, list, showMenu }: { issues: IssueRow[]; list: ListI
       // Read before awaiting: the menu is placed at the click, and the
       // event must not be touched after an await.
       const { clientX, clientY } = event;
-      const presets = await agentPresets();
+      let presets: AgentLaunchPreset[];
+      try {
+        presets = await agentPresets();
+      } catch {
+        // No agent list (an older core): the worktree is still worth making.
+        void startWork(issue, null);
+        return;
+      }
       // Whether to skip permission prompts is NOT asked here. It is one
       // global choice - Settings → AI Providers' Yolo/Manual - and the app
       // applies it to the command this extension is handed. Asking again per

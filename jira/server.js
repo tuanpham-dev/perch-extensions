@@ -21,9 +21,7 @@
 // this comment naming the source rather than silently duplicated. Note the
 // bundled "worktrees" extension has no server hook at all: it's a thin client
 // that calls ctx.app.newWorktree, and core owns the git work. The sibling
-// github extension carries an older copy of these helpers whose header still
-// credits a nonexistent extensions/worktrees/server.js, and whose repoRoot
-// still has the nesting bug fixed below.
+// github extension carries the same copy.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -243,8 +241,7 @@ export function activate({ router, getSettings, secrets }) {
     return Number.isInteger(raw) && raw >= 1 && raw <= 100 ? raw : 30;
   }
 
-  // ---- Worktree helpers (copied from extensions/worktrees/server.js — see
-  // this file's header) ----
+  // ---- Worktree helpers (see this file's header) ----
 
   // The MAIN worktree, not `--show-toplevel`. --show-toplevel returns
   // whichever worktree cwd happens to be in, so starting work on a second
