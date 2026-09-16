@@ -1,0 +1,42 @@
+{
+  "name": "agent-usage-monitor",
+  "private": true,
+  "publisher": "perch",
+  "version": "1.0.1",
+  "displayName": "Agent Usage Monitor",
+  "description": "How much each coding agent has burned, in the status bar: a usage item per agent (5-hour and weekly limits, token blocks per window, burn rate, and real spend where the agent reports it) plus an item showing the model running in the terminal you are looking at. Reads what Claude Code and Codex already write locally; no auto-continue, which Claude Code now does itself.",
+  "icon": "./icon.svg",
+  "perch": {
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Agent Usage Monitor",
+      "properties": {
+        "agentUsage.showClaude": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Claude Code's usage in the status bar."
+        },
+        "agentUsage.showCodex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Codex's usage in the status bar."
+        },
+        "agentUsage.showModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the model running in the active terminal in the status bar."
+        },
+        "agentUsage.blockHours": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "Length of one usage block, in hours. Claude's own limit window is 5 hours."
+        }
+      }
+    }
+  }
+}

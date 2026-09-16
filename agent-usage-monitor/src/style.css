@@ -1,0 +1,221 @@
+/* The popover view. The host's popover is a bare frame - some of them render
+   edge-to-edge lists - so the padding is this view's own. */
+.usage-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 260px;
+  max-width: 340px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.usage-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.usage-agent-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.usage-agent-name {
+  font-weight: 600;
+  color: var(--fg-bright);
+}
+
+/* The agent's own mark, drawn in the bar's own colour like every other icon
+   there, and smaller than them (13px): these are dense brand marks labelling
+   a meter, not glyphs that need to carry a row on their own. 10px is the
+   meter's own height, so the mark and the bar beside it read as one block. */
+.usage-agent-mark {
+  width: 10px;
+  height: 10px;
+  font-size: 10px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.usage-agent-mark.masked {
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.usage-agent-plan {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--list-hover-bg);
+  color: var(--fg-inactive);
+}
+
+.usage-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Wide enough for the longest window name an agent reports ("Fable weekly"),
+   so every meter in the popover starts at the same x and no label wraps to a
+   second line. */
+.usage-limit-label {
+  color: var(--fg-inactive);
+  min-width: 78px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.usage-limit-value {
+  white-space: nowrap;
+}
+
+/* The clock time beside the countdown: the same fact at a different
+   resolution, so it reads as secondary. */
+.usage-limit-at {
+  color: var(--fg-inactive);
+}
+
+.usage-spend {
+  display: flex;
+  gap: 14px;
+  color: var(--fg-inactive);
+}
+
+.usage-spend b {
+  color: var(--fg-bright);
+  font-weight: 600;
+}
+
+.usage-spend.muted,
+.usage-spend .muted {
+  color: var(--fg-inactive);
+}
+
+.usage-headline {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-bright);
+}
+
+.usage-subline,
+.usage-empty,
+.usage-footnote,
+.usage-note {
+  color: var(--fg-inactive);
+}
+
+.usage-models {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.usage-previous {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.usage-previous-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-inactive);
+}
+
+.usage-footnote {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.usage-note {
+  font-size: 11px;
+}
+
+/* Meters, in the popover and in the bar */
+.usage-meter {
+  display: block;
+  width: 34px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--list-hover-bg);
+  flex-shrink: 0;
+}
+
+.usage-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--fg-inactive);
+}
+
+/* Past the point where the number starts to matter. */
+.usage-meter-fill.warn {
+  background: var(--status-idle-bg);
+}
+
+.usage-meter-fill.critical {
+  background: var(--error);
+}
+
+/* Status-bar items */
+.usage-status-item {
+  gap: 6px;
+}
+
+.usage-status-name {
+  color: var(--fg-inactive);
+}
+
+.usage-status-meter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.usage-status-text {
+  white-space: nowrap;
+}
+
+/* The countdown on a window: secondary to the percentage it follows, since
+   it says when the number changes, not what it is. */
+.usage-status-reset {
+  white-space: nowrap;
+  color: var(--fg-inactive);
+}
+
+/* The model a percentage is capped against ("32% Fable"). It takes the
+   countdown's place, so it reads the same way: secondary to the number it
+   follows, and it stays on a phone, where the countdowns don't - the name is
+   what makes that third percentage mean anything. */
+.usage-status-scope {
+  white-space: nowrap;
+  color: var(--fg-inactive);
+}
+
+/* Between one window and the next, so two percentages don't read as one
+   number pair. */
+.usage-status-sep {
+  color: var(--fg-inactive);
+  margin-right: 1px;
+}
+
+.usage-model-item {
+  white-space: nowrap;
+}
