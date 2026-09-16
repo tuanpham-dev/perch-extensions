@@ -1,0 +1,24 @@
+{
+  "name": "custom-tabs",
+  "private": true,
+  "publisher": "perch",
+  "version": "1.0.0",
+  "displayName": "Custom Sidebar Tabs",
+  "description": "Add your own sidebar tabs, each with a name and an icon, and drag panes into them. Create, rename, change the icon of, or delete a tab from the tab strip's right-click menu, the command palette, or this extension's settings. Deleting a tab sends its panes back where they came from.",
+  "icon": "./icon.svg",
+  "contributes": {
+    "configuration": {
+      "title": "Custom Sidebar Tabs",
+      "properties": {
+        "customTabs.tabs": {
+          "type": "string",
+          "default": "",
+          "description": "Your custom tabs, as JSON (edited with the list below - empty means none)."
+        }
+      }
+    }
+  },
+  "perch": {
+    "client": "./dist/client.js"
+  }
+}

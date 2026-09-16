@@ -1,0 +1,100 @@
+.text-editor-host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.text-editor-host.hidden {
+  display: none;
+}
+
+.text-editor-status {
+  padding: 8px 12px;
+  color: var(--fg-inactive, #999);
+  font-size: 12px;
+}
+
+.text-editor-error {
+  color: var(--error, #f48771);
+}
+
+.text-editor-monaco {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Monaco sets its own inline width/height from the container's measured box;
+   taking it out of flow keeps that measurement from feeding back into the
+   container's own height (the classic "editor grows every layout" loop). */
+.text-editor-monaco .monaco-editor {
+  position: absolute;
+  inset: 0;
+}
+
+.text-editor-dirty-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-accent, #4fa8ff);
+  margin-right: 6px;
+}
+
+/* Editor colors come from the Monaco theme built in monacoTheme.ts out of the
+   active host theme's own colors/tokenColors — not from this stylesheet. */
+
+/* Inline merge-conflict blocks. The colours come from the Monaco theme's
+   merge.* entries (see shikiTheme.ts, which always defines them from VS Code's
+   own defaults) — Monaco exposes each theme colour as a CSS variable named
+   --vscode-<id with dots replaced by dashes>, so a theme switch recolours
+   these without this file knowing anything about the palette. */
+.text-editor-merge-current-header {
+  background: var(--vscode-merge-currentHeaderBackground);
+}
+
+.text-editor-merge-current {
+  background: var(--vscode-merge-currentContentBackground);
+}
+
+.text-editor-merge-incoming-header {
+  background: var(--vscode-merge-incomingHeaderBackground);
+}
+
+.text-editor-merge-incoming {
+  background: var(--vscode-merge-incomingContentBackground);
+}
+
+.text-editor-merge-base-header {
+  background: var(--vscode-merge-commonHeaderBackground);
+}
+
+.text-editor-merge-base {
+  background: var(--vscode-merge-commonContentBackground);
+}
+
+/* monaco-vim's status line: the current mode, the ":" prompt, and search
+   input. Sits under the editor and must never grow it — the editor container
+   keeps flex: 1, so this takes only the height of its own text. */
+.text-editor-vim-status {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-top: 1px solid var(--border, #333);
+  font-family: var(--terminal-font, monospace);
+  font-size: 12px;
+  color: var(--fg-inactive, #999);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* monaco-vim renders its ":" / "/" prompt as an input inside that node. */
+.text-editor-vim-status input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg, #ddd);
+  font: inherit;
+  width: 60%;
+}

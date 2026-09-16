@@ -1,0 +1,45 @@
+.custom-tabs-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.custom-tabs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.custom-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  flex-wrap: wrap;
+}
+
+.custom-tabs-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+  color: var(--fg-bright);
+}
+
+.custom-tabs-title {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-bright);
+}
+
+.custom-tabs-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.custom-tabs-warning {
+  color: var(--warning, var(--fg-bright));
+}

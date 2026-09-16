@@ -1,0 +1,72 @@
+{
+  "name": "text-editor",
+  "private": true,
+  "publisher": "perch",
+  "version": "2.3.1",
+  "displayName": "Text Editor",
+  "description": "A Monaco-based editor tab (the VS Code editor) with syntax highlighting that follows the active theme, IntelliSense for TypeScript/JavaScript/JSON/CSS/HTML, and save-back to disk, for quick edits without a round-trip through nvim.",
+  "icon": "./icon.svg",
+  "dependencies": {
+    "@shikijs/vscode-textmate": "^10.0.2",
+    "monaco-editor": "^0.56.0",
+    "monaco-vim": "^0.4.4"
+  },
+  "contributes": {
+    "editors": [
+      {
+        "id": "monaco",
+        "label": "Monaco (Text Editor)",
+        "capabilities": [
+          "file",
+          "diff",
+          "merge"
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Text Editor",
+      "properties": {
+        "textEditor.minimap": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "enumItemLabels": [
+            "Auto (hidden on touch devices)",
+            "Always show",
+            "Always hide"
+          ],
+          "default": "auto",
+          "description": "Whether the editor draws the minimap — the code overview down the right edge. Auto shows it on desktop and hides it on phones and tablets, where it only eats width. Diffs and merge conflicts never show one."
+        },
+        "textEditor.lineNumbers": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "on",
+            "relative",
+            "off"
+          ],
+          "enumItemLabels": [
+            "Auto (relative when vim is on)",
+            "Absolute",
+            "Relative",
+            "Hidden"
+          ],
+          "default": "auto",
+          "description": "How the editor numbers its lines. Relative counts the distance from the cursor, with the cursor's own line showing its absolute number \u2014 what makes vim's counted motions (`5j`, `d3k`) readable. Auto uses relative while vim keybindings are on and absolute otherwise. Applies to the editor and the merge view; a diff always numbers both sides absolutely."
+        },
+        "textEditor.vim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use vim keybindings in the editor, the merge view, and the editable side of a diff. `:w` saves, `:q` closes the tab (`:q!` discards unsaved changes), `:wq` does both. A status line under the editor shows the current mode. Some chords belong to the app and never reach vim — Ctrl+P, Ctrl+W, Ctrl+Shift+P, Ctrl+1-8 and Ctrl+\\ — all rebindable in Settings → Keyboard Shortcuts."
+        }
+      }
+    }
+  },
+  "perch": {
+    "client": "./dist/client.js"
+  }
+}
