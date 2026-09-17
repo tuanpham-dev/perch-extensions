@@ -9,7 +9,8 @@
 //   session-start   -> done, as a session boundary. A resumed session emits
 //                      SessionStart at an idle prompt and nothing else;
 //                      "working" there would spin forever over a TUI that is
-//                      waiting for input.
+//                      waiting for input. Except source "compact": Claude
+//                      fires that one mid-turn, and it must not end the turn.
 //   prompt-submit   -> working. The prompt is cached for the turn.
 //   tool-start      -> working - unless the tool is the agent asking the USER
 //                      a question (Claude's AskUserQuestion, Codex's
@@ -23,7 +24,8 @@
 // title glyph) overrides it, because a turn that starts or a tool that runs
 // sends its own event. It goes stale after STALE_AFTER_MS, Orca's
 // AGENT_STATUS_STALE_AFTER_MS, for the pane whose process died without a
-// final hook.
+// final hook. A stale record hands over to classifyQuiet below, which is also
+// where "idle" comes from.
 export const STALE_AFTER_MS = 30 * 60 * 1000;
 
 // Tools that mean "the agent is waiting for the user to answer", per agent.
@@ -56,6 +58,7 @@ export function reduceHookEvent(previous, event) {
 
   switch (event.event) {
     case "session-start":
+      if (payload.source === "compact") return null;
       return { state: "done", at, sessionBoundary: true };
     case "prompt-submit":
       return { state: "working", at, prompt: text(payload.prompt, PROMPT_MAX) };
@@ -95,4 +98,40 @@ export function classifyFromHook(record, now = Date.now()) {
     ...(record.interrupted ? { interrupted: true } : {}),
     lastActivityAt: record.at,
   };
+}
+
+// The state for a pane with no fresh hook record, from how long its
+// transcript has been quiet. The vocabulary is Orca's sidebar:
+//
+//   written within the threshold -> working. The transcript is written
+//                      continuously through a turn.
+//   quiet, under STALE_AFTER_MS -> done. An agent that stopped writing is
+//                      sitting at its prompt; without a hook nothing can tell
+//                      a permission prompt from a finished turn, and claiming
+//                      "waiting on you" for every idle agent would make that
+//                      badge meaningless.
+//   quiet past STALE_AFTER_MS -> idle, unless the last hook said the turn
+//                      finished: Orca never decays a reported "done" into
+//                      "idle", because idle means "quiet without saying it
+//                      finished".
+//   no transcript at all -> idle. Nothing is known about the pane.
+//
+// staleRecord is the pane's hook record gone stale, or undefined.
+export function classifyQuiet(staleRecord, transcriptMtime, waitingThresholdMs, now = Date.now()) {
+  if (transcriptMtime !== null && now - transcriptMtime < waitingThresholdMs) {
+    return { state: "working", lastActivityAt: transcriptMtime };
+  }
+  const lastActivityAt = Math.max(transcriptMtime ?? 0, staleRecord?.at ?? 0) || null;
+  if (staleRecord?.state === "done") {
+    return {
+      state: "done",
+      ...(staleRecord.interrupted ? { interrupted: true } : {}),
+      ...(staleRecord.prompt ? { prompt: staleRecord.prompt } : {}),
+      lastActivityAt,
+    };
+  }
+  if (transcriptMtime !== null && !staleRecord && now - transcriptMtime <= STALE_AFTER_MS) {
+    return { state: "done", lastActivityAt };
+  }
+  return { state: "idle", lastActivityAt };
 }

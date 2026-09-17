@@ -3,7 +3,7 @@
 // mapping it asserts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyFromHook, reduceHookEvent, STALE_AFTER_MS } from "../hookStatus.mjs";
+import { classifyFromHook, classifyQuiet, reduceHookEvent, STALE_AFTER_MS } from "../hookStatus.mjs";
 
 const at = 1_000_000;
 const ev = (event: string, payload: unknown = {}, receivedAt = at) => ({ event, payload, receivedAt, paneId: "%1" });
@@ -14,6 +14,13 @@ test("a resumed session lands idle, not spinning", () => {
   const r = reduceHookEvent(undefined, ev("session-start", { source: "resume" }));
   assert.equal(r?.state, "done");
   assert.equal(r?.sessionBoundary, true);
+});
+
+test("a compaction mid-turn does not end the turn", () => {
+  // Claude fires SessionStart with source "compact" while it is still working.
+  const working = reduceHookEvent(undefined, ev("prompt-submit", { prompt: "go" }));
+  assert.equal(reduceHookEvent(working, ev("session-start", { source: "compact" })), null);
+  assert.equal(reduceHookEvent(working, ev("session-start", { source: "clear" }))?.state, "done");
 });
 
 test("a prompt starts a turn and is remembered across it", () => {
@@ -94,4 +101,37 @@ test("the classification carries only what is set", () => {
   assert.deepEqual(c, { state: "done", lastActivityAt: at });
   const w = classifyFromHook(reduceHookEvent(undefined, ev("permission", { tool_name: "Edit" })), at);
   assert.deepEqual(w, { state: "waiting", stateDetail: "permission", toolName: "Edit", lastActivityAt: at });
+});
+
+const threshold = 45_000;
+
+test("with no hook, a transcript being written is working", () => {
+  assert.equal(classifyQuiet(undefined, at - 1_000, threshold, at).state, "working");
+  // A stale hook record never outranks a transcript still being written.
+  const stale = reduceHookEvent(undefined, ev("stop", {}, at - STALE_AFTER_MS - 1));
+  assert.equal(classifyQuiet(stale, at - 1_000, threshold, at).state, "working");
+});
+
+test("with no hook, a quiet agent is done, and idle after 30 minutes", () => {
+  // Not "waiting on you": without a hook a permission prompt and a finished
+  // turn look the same, and every idle agent would wear the attention badge.
+  assert.equal(classifyQuiet(undefined, at - threshold, threshold, at).state, "done");
+  assert.equal(classifyQuiet(undefined, at - STALE_AFTER_MS, threshold, at).state, "done");
+  assert.equal(classifyQuiet(undefined, at - STALE_AFTER_MS - 1, threshold, at).state, "idle");
+});
+
+test("nothing known about a pane is idle", () => {
+  assert.deepEqual(classifyQuiet(undefined, null, threshold, at), { state: "idle", lastActivityAt: null });
+});
+
+test("a reported finish never decays to idle; an unfinished turn does", () => {
+  const long = at - STALE_AFTER_MS * 4;
+  const done = reduceHookEvent(undefined, ev("stop", {}, long));
+  assert.equal(classifyQuiet(done, null, threshold, at).state, "done");
+  const cancelled = reduceHookEvent(undefined, ev("stop", { is_interrupt: true }, long));
+  assert.equal(classifyQuiet(cancelled, long, threshold, at).interrupted, true);
+  const working = reduceHookEvent(undefined, ev("prompt-submit", { prompt: "go" }, long));
+  assert.equal(classifyQuiet(working, long, threshold, at).state, "idle");
+  const asking = reduceHookEvent(undefined, ev("permission", { tool_name: "Bash" }, long));
+  assert.equal(classifyQuiet(asking, null, threshold, at).state, "idle");
 });

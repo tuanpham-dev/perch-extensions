@@ -1,22 +1,22 @@
 # Agent Monitor
 
-Classifies every terminal window running an AI coding agent as working / waiting / done, and
-marks that window's own row in the PROJECTS pane:
+Classifies every terminal window running an AI coding agent and marks that window's own row
+in the PROJECTS pane, in the same vocabulary as [Orca](https://github.com/stablyai/orca)'s sidebar:
 
-| State | Mark | Color |
+| Mark | Status | Meaning |
 | --- | --- | --- |
-| working | a dot, slowly pulsing | the theme's active green (`--status-active-bg`) |
-| waiting | a dot | the theme's warning amber (`--warning`) |
-| waiting, on a permission prompt | **`?`** | the same amber |
-| done | nothing | — |
+| spinner (yellow) | Working | The agent is busy on a task |
+| amber **`?`** | Waiting on you | It needs a permission approval or an answer from you |
+| emerald dot | Done | The task is finished and the agent is quiet |
+| red dot | Interrupted | The turn was cancelled |
+| gray dot | Idle | Quiet for about 30 minutes without reporting that it finished, or nothing is known about it |
+| nothing | - | A plain shell, not an agent from Settings → AI Providers |
 
-The state that is blocking *you* differs in shape, not in a third shade of dot: a `?`
-reads before its color does, and can't be mistaken for the working dot at a glance.
-Working pulses because a static dot says "this pane is an agent" while a moving one
-says "it's still going". `done` gets no mark at all — it's the steady idle state most
-agent panes sit in, and a permanent dot there would be noise, not signal. Colors are
-theme tokens (with the old fixed hexes as fallbacks), so they follow the theme like
-every other indicator in that tree.
+The state that is blocking *you* differs in shape, not only in hue: a `?` reads before its
+color does, and working is a spinner rather than a dot. Every color sits behind a custom
+property a theme can override (`--agent-monitor-working`, `-waiting`, `-done`,
+`-interrupted`, `-idle`); the defaults are Orca's. Reduced motion shows the spinner as a
+complete, still ring.
 
 "Which of my agents needs me?" at a glance, without opening every tab — built assuming
 one window per tab, so a window's mark always reflects a single pane.
@@ -35,8 +35,11 @@ needs to know what an agent is), in priority order:
    starting lands as done too, because a resumed session sits at an idle prompt
    and "working" would spin over it forever. The prompt that started the turn and
    the tool in flight ride along, so the tooltip says *what* the agent is doing.
-   A record goes stale after 30 minutes with no event - the pane whose process
-   died without a final hook - and the signals below take over. Events are keyed
+   A session starting mid-turn to compact its context is ignored, so it cannot end
+   the turn. A record goes stale after 30 minutes with no event - the pane whose
+   process died without a final hook - and the signals below take over; a stale
+   record that said the turn finished stays **done**, anything else becomes **idle**
+   once the transcript is quiet too. Events are keyed
    by the window they fired in, so two agent windows sharing one folder can't
    cross-contaminate each other's state, and an agent that sends no session id of
    its own is served exactly as well as Claude Code.
@@ -50,8 +53,9 @@ needs to know what an agent is), in priority order:
 3. **Transcript recency**, for the Claude Code session running in that window (from
    `~/.claude/sessions/`), or else the cwd's most recently written transcript
    — written within `agentMonitor.waitingThresholdSeconds` (default 45) means working,
-   otherwise waiting. No transcript at all (a non-Claude agent with no title match
-   either) means waiting. The mtime is read fresh on every poll; only the choice of
+   otherwise done, and idle once it has been quiet for 30 minutes. Not waiting: without
+   a hook a permission prompt and a finished turn look the same, and the `?` would sit on
+   every quiet agent. No transcript at all (a non-Claude agent with no hooks) means idle. The mtime is read fresh on every poll; only the choice of
    *which* file to watch is cached, since a stale mtime here is a wrong state, not a
    slightly old one. The threshold is a timeout standing in for knowledge: one tool
    call routinely runs longer than a few seconds writing nothing, which is what the
@@ -65,7 +69,7 @@ runs `tmux` itself.
 
 | Key | Default | Description |
 |---|---|---|
-| `agentMonitor.waitingThresholdSeconds` | `45` | How long a transcript can go unwritten before falling back to "waiting" |
+| `agentMonitor.waitingThresholdSeconds` | `45` | How long a transcript can go unwritten before a pane with no hooks stops showing as working |
 
 Which programs count as an agent is no longer a setting here. **Settings → AI
 Providers** holds the one list, and this extension reads it. The old

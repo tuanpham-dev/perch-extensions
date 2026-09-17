@@ -1,6 +1,8 @@
 // agent-monitor: every terminal window running one of the agents in the app's own
-// registry (Settings → AI Providers), classified working/waiting/done and shown
-// as a status dot on that window's own PROJECTS-pane row. Host hooks arrive
+// registry (Settings → AI Providers), classified working/waiting/done/idle and
+// shown as a status mark on that window's own PROJECTS-pane row, in Orca's
+// vocabulary: a spinner, an amber "?", an emerald dot, a red dot for a turn
+// that was interrupted, and a gray dot for idle. Host hooks arrive
 // via module-level bridge variables set once in activate(), same pattern as
 // every other bundled-style extension (search, git-scm, worktrees).
 //
@@ -24,7 +26,11 @@ interface AgentRow {
   windowName: string;
   command: string;
   cwd: string;
-  state: "working" | "waiting" | "done";
+  // idle: quiet for 30 minutes without reporting that it finished, or no
+  // signal at all for this pane.
+  state: "working" | "waiting" | "done" | "idle";
+  // A done turn the user cancelled (the stop hook's is_interrupt).
+  interrupted?: boolean;
   // Why the agent is waiting: a permission prompt, or a question it asked
   // the user (Claude's AskUserQuestion, Codex's request_user_input). Both
   // block on a human and both get the "?" badge.
@@ -54,43 +60,59 @@ function rowKey(row: AgentRow): string {
 //
 // This app is designed 1 window per tab, so a (sessionName, windowIndex)
 // pair identifies at most one agent pane in practice — no merge rule needed
-// for multiple agents sharing a row. "done" gets no badge: it's the steady
-// state a claude pane sits in most of the time (finished responding, idle
-// for new input) — a permanent dot on every idle claude window would be
-// more noise than signal.
+// for multiple agents sharing a row. Every agent window gets a mark, done
+// included: Orca's sidebar shows a finished agent as an emerald dot, and
+// that is exactly the "which of my agents can I look at now" answer. Only a
+// window that is not an agent (a plain shell) has none, because the server
+// never lists it.
 let agentsByWindowKey = new Map<string, AgentRow>();
 let refreshDecorations: (() => void) | null = null;
 
-function decorationFor(row: AgentRow | undefined): { badge: string; tooltip: string; className: string } | undefined {
-  if (!row || row.state === "done") return undefined;
-  const attention = row.stateDetail === "permission" || row.stateDetail === "question";
+type Mark = "working" | "waiting" | "done" | "interrupted" | "idle";
+
+function markFor(row: AgentRow): Mark {
+  if (row.state === "done") return row.interrupted ? "interrupted" : "done";
+  return row.state;
+}
+
+function labelFor(row: AgentRow, mark: Mark): string {
   // The tool is the most useful word in an attention state: "permission:
   // Bash" says what is being asked, where "permission" alone only says that
   // something is.
   const tool = row.toolName ? `: ${row.toolName}` : "";
-  const label =
-    row.stateDetail === "permission"
-      ? `Waiting for you - permission${tool}`
-      : row.stateDetail === "question"
-        ? "Waiting for you - question"
-        : row.state === "waiting"
-          ? "Waiting for you"
-          : row.toolName
-            ? `Working - ${row.toolName}`
-            : "Working";
+  switch (mark) {
+    case "working":
+      return row.toolName ? `Working - ${row.toolName}` : "Working";
+    case "waiting":
+      return row.stateDetail === "permission"
+        ? `Waiting on you - permission${tool}`
+        : row.stateDetail === "question"
+          ? "Waiting on you - question"
+          : "Waiting on you";
+    case "done":
+      return "Done";
+    case "interrupted":
+      return "Interrupted";
+    case "idle":
+      return "Idle";
+  }
+}
+
+function decorationFor(row: AgentRow | undefined): { badge: string; tooltip: string; className: string } | undefined {
+  if (!row) return undefined;
+  const mark = markFor(row);
+  const label = labelFor(row, mark);
   // The task label from the title, else the prompt from the hook: what the
   // agent is on, in one line.
   const context = row.taskLabel ?? row.prompt;
   return {
-    // Shape first, color second. A pane that is blocking on YOU right now
-    // gets a question mark, not a third shade of dot — it reads before the
-    // color does, and it can't be mistaken for the working dot at a glance
-    // (the same reason Orca draws that state as an icon rather than a hue).
-    badge: attention ? "?" : "●",
+    // Shape first, color second. Waiting is the one state blocking YOU, so
+    // it is a "?" rather than another shade of dot, and working is a spinner:
+    // both read before their color does. The dots' "●" is hidden by the
+    // stylesheet; it is only there so the badge is never empty.
+    badge: mark === "waiting" ? "?" : "●",
     tooltip: context ? `${label} - ${context}` : label,
-    // "question" shares the permission styling: same shape, same colour,
-    // same meaning for the person looking at it.
-    className: `agent-monitor-badge-${attention ? "permission" : row.state}`,
+    className: `agent-monitor-badge-${mark}`,
   };
 }
 

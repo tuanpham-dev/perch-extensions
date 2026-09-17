@@ -1,5 +1,5 @@
 // agent-monitor server hook: lists every terminal window running one of the
-// agents in core's registry and classifies each as working/waiting/done —
+// agents in core's registry and classifies each as working/waiting/done/idle —
 // the source for the PROJECTS-pane window-row status dot. Windows come from
 // host.sessions.list(), so this works on whichever terminal backend runs
 // them (the bundled daemon or the tmux backend). Detection is Orca-style
@@ -21,10 +21,11 @@
 //      LABEL and the state falls through to step 3. Same for any other
 //      glyph — a title's shape is never invented into a state.
 //   3. else the pane's own Claude session transcript's mtime: written
-//      within the threshold -> working, else waiting. The session is the one
+//      within the threshold -> working, else done, and idle after 30 quiet
+//      minutes (hookStatus.mjs's classifyQuiet). The session is the one
 //      whose CLI was started in this window (claudePanes.mjs); only a window
 //      with no such CLI falls back to the cwd's most recent transcript. No
-//      transcript at all (a non-Claude agent) -> waiting.
+//      transcript at all (a non-Claude agent) -> idle.
 //
 // Never writes into a window — read-only session-list/filesystem queries only.
 //
@@ -38,7 +39,7 @@
 // Claude's own session_id is what makes the hook path work for Codex and
 // Antigravity at all: neither sends a session id.
 import { claudeSessionsByWindow } from "./claudePanes.mjs";
-import { classifyFromHook, reduceHookEvent } from "./hookStatus.mjs";
+import { classifyFromHook, classifyQuiet, reduceHookEvent } from "./hookStatus.mjs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -112,9 +113,9 @@ const sessionIdCache = new Map();
 
 // Which session file to watch is worth caching — a readdir + a stat per
 // entry, and the answer only changes when a new session starts. Its MTIME is
-// not: that number IS the working/waiting signal, and a cached one made the
+// not: that number IS the working/done signal, and a cached one made the
 // state up to SESSION_ID_TTL_MS stale on top of the threshold, so a pane
-// that had just written its transcript still read as "waiting for you" for
+// that had just written its transcript still read as finished for
 // the rest of the TTL. The id comes from the cache; the mtime is re-stat'd
 // every call, which is one stat on a known path.
 async function mostRecentSessionCached(projectDir) {
@@ -223,12 +224,9 @@ async function classifyPane(pane, waitingThresholdMs) {
   }
 
   // 3. Transcript-mtime fallback — the signal that survives, since Claude
-  // Code writes its transcript continuously while it works.
-  if (transcriptMtime === null) {
-    return { state: "waiting", taskLabel, lastActivityAt: null };
-  }
-  const working = Date.now() - transcriptMtime < waitingThresholdMs;
-  return { state: working ? "working" : "waiting", taskLabel, lastActivityAt: transcriptMtime };
+  // Code writes its transcript continuously while it works. A stale hook
+  // record still says whether the last turn finished (hookStatus.mjs).
+  return { ...classifyQuiet(hookEvents.get(pane.paneId), transcriptMtime, waitingThresholdMs), taskLabel };
 }
 
 // Shorter than the client's own poll beat, so a burst of requests shares
