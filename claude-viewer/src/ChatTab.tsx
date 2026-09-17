@@ -9,14 +9,15 @@
 //   - screen: a long poll the server answers as soon as the screen changes
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { getJson, host, postJson, setting, uploadFile } from "./bridge";
+import { getJson, host, postJson, setting, uploadFile, type ShowMenu } from "./bridge";
 import { applyMessages, collectImages, createChatModel, type ChatModel, type TranscriptMessage } from "./chatModel";
+import { createFileLinks, FileLinksContext } from "./FileLinks";
 import { Composer, type ComposerHandle, type PendingImage, type SlashCommand } from "./Composer";
 import { Lightbox, LightboxContext } from "./Lightbox";
 import { MessageList } from "./MessageList";
-import { PromptCard } from "./PromptCard";
+import { PromptCard, type PromptCardHandle } from "./PromptCard";
 import { ScreenStrip, ScreenStripHeading, ScreenStripToggle, useScreenStrip } from "./ScreenStrip";
-import { MODE_HINT, Toolbar } from "./Toolbar";
+import { ActivityStatus, MODE_HINT, UsageStats } from "./Status";
 import { useOverlayInset } from "./useOverlayInset";
 import type { ScreenState, SessionInfo } from "./types";
 import { addToTally, createTally, currentModelLabel, type UsageTally } from "./usage";
@@ -132,12 +133,14 @@ export function ChatTab({
   active,
   setTitle,
   toolbarTarget,
+  showMenu,
 }: {
   filePath: string;
   active: boolean;
   setTitle?: (title: string) => void;
   // The tab bar's action area, where viewers put their own buttons.
   toolbarTarget?: HTMLDivElement | null;
+  showMenu?: ShowMenu;
 }) {
   const windowId = windowIdFromPath(filePath);
   const settings = useSettings();
@@ -252,6 +255,10 @@ export function ChatTab({
     [windowId],
   );
 
+  const showMenuRef = useRef(showMenu);
+  showMenuRef.current = showMenu;
+  const fileLinks = useMemo(() => createFileLinks(windowId, cwd, () => showMenuRef.current), [windowId, cwd]);
+
   const tally = useMemo(() => tallyRef.current, [version]);
   const model = modelRef.current;
   const empty = model.items.length === 0;
@@ -284,6 +291,58 @@ export function ChatTab({
   const modelLabel = currentModelLabel(tally);
   const overlayInset = useOverlayInset(rootRef);
 
+  // Keys work as in the terminal. While a prompt is up they go to its card
+  // (and the composer is locked, as the terminal's input is); otherwise Esc
+  // stops a working Claude and Shift+Tab cycles the mode. Keys a focused
+  // control already used (the composer's autocomplete) are left alone.
+  const promptCardRef = useRef<PromptCardHandle>(null);
+  const working = running && screen?.activity?.state === "working" && !prompt;
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented || e.nativeEvent.isComposing || !running) return;
+    // Portalled children (the lightbox, the tab bar button) bubble here too.
+    if (!rootRef.current?.contains(e.target as Node)) return;
+    if (prompt) {
+      if (promptCardRef.current?.handleKey(e)) e.preventDefault();
+      return;
+    }
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (plain && e.key === "Tab" && e.shiftKey && mode) {
+      e.preventDefault();
+      void post("/cycle-mode");
+    } else if (plain && e.key === "Escape" && !e.shiftKey && working) {
+      e.preventDefault();
+      void post("/stop");
+    }
+  };
+
+  // A prompt takes the keyboard: focus moves from the composer (or nowhere)
+  // to the tab itself, where onKeyDown hears it, and back to the composer
+  // once the prompt is answered. Focus elsewhere in the app is left alone.
+  const hasPrompt = Boolean(prompt);
+  // Whether focus was last in the composer. Kept from focus events rather than
+  // read when the prompt arrives: locking the composer has already moved
+  // focus to <body> by then.
+  const composerHadFocus = useRef(false);
+  const onFocus = (e: React.FocusEvent) => {
+    composerHadFocus.current = (e.target as HTMLElement).matches(".cv-input-box textarea");
+  };
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !active) return;
+    const focused = document.activeElement;
+    const composerInput = root.querySelector<HTMLTextAreaElement>(".cv-input-box textarea");
+    if (hasPrompt) {
+      if (focused && focused !== document.body && !root.contains(focused)) return;
+      if (focused && root.querySelector(".cv-prompt-text")?.contains(focused)) return;
+      const hadFocus = composerHadFocus.current;
+      root.focus({ preventScroll: true });
+      composerHadFocus.current = hadFocus;
+    } else if (composerHadFocus.current) {
+      composerHadFocus.current = false;
+      if (!focused || focused === document.body || focused === root) composerInput?.focus({ preventScroll: true });
+    }
+  }, [hasPrompt, active]);
+
   const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
 
   const openTerminal =
@@ -293,9 +352,13 @@ export function ChatTab({
 
   return (
     <LightboxContext.Provider value={lightbox}>
+    <FileLinksContext.Provider value={fileLinks}>
     <div
       ref={rootRef}
       className="claude-viewer cv-root"
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      onFocus={onFocus}
       style={{ "--cv-font-size": `${settings.fontSize}px`, paddingBottom: (!showStrip && overlayInset) || undefined } as CSSProperties}
       onDragEnter={(e) => {
         if (!hasFiles(e) || !running) return;
@@ -323,13 +386,6 @@ export function ChatTab({
           <div className="cv-drop-overlay-box">Drop files to attach them to your message</div>
         </div>
       )}
-      <Toolbar
-        screen={screen}
-        tally={tally}
-        running={running}
-        showMeters={settings.showMeters}
-        showContext={settings.showContext}
-      />
       {active &&
         toolbarTarget &&
         openTerminal &&
@@ -366,7 +422,7 @@ export function ChatTab({
         )}
         <MessageList model={model} version={version} scrollRef={scrollRef} stickToBottom={stickToBottom} />
       </div>
-      {prompt && <PromptCard windowId={windowId} prompt={prompt} onState={acceptScreen} enterSends={settings.enterSends} />}
+      {prompt && <PromptCard ref={promptCardRef} windowId={windowId} prompt={prompt} onState={acceptScreen} enterSends={settings.enterSends} />}
       {sendError && (
         <div className="cv-banner cv-banner-error" role="alert">
           {sendError}
@@ -375,14 +431,20 @@ export function ChatTab({
       <Composer
         ref={composerRef}
         enterSends={settings.enterSends}
-        working={running && screen?.activity?.state === "working" && !prompt}
+        working={working}
         onStop={() => void post("/stop")}
         terminalInput={running && !prompt ? screen?.input?.text ?? "" : ""}
         commands={commands}
         searchFiles={searchFiles}
         onSend={send}
-        disabled={!running}
-        disabledReason={info && !info.running ? "This window isn't running Claude any more." : "Waiting for the terminal"}
+        disabled={!running || hasPrompt}
+        disabledReason={
+          hasPrompt
+            ? "Answer the prompt above first. Its keys work here as in the terminal."
+            : info && !info.running
+              ? "This window isn't running Claude any more."
+              : "Waiting for the terminal"
+        }
         footerStart={
           mode && (
             <button className={`cv-foot-btn cv-foot-mode cv-foot-mode-${mode.id}`} onClick={() => void post("/cycle-mode")} title={`${MODE_HINT[mode.id] ?? mode.label}. Click to cycle (Shift+Tab).`}>
@@ -392,6 +454,7 @@ export function ChatTab({
         }
         footerEnd={
           <>
+            <UsageStats tally={tally} showContext={settings.showContext} showMeters={settings.showMeters} />
             {modelLabel && (
               <span className="cv-foot-model" title={tally.switchedTo ? `Switched with /model: ${tally.switchedTo}` : (tally.model ?? undefined)}>
                 {modelLabel}
@@ -402,7 +465,7 @@ export function ChatTab({
         }
       />
       {showStrip && <ScreenStrip windowId={windowId} screen={screen} strip={strip} onState={acceptScreen} />}
-      {showStrip && <ScreenStripHeading strip={strip} minHeight={overlayInset} />}
+      {showStrip && <ScreenStripHeading strip={strip} minHeight={overlayInset} status={<ActivityStatus screen={screen} running={running} />} />}
       {screen?.unsupported && (
         <div className="cv-banner">This Perch can't read terminal screens, so prompts and the mode aren't shown. Update Perch to answer prompts here.</div>
       )}
@@ -415,6 +478,7 @@ export function ChatTab({
         />
       )}
     </div>
+    </FileLinksContext.Provider>
     </LightboxContext.Provider>
   );
 }

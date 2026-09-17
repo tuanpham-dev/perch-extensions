@@ -16,7 +16,8 @@ import os from "node:os";
 import path from "node:path";
 import { claudeSessionsByWindow } from "./claudePanes.mjs";
 import { listCommands, searchProjectFiles } from "./commands.mjs";
-import { KEYS, bracketedPaste, cursorStepToward, isKeyName, letterKeyFor, nextKeyForOption } from "./keys.mjs";
+import { MAX_PATHS, resolvePaths } from "./paths.mjs";
+import { KEYS, bracketedPaste, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption } from "./keys.mjs";
 import { findSessionFile, freshestSessionFile, projectDirFor, readTranscript, sessionIdOfFile } from "./transcript.mjs";
 import { claudePrograms, createWatcher } from "./watcher.mjs";
 
@@ -225,6 +226,15 @@ export function activate({ router, log, getSettings, host }) {
   //   { windowId, action: { type: "option", n }, expect: { signature } }
   //   { windowId, action: { type: "key", key }, expect?: { signature } }
   //   { windowId, action: { type: "option-key", n, key }, expect: { signature } }
+  //   { windowId, action: { type: "action" }, expect: { signature } }
+  //     presses a multi-select list's Next or Submit button
+  //   { windowId, action: { type: "cursor", n }, expect: { signature } }
+  //     moves the highlight to option n without choosing it (a preview
+  //     prompt shows the highlighted option's preview)
+  //   { windowId, action: { type: "chat" }, expect: { signature } }
+  //     chooses a preview prompt's unnumbered "Chat about this"
+  //   { windowId, action: { type: "notes", text }, expect: { signature } }
+  //     sets a preview prompt's notes
   //     moves the cursor to option n, then presses a letter the footer offers
   //     for the highlighted row (/model's "s to use this session only")
   // An option is only chosen while a fresh read still shows the prompt with
@@ -258,31 +268,93 @@ export function activate({ router, log, getSettings, host }) {
         res.status(409).json({ error: "No prompt on screen", state });
         return;
       }
-      if (state.prompt.numbered !== false) {
-        const key = nextKeyForOption(state.prompt, n);
-        if (!key) {
-          res.status(400).json({ error: "no such option" });
-          return;
+      // One key at a time, re-reading between, until the option is chosen: a
+      // digit or Enter, or "here" for a text field the cursor already sits
+      // in. Arrows first when the cursor is in a text field (a digit would be
+      // typed) or the list is unnumbered.
+      let done = false;
+      for (let step = 0; step < MAX_NAV_STEPS && !done; step++) {
+        if (expected && state.prompt?.signature !== expected) break;
+        const key = state.prompt ? nextKeyForOption(state.prompt, n) : null;
+        if (!key) break;
+        if (key === "here") {
+          done = true;
+          break;
         }
-        await send(windowId, key);
-      } else {
-        // Unnumbered list: one arrow at a time, re-reading between, then
-        // Enter once the cursor sits on the target.
-        let done = false;
-        for (let step = 0; step < MAX_NAV_STEPS && !done; step++) {
-          if (state.prompt?.signature !== expected && expected) break;
-          const key = state.prompt ? nextKeyForOption(state.prompt, n) : null;
-          if (!key) break;
-          await send(windowId, KEYS[key]);
-          if (key === "enter") done = true;
-          await sleep(AFTER_KEY_MS);
-          state = await watcher.refresh(windowId);
-          if (!state) break;
+        await send(windowId, KEYS[key]);
+        if (key === "enter" || /^[1-9]$/.test(key)) done = true;
+        await sleep(AFTER_KEY_MS);
+        state = await watcher.refresh(windowId);
+        if (!state) break;
+      }
+      if (!done) {
+        res.status(409).json({ error: "Could not reach that option", state });
+        return;
+      }
+      res.json({ ok: true, state });
+      return;
+    } else if (action.type === "cursor" || action.type === "chat") {
+      const n = Number(action.n);
+      let done = false;
+      for (let step = 0; step < MAX_NAV_STEPS && state?.prompt; step++) {
+        if (expected && state.prompt.signature !== expected) break;
+        const key = action.type === "chat" ? nextKeyForChat(state.prompt) : cursorStepToward(state.prompt, n);
+        if (!key) break;
+        if (key === "here") {
+          done = true;
+          break;
         }
-        if (!done) {
-          res.status(409).json({ error: "Could not reach that option", state });
-          return;
+        await send(windowId, KEYS[key]);
+        if (key === "enter") {
+          done = true;
+          break;
         }
+        await sleep(AFTER_KEY_MS);
+        state = await watcher.refresh(windowId);
+      }
+      if (!done) {
+        res.status(409).json({ error: action.type === "chat" ? "Could not reach Chat about this" : "Could not reach that option", state });
+        return;
+      }
+    } else if (action.type === "notes") {
+      // n opens the Notes field; what is there is replaced (Ctrl+E to its end,
+      // then a Backspace per character), and Esc closes it, keeping the text.
+      const text = str(action.text).replace(/[\r\n]+/g, " ");
+      for (let step = 0; step < 3 && state?.prompt?.notes && !state.prompt.notes.editing; step++) {
+        await send(windowId, "n");
+        await sleep(AFTER_KEY_MS);
+        state = await watcher.refresh(windowId);
+      }
+      const notes = state?.prompt?.notes;
+      if (!notes?.editing) {
+        res.status(409).json({ error: "Could not open the notes", state });
+        return;
+      }
+      if (notes.text) await send(windowId, KEYS.ctrlE + KEYS.backspace.repeat([...notes.text].length));
+      if (text) {
+        await send(windowId, bracketedPaste(text));
+        await sleep(SETTLE_MS);
+      }
+      await send(windowId, KEYS.esc);
+    } else if (action.type === "action") {
+      // A multi-select list's Next or Submit button: Tab reaches it, Enter
+      // presses it. Done early if the prompt moves on (Tab can switch to the
+      // next question).
+      let done = false;
+      for (let step = 0; step < 4 && state?.prompt?.action; step++) {
+        if (expected && state.prompt.signature !== expected) break;
+        if (state.prompt.action.cursor) {
+          await send(windowId, KEYS.enter);
+          done = true;
+          break;
+        }
+        await send(windowId, KEYS.tab);
+        await sleep(AFTER_KEY_MS);
+        state = await watcher.refresh(windowId);
+      }
+      if (!done) {
+        res.status(409).json({ error: "Could not reach that button", state });
+        return;
       }
     } else if (action.type === "option-key") {
       const n = Number(action.n);
@@ -344,6 +416,39 @@ export function activate({ router, log, getSettings, host }) {
       res.status(400).json({ error: "nothing to send" });
       return;
     }
+    // An answer for a prompt's text field ("Type something", "Tell Claude
+    // what to change"): put the cursor in the field and clear what is already
+    // typed there, so the answer lands in it and replaces rather than appends.
+    if (watcher && req.body?.clearInput === false) {
+      let state = await watcher.refresh(windowId);
+      const entryOf = (s) => s?.prompt?.options.find((o) => o.textEntry) ?? null;
+      const entry = entryOf(state);
+      if (entry) {
+        let reached = false;
+        for (let step = 0; step < MAX_NAV_STEPS && state?.prompt; step++) {
+          const key = nextKeyForOption(state.prompt, entry.n);
+          if (key === "here") {
+            reached = true;
+            break;
+          }
+          if (!key) break;
+          await send(windowId, KEYS[key]);
+          await sleep(AFTER_KEY_MS);
+          state = await watcher.refresh(windowId);
+        }
+        if (!reached) {
+          res.status(409).json({ error: "Could not reach the text field", state });
+          return;
+        }
+        const typed = entryOf(state)?.typed ?? "";
+        if (typed) {
+          // Arrowing into the field leaves its caret at the start: Ctrl+E to
+          // the end, then one Backspace per character.
+          await send(windowId, KEYS.ctrlE + KEYS.backspace.repeat([...typed].length));
+          await sleep(AFTER_KEY_MS);
+        }
+      }
+    }
     // Whatever already sits in the terminal's input box (a draft typed there,
     // or the prompt Claude Code puts back after an interrupt) would be sent
     // together with this message. Clear it first: Ctrl+U deletes one line per
@@ -352,6 +457,13 @@ export function activate({ router, log, getSettings, host }) {
     // above the composer, so a draft can be pulled into the message first.
     if (watcher && req.body?.clearInput !== false) {
       let state = await watcher.refresh(windowId);
+      // A message typed while a prompt is up would land in the prompt: Enter
+      // picks its highlighted option. Only the prompt card's own text field
+      // (clearInput false) types into a prompt.
+      if (state?.prompt) {
+        res.status(409).json({ error: "Answer the prompt first. The message was not sent.", state });
+        return;
+      }
       let last = state?.input?.text ?? "";
       let unchanged = 0;
       for (let i = 0; i < 40 && last && unchanged < 2 && !state?.prompt; i++) {
@@ -365,7 +477,9 @@ export function activate({ router, log, getSettings, host }) {
     }
     await send(windowId, bracketedPaste(full));
     await sleep(SETTLE_MS);
-    await send(windowId, KEYS.enter);
+    // A multi-select text field takes the text without Enter, which would
+    // untick the row the typing just ticked.
+    if (req.body?.submit !== false) await send(windowId, KEYS.enter);
     await sleep(AFTER_KEY_MS);
     res.json({ ok: true, state: watcher ? await watcher.refresh(windowId) : null });
   });
@@ -412,6 +526,19 @@ export function activate({ router, log, getSettings, host }) {
       return;
     }
     res.json({ files: await searchProjectFiles(expandHome(info.cwd), str(req.query.q)) });
+  });
+
+  // Which of the path-shaped strings the tab found in the conversation are
+  // real files, resolved against the session's cwd (sent by the tab, which
+  // knows it from /session) or else the window's: what makes them links.
+  router.post("/resolve-paths", async (req, res) => {
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths.slice(0, MAX_PATHS) : [];
+    let cwd = expandHome(str(req.body?.cwd));
+    if (!cwd) {
+      const info = await windowInfo(host, str(req.body?.windowId));
+      cwd = info ? expandHome(info.cwd) : "";
+    }
+    res.json({ results: await resolvePaths(paths, cwd) });
   });
 
   router.get("/usage", async (_req, res) => {

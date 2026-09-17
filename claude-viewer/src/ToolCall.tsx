@@ -6,6 +6,7 @@ import { useState } from "react";
 import { resultImages as imagesIn, type ChatItem, type ChatModel, type ToolCard } from "./chatModel";
 import { useLightbox } from "./Lightbox";
 import { langFor, TokenLine, useTokens } from "./Highlight";
+import { LinkedText } from "./FileLinks";
 import { CommandLine, CommandOutput, CompactDivider, ImageMessage, TextMessage, ThinkingBlock } from "./Message";
 
 function inputSummary(name: string, input: Record<string, unknown>): string {
@@ -111,7 +112,11 @@ function ToolResult({
           onClick={() => onImageClick(src)}
         />
       ))}
-      {text && <pre>{truncated ? text.slice(0, RESULT_PREVIEW_CHARS) : text}</pre>}
+      {text && (
+        <pre>
+          <LinkedText text={truncated ? text.slice(0, RESULT_PREVIEW_CHARS) : text} />
+        </pre>
+      )}
       {truncated && (
         <button className="link-btn" onClick={() => setExpanded(true)}>
           Show all ({text.length.toLocaleString()} characters)
@@ -169,7 +174,7 @@ function PreviewLines({
     <div className={`tool-preview${className ? ` ${className}` : ""}`}>
       {lines.map((line, i) => (
         <div key={i} className="tool-preview-line">
-          {line}
+          <LinkedText text={line} />
         </div>
       ))}
       {(moreLabel || (hidden ?? 0) > 0) && (
@@ -345,12 +350,27 @@ export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel
 
   return (
     <div className={`tool-card ${statusClass}`}>
-      <button className="tool-header" onClick={() => setOpen(!open)}>
+      {/* Not a <button>: the summary can hold file links, and a link inside a
+          button is neither valid nor reachable by keyboard. */}
+      <div
+        className="tool-header"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+          e.preventDefault();
+          setOpen(!open);
+        }}
+      >
         <span className="tool-chevron">{open ? "▾" : "▸"}</span>
         <span className="tool-name">{card.name}</span>
-        <span className="tool-summary">{summary}</span>
+        <span className="tool-summary">
+          <LinkedText text={summary} />
+        </span>
         {isSubagent && <span className="tool-badge">{card.children.length} steps</span>}
-      </button>
+      </div>
       {!open && <ToolPreview card={card} model={model} onImageClick={lightbox.open} />}
       {open && (
         <div className="tool-body">
@@ -361,7 +381,9 @@ export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel
           ) : card.name === "Write" && typeof card.input.content === "string" ? (
             <DiffView oldStr="" newStr={card.input.content} path={String(card.input.file_path ?? "")} />
           ) : (
-            <pre className="tool-input">{JSON.stringify(card.input, null, 2)}</pre>
+            <pre className="tool-input">
+              <LinkedText text={JSON.stringify(card.input, null, 2)} />
+            </pre>
           )}
           {isSubagent && (
             <div className="subagent-trace">
@@ -371,7 +393,9 @@ export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel
           )}
           {finalReport !== undefined ? (
             <div className="tool-result">
-              <pre>{resultText(finalReport)}</pre>
+              <pre>
+                <LinkedText text={resultText(finalReport)} />
+              </pre>
             </div>
           ) : (
             <ToolResult card={card} onImageClick={lightbox.open} />

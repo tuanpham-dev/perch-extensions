@@ -4,7 +4,7 @@
 // unless the user opened it. It toggles from a heading bar at the bottom of the
 // tab and from an icon in the composer's bottom row (the one to reach when an
 // overlay covers the heading), so the open state lives in useScreenStrip.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { postJson } from "./bridge";
 import type { ScreenState } from "./types";
 
@@ -77,10 +77,10 @@ export function ScreenStripToggle({ strip }: { strip: ScreenStripState }) {
   );
 }
 
-// The bottom bar. minHeight is the height of an app overlay band over the
+// The bottom bar, which also carries Claude's activity (status). minHeight is the height of an app overlay band over the
 // tab's bottom edge: the bar doubles as the spacer that keeps the band off the
 // composer.
-export function ScreenStripHeading({ strip, minHeight }: { strip: ScreenStripState; minHeight: number }) {
+export function ScreenStripHeading({ strip, minHeight, status }: { strip: ScreenStripState; minHeight: number; status?: ReactNode }) {
   return (
     // The whole bar toggles; the button inside keeps it reachable by keyboard.
     // Open points up: the screen opens above the bar.
@@ -89,13 +89,18 @@ export function ScreenStripHeading({ strip, minHeight }: { strip: ScreenStripSta
         className="cv-strip-head-toggle"
         aria-expanded={strip.open}
         aria-controls="cv-strip"
+        aria-label={strip.open ? "Hide the terminal screen" : "Show the terminal screen"}
+        title={strip.open ? "Hide the terminal screen" : "Show the terminal screen and keys"}
         onClick={(e) => {
           e.stopPropagation();
           strip.toggle();
         }}
       >
-        <span aria-hidden="true">{strip.open ? "▴" : "▸"}</span> Terminal screen
+        <span aria-hidden="true">{strip.open ? "▴" : "▸"}</span>
       </button>
+      <span className="cv-strip-head-status" aria-live="polite">
+        {status}
+      </span>
     </div>
   );
 }

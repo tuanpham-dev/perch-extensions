@@ -6,9 +6,10 @@ A Claude Code terminal session as rich chat you can drive from the web. Open it 
 
 - **The conversation**, from Claude Code's own transcript: markdown with syntax-highlighted code (colored by your Perch theme's own token colors, so it matches the editor under Plastic, GitHub or any other theme), collapsible thinking, slash commands and their output, and a divider where the context was compacted.
 - **Tool calls** as cards with a preview of what the terminal would show: a highlighted diff for Edit and Write, output lines for Bash, a count for Read, matches for Grep and Glob, the latest steps of a running subagent, and a thumbnail for screenshots and images. Expand a card for its full input and result.
+- **File paths** in messages, tool cards and output are links, the same ones the terminal makes: only paths that exist, looked up from the session's folder. Click one to open it (at its line, for `file.ts:42`), Shift+click to open its preview (markdown, JSON, CSV and the like), or right-click for Open File, Preview and Copy Path.
 - **Images** open full screen. Step through every image in the conversation with the arrows, the arrow keys or a swipe; zoom with the wheel, a pinch, a double-click or double-tap on the image, or the + and - buttons; drag to pan a zoomed image. It closes from a click on the dark area around the image, the × button, or Esc.
-- **The toolbar**: what Claude is doing right now (with elapsed time and tokens), the context used by the last turn, and an estimated cost at API rates. The terminal button in the tab bar opens the window's own terminal tab. The 5-hour and 7-day plan meters are there too if you turn them on.
-- **The composer**: a message box that grows to 4 lines, with one button inside it that sends, stops Claude while it works, or takes the text already in the terminal's input. The row under it has the attach button and the permission mode (click to cycle, like Shift+Tab) on the left, and the model in use (updated right after a `/model` switch) and a terminal screen button on the right.
+- **What Claude is doing** right now (with elapsed time and tokens), or how long the last turn took, in the Terminal screen bar at the bottom of the tab. The terminal button in the tab bar opens the window's own terminal tab.
+- **The composer**: a message box that grows to 4 lines, with one button inside it that sends, stops Claude while it works, or takes the text already in the terminal's input. The row under it has the attach button and the permission mode (click to cycle, like Shift+Tab) on the left. On the right: a ring for the context used by the last turn and the estimated cost at API rates, two bars for the 5-hour (top) and 7-day (bottom) plan limits if you turn them on, the model in use (updated right after a `/model` switch) and a terminal screen button. Hover the ring or the bars for the exact figures.
 
 ## What you can do without switching to the terminal
 
@@ -19,9 +20,17 @@ A Claude Code terminal session as rich chat you can drive from the web. Open it 
   - AskUserQuestion, with tabs, checkboxes, free-text answers and the review screen
   - numbered pickers such as `/model`, with a button for each key the picker's footer offers for a row (on `/model`, "Use this session only")
 - **Send messages**: several lines at once, `/` for commands and skills, `@` for files in the project, and files pasted, attached or dropped anywhere on the tab (images show as thumbnails; other files are uploaded and their path added to the message). Anything already typed in the terminal's input box shows as the composer's placeholder while it is empty; press Tab or the **Use** button to take it into your message. While Claude is working and the composer is empty, its button is **Stop**, which interrupts the turn like Esc.
-- **Anything else** the terminal shows that has no buttons here, such as `/config`, opens the **Terminal screen** strip by itself (the heading at the bottom of the tab or the terminal screen button in the composer opens it any time): the bottom lines of the terminal with a keypad (arrows, Enter, Esc, Tab, Shift+Tab, Backspace, Ctrl+C and digits).
+- **Anything else** the terminal shows that has no buttons here, such as `/config`, opens the **Terminal screen** strip by itself (the bar at the bottom of the tab, which also shows what Claude is doing, or the terminal screen button in the composer opens it any time): the bottom lines of the terminal with a keypad (arrows, Enter, Esc, Tab, Shift+Tab, Backspace, Ctrl+C and digits).
 
 Every click that answers a prompt is checked against a fresh read of the terminal first. If the terminal has moved on (you answered it there, or Claude cancelled it), nothing is sent and the card updates.
+
+## Keyboard
+
+The keys work as in the terminal:
+
+- **Esc** stops Claude while it works, like the Stop button.
+- **Shift+Tab** cycles the permission mode.
+- While a prompt is showing, the message box is locked (your draft stays) and the keys go to the prompt: **↑/↓** move the highlight, **←/→** and **Tab** switch questions or adjust a setting, **Enter** chooses the highlighted option, **1-9** choose an option by number, **Esc** cancels, and the letters the prompt offers (like **s** on `/model`) work too. Enter on "Type something" opens the answer field. The message box unlocks when the prompt is answered.
 
 ## When Claude is waiting
 
@@ -38,8 +47,8 @@ This works with no tab open: the server watches every Claude window.
 | Poll interval | 1000 ms | How often each Claude window's screen is read, and how often an open tab reads new transcript lines. |
 | Font size | 14 px | Text size of the conversation. |
 | Enter key | Send the message | Or "Start a new line", where Ctrl+Enter (Cmd+Enter on a Mac) sends. Applies to messages and to answers typed in a prompt. |
-| Show context | on | The context used by the last turn and the estimated cost, in the toolbar. |
-| Show usage meters | off | The 5-hour and 7-day plan meters in the toolbar. Agent Usage Monitor already shows them in the status bar. |
+| Show context | on | The context ring and the estimated cost, under the message box. |
+| Show usage meters | off | The 5-hour and 7-day plan bars, under the message box. Agent Usage Monitor already shows them in the status bar. |
 | Push notifications | on | A push when Claude starts waiting on a prompt. |
 | Screen strip lines | 12 | How many terminal lines the Terminal screen strip shows. |
 
@@ -48,6 +57,7 @@ With the app's agent hooks installed (Settings → AI Providers), a prompt shows
 ## Requirements
 
 - A Perch version whose server gives extensions `host.sessions.capture` and `host.notifications.push`. On an older Perch the conversation still shows, but prompts, the mode and the activity line do not.
+- Which question tab is active in a multi-question prompt is read from the terminal's colors, which needs a Perch whose `host.sessions.capture` takes `styles` (and tmux-engine 1.0.2 or later on the tmux backend). Without it the tabs show, just with none marked.
 - Claude Code in a terminal window of the app, on the bundled terminal daemon or the tmux backend (tmux-engine 1.0.1 or later).
 
 ## Limits

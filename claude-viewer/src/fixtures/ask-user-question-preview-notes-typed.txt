@@ -1,0 +1,23 @@
+❯ Use AskUserQuestion to ask me one question: which page layout do I want. Give three options (Sidebar left, Top nav, Two columns), and give EVERY option a 'preview' field with a small ASCII mockup of
+  that layout (5-7 lines). Do nothing else.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Layout
+
+Which page layout do you want?
+
+  1. Sidebar left                 ┌──────────────────────────────────────────┐
+❯ 2. Top nav                      │ ┌──────────────────────────┐             │
+  3. Two columns                  │ │      HEADER / NAV        │             │
+                                  │ ├──────────────────────────┤             │
+                                  │ │        CONTENT           │             │
+                                  │ │                          │             │
+                                  │ └──────────────────────────┘             │
+                                  └──────────────────────────────────────────┘
+
+                                  Notes: dark theme
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · ctrl+g to edit in Nvim · Esc to cancel

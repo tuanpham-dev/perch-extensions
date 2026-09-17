@@ -6,7 +6,7 @@
 // Prices are Anthropic first-party API rates per million tokens (cached from
 // the Claude API reference on 2026-09-16). Cache writes are 1.25x input and
 // cache reads 0.1x input unless a model lists its own read rate. A subscription
-// plan is not billed per token, so the toolbar labels this an estimate.
+// plan is not billed per token, so the tab labels this an estimate.
 
 export type Usage = {
   input_tokens?: number;
@@ -73,7 +73,7 @@ export function createTally(): UsageTally {
   return { seen: new Set(), cost: 0, unpriced: 0, model: null, switchedTo: null, context: null };
 }
 
-// A model id as the toolbar shows it: without the vendor prefix or a release
+// A model id as the composer's bottom row shows it: without the vendor prefix or a release
 // date ("claude-haiku-4-5-20251001" reads "haiku-4-5"). Same rule as Agent
 // Usage Monitor's status bar item.
 export function modelLabel(modelId: string | null | undefined): string {
@@ -142,7 +142,7 @@ export function addToTally(tally: UsageTally, entries: TranscriptEntry[]): void 
 }
 
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
 }

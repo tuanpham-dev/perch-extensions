@@ -1,0 +1,19 @@
+❯ Use AskUserQuestion to ask me one multi-select question: which fruits do I
+  like, options Apple, Banana, Cherry. Do nothing else.
+────────────────────────────────────────────────────────────────────────────────
+←  ☒ Fruits  ✔ Submit  →
+
+Which fruits do you like?
+
+  1. [ ] Apple
+  Crisp and sweet
+  2. [ ] Banana
+  Soft and creamy
+  3. [ ] Cherry
+  Small and tart
+  4. [✔] hello world
+❯    Submit
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Nvim · Esc to cancel

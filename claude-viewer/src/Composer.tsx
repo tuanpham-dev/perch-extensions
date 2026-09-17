@@ -293,7 +293,7 @@ export const Composer = forwardRef<ComposerHandle, {
               written, Use when the terminal's own input has text to take, Send
               otherwise. */}
           {empty && working && onStop ? (
-            <button className="cv-input-action cv-input-stop" onClick={onStop} disabled={disabled} title="Interrupt Claude (Esc)" aria-label="Stop">
+            <button className="cv-input-action cv-input-stop" onClick={onStop} disabled={disabled} title="Stop Claude (Esc)" aria-label="Stop">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20M9 9h6v6H9" />
               </svg>

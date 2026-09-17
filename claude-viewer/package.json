@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Claude Viewer",
-  "description": "A Claude Code terminal session as rich chat you can drive from the web: markdown and highlighted code, tool cards with diffs and screenshots, and every prompt the terminal asks (tool permissions, plan approval, folder trust, questions, pickers like /model) answered with a click. Activity, context and cost in the toolbar, mode and model under the message box, a push notification when Claude is waiting, and a live screen strip with a keypad for anything else. Open it from the Claude icon on a window running Claude.",
+  "description": "A Claude Code terminal session as rich chat you can drive from the web: markdown and highlighted code, tool cards with diffs and screenshots, and every prompt the terminal asks (tool permissions, plan approval, folder trust, questions, pickers like /model) answered with a click. Activity in the terminal screen bar, and mode, model, context, cost and plan limits under the message box, a push notification when Claude is waiting, and a live screen strip with a keypad for anything else. Open it from the Claude icon on a window running Claude.",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
@@ -23,7 +23,7 @@
           "default": 14,
           "minimum": 10,
           "maximum": 24,
-          "description": "Base font size (px) for the conversation: messages, tool cards and code. The toolbar and composer keep their own size."
+          "description": "Base font size (px) for the conversation: messages, tool cards and code. The composer and the bars keep their own size."
         },
         "claudeViewer.enterKey": {
           "type": "string",
@@ -36,12 +36,12 @@
         "claudeViewer.showUsageMeters": {
           "type": "boolean",
           "default": false,
-          "description": "Show the 5-hour and 7-day plan usage meters in the toolbar. Off by default because Agent Usage Monitor already shows them in the status bar."
+          "description": "Show the 5-hour and 7-day plan usage meters under the message box. Off by default because Agent Usage Monitor already shows them in the status bar."
         },
         "claudeViewer.showContext": {
           "type": "boolean",
           "default": true,
-          "description": "Show the context used by the last turn and the estimated cost in the toolbar."
+          "description": "Show the context used by the last turn and the estimated cost under the message box."
         },
         "claudeViewer.pushNotifications": {
           "type": "boolean",

@@ -106,44 +106,17 @@
   padding: 2px 0;
 }
 
-/* ---- toolbar ---- */
-.cv-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 12px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--cv-border);
-  background: var(--cv-panel);
-  flex-shrink: 0;
-}
-.cv-toolbar-left,
-.cv-toolbar-right {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  min-width: 0;
-}
-.cv-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 12px;
-  border: 1px solid var(--cv-border);
-  font-size: 12px;
-  white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.cv-activity { color: var(--cv-dim); }
-.cv-activity-working { color: var(--cv-warn); }
-.cv-activity-waiting { color: var(--cv-attn); border-color: color-mix(in srgb, var(--cv-attn) 50%, var(--cv-border)); }
-.cv-closed, .cv-stale { color: var(--cv-dim); border-style: dashed; }
+/* The tab takes focus while a prompt holds the keyboard; the prompt card is
+   what shows it. */
+.claude-viewer.cv-root:focus { outline: none; }
+
+/* ---- status ---- */
+/* Claude's activity, in the terminal screen bar. */
+.cv-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--cv-dim); font-size: 12px; white-space: nowrap; }
+.cv-status-text { overflow: hidden; text-overflow: ellipsis; }
+.cv-status-working { color: var(--cv-warn); }
+.cv-status-waiting { color: var(--cv-attn); }
+.cv-status-stale { font-style: italic; }
 .cv-spinner {
   width: 8px;
   height: 8px;
@@ -159,23 +132,21 @@
 @media (prefers-reduced-motion: reduce) {
   .cv-spinner { animation: none; }
 }
-.cv-stat {
-  font-size: 12px;
-  color: var(--cv-dim);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.cv-meters { display: flex; gap: 8px; }
-.cv-meter { display: flex; flex-direction: column; gap: 2px; width: 70px; font-size: 11px; color: var(--cv-dim); }
-.cv-meter-row { display: flex; justify-content: space-between; }
-.cv-meter-value { color: var(--cv-text); font-variant-numeric: tabular-nums; }
-/* The empty part of a meter, mixed from the text color so it stands out from
-   the toolbar on light themes as well as dark ones. */
-.cv-meter-track { height: 3px; background: color-mix(in srgb, var(--cv-text) 18%, var(--cv-panel)); border-radius: 2px; overflow: hidden; }
-.cv-meter-fill { height: 100%; }
-.cv-meter-ok { background: var(--cv-ok); }
-.cv-meter-warn { background: var(--cv-warn); }
-.cv-meter-crit { background: var(--cv-err); }
+/* Context, cost and plan limits in the composer's bottom row: a ring, the
+   cost, and two stacked bars (5-hour over 7-day). Figures are in tooltips. */
+.cv-usage { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 12px; color: var(--cv-dim); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+.cv-ring { flex-shrink: 0; }
+.cv-ring circle { fill: none; stroke-width: 2.5; }
+/* The empty parts, mixed from the text color so they show on light themes as
+   well as dark ones. */
+.cv-ring-track { stroke: color-mix(in srgb, var(--cv-text) 18%, transparent); }
+.cv-ring-fill { stroke: currentColor; stroke-linecap: round; }
+.cv-limits { display: inline-flex; flex-direction: column; justify-content: center; gap: 3px; height: 22px; padding: 0 6px; cursor: default; }
+.cv-limit-track { display: block; width: 28px; height: 3px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--cv-text) 18%, transparent); }
+.cv-limit-fill { display: block; height: 100%; background: currentColor; }
+.cv-level-ok { color: var(--cv-ok); }
+.cv-level-warn { color: var(--cv-warn); }
+.cv-level-crit { color: var(--cv-err); }
 
 /* ---- conversation ---- */
 .claude-viewer .chat-messages {
@@ -212,6 +183,11 @@
 .claude-viewer .markdown ul,
 .claude-viewer .markdown ol { padding-left: 1.4em; margin: 0 0 0.6em; }
 .claude-viewer .markdown a { color: var(--cv-accent); }
+/* Links LinkedText adds (file paths and URLs in messages, tool cards and
+   output) look like the markdown links above wherever they appear, including
+   in dimmed tool output. */
+.claude-viewer a.cv-link { color: var(--cv-accent); }
+.claude-viewer a.cv-link:focus-visible { outline: 1px solid var(--cv-accent); outline-offset: 1px; }
 .claude-viewer .markdown hr { border: none; border-top: 1px solid var(--cv-border); margin: 0.9em 0; }
 .claude-viewer .markdown blockquote { margin: 0 0 0.6em; padding-left: 10px; border-left: 3px solid var(--cv-border); color: var(--cv-dim); }
 .claude-viewer .markdown code { font-family: var(--cv-mono); font-size: 0.92em; }
@@ -303,6 +279,7 @@
   min-width: 0;
 }
 .claude-viewer .tool-header:hover { background: var(--hover); }
+.claude-viewer .tool-header:focus-visible { outline: 1px solid var(--cv-accent); outline-offset: -1px; }
 .claude-viewer .tool-chevron { color: var(--cv-dim); flex-shrink: 0; width: 10px; }
 .claude-viewer .tool-name { font-family: var(--cv-mono); font-weight: 600; font-size: calc(var(--cv-font-size) - 1px); flex-shrink: 0; }
 .claude-viewer .tool-running .tool-name { color: var(--cv-warn); }
@@ -475,6 +452,8 @@
 /* ---- prompt card ---- */
 .cv-prompt {
   flex-shrink: 0;
+  /* Lets a question with previews stack its columns when the tab is narrow. */
+  container-type: inline-size;
   max-height: 60%;
   overflow-y: auto;
   margin: 0 12px 8px;
@@ -521,9 +500,13 @@
 }
 .cv-prompt-note { font-size: 12px; color: var(--cv-dim); font-style: italic; margin-bottom: 6px; }
 .cv-prompt-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.cv-tab { font-size: 12px; border: 1px solid var(--cv-border); border-radius: 10px; padding: 1px 8px; color: var(--cv-dim); }
+.cv-tab { font: inherit; font-size: 12px; background: none; border: 1px solid var(--cv-border); border-radius: 10px; padding: 1px 8px; color: var(--cv-dim); cursor: pointer; }
+.cv-tab:disabled { cursor: default; }
+.cv-tab:hover:not(:disabled) { border-color: var(--cv-accent); color: var(--cv-text); }
 .cv-tab-done { color: var(--cv-ok); }
 .cv-tab-submit { border-style: dashed; }
+/* The question on screen: filled, so it reads as the current step. */
+.cv-tab.cv-tab-active { background: var(--cv-accent); border-color: var(--cv-accent); border-style: solid; color: var(--button-fg, #fff); font-weight: 600; }
 .cv-tab-nav {
   background: none;
   border: 1px solid var(--cv-border);
@@ -577,7 +560,49 @@
 .cv-option-label { color: var(--cv-strong); }
 .cv-option-mark { color: var(--cv-ok); font-size: 12px; }
 .cv-option-desc { color: var(--cv-dim); font-size: 12px; }
+/* What is already typed in a "Type something" field. */
+.cv-option-typed { color: var(--cv-text); white-space: pre-wrap; }
 .cv-prompt-text { display: flex; flex-direction: column; gap: 6px; }
+
+/* A question with previews: options beside the highlighted one's preview,
+   stacked when the tab is narrow. */
+.cv-preview-layout { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 10px; align-items: start; }
+@container (max-width: 560px) {
+  .cv-preview-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.cv-preview-options { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cv-option-compact { padding-top: 6px; padding-bottom: 6px; }
+.cv-option-chat { border-style: dashed; }
+.cv-option-chat .cv-option-label { color: var(--cv-dim); }
+.cv-preview-pane { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cv-preview-name { font-size: 12px; color: var(--cv-dim); }
+.cv-preview-box {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  background: var(--cv-input);
+  border: 1px solid var(--cv-border);
+  border-radius: 6px;
+  font-family: var(--cv-mono);
+  font-size: 12px;
+  /* Tight enough that box-drawing verticals meet from row to row. */
+  line-height: 1.15;
+  white-space: pre;
+}
+.cv-preview-notes { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--cv-dim); }
+.cv-preview-notes input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--cv-input);
+  border: 1px solid var(--cv-input-border);
+  border-radius: 6px;
+  color: var(--cv-text);
+  font: inherit;
+  font-size: 13px;
+}
+.cv-preview-notes input:focus { outline: none; border-color: var(--cv-accent); }
 .cv-prompt-text textarea,
 .cv-composer textarea {
   width: 100%;
@@ -757,11 +782,12 @@
 /* The bar at the very bottom. Also the tab's spacer for an app overlay band
    (one-hand's gesture strip): it grows to the band's height, so the band
    covers it instead of the composer. */
-.cv-strip-head { flex-shrink: 0; display: flex; align-items: flex-start; padding: 0 12px; min-height: 26px; border-top: 1px solid var(--cv-border); background: var(--cv-panel); cursor: pointer; user-select: none; }
+.cv-strip-head { flex-shrink: 0; display: flex; align-items: flex-start; gap: 6px; padding: 0 12px; min-height: 26px; border-top: 1px solid var(--cv-border); background: var(--cv-panel); cursor: pointer; user-select: none; }
 .cv-strip-head:hover { background: var(--hover); }
-.cv-strip-head-toggle { height: 26px; background: none; border: none; cursor: pointer; color: var(--cv-dim); font-size: 12px; padding: 0; }
+.cv-strip-head-toggle { height: 26px; flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--cv-dim); font-size: 12px; padding: 0; }
 .cv-strip-head-toggle:hover { color: var(--cv-text); }
 .cv-strip-head-attn .cv-strip-head-toggle { color: var(--cv-attn); }
+.cv-strip-head-status { display: flex; align-items: center; height: 26px; min-width: 0; }
 .cv-strip-screen {
   margin: 0 12px;
   max-height: 260px;
@@ -798,8 +824,6 @@
   .claude-viewer .cv-command { max-width: 92%; }
   .claude-viewer .msg-image { max-width: 100%; }
   .claude-viewer .tool-preview { margin-left: 12px; }
-  .cv-toolbar { padding: 5px 10px; }
-  .cv-toolbar-right { width: 100%; justify-content: space-between; }
   .cv-prompt { margin: 0 8px 6px; max-height: 70%; }
   .cv-composer { padding: 6px 8px 2px; }
   .cv-strip-screen { margin: 0 8px; }

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { parseLetterKeys, parseScreen, promptSignature } from "../screen.mjs";
+import { activeTabIn, parseLetterKeys, parseScreen, promptSignature, stripStyles } from "../screen.mjs";
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}.txt`, import.meta.url), "utf8");
 const parse = (name: string) => parseScreen(fixture(name));
@@ -115,6 +115,100 @@ test("multi-question AskUserQuestion with checkboxes and tabs", () => {
   );
   assert.equal(p.options[0].label, "Apple");
   assert.equal(p.options[0].checked, false);
+});
+
+test("the Type something row is a text field, found by position, with what was typed kept apart", () => {
+  const blank = parse("ask-user-question-single").prompt;
+  assert.equal(blank.options[3].textEntry, true);
+  assert.equal(blank.options[3].typed, "");
+  assert.equal(blank.options[4].textEntry, undefined);
+
+  const typed = parse("ask-user-question-typed").prompt;
+  assert.equal(typed.options[3].label, "Type something");
+  assert.equal(typed.options[3].typed, "hello world");
+  assert.equal(typed.options[3].cursor, true);
+  assert.equal(parse("ask-user-question-typed-away").prompt.options[3].typed, "hello world");
+  // Typing doesn't make it a different prompt.
+  assert.equal(typed.signature, parse("ask-user-question-typed-away").prompt.signature);
+});
+
+test("a multi-select list's Next or Submit row is its button, not a description", () => {
+  const multi = parse("ask-user-question-multi-typed").prompt;
+  assert.equal(multi.options[3].typed, "hello world");
+  assert.equal(multi.options[3].checked, true);
+  assert.equal(multi.options[3].description, null);
+  assert.deepEqual(multi.action, { label: "Submit", cursor: false });
+  assert.deepEqual(parse("ask-user-question-multi-submit").prompt.action, { label: "Submit", cursor: true });
+  assert.equal(parse("ask-user-question-multi").prompt.action.label, "Next");
+});
+
+test("the active question tab is the one the terminal highlights", () => {
+  const first = parse("ask-user-question-tabs-styled").prompt;
+  assert.deepEqual(first.tabs.map((t: { label: string }) => t.label), ["Color", "Fruit", "Season", "Submit"]);
+  assert.equal(first.activeTab, 0);
+  assert.equal(first.question, "What is your favorite color?");
+  assert.equal(first.options[0].label, "Red");
+  assert.equal(parse("ask-user-question-tabs-styled-second").prompt.activeTab, 1);
+  // Plain text has no highlight to read.
+  assert.equal(parseScreen(stripStyles(fixture("ask-user-question-tabs-styled"))).prompt.activeTab, null);
+  assert.equal(parse("ask-user-question-multi").prompt.activeTab, null);
+});
+
+test("a styled capture reads the same as the plain one", () => {
+  const styled = parse("ask-user-question-tabs-styled");
+  const plain = parseScreen(stripStyles(fixture("ask-user-question-tabs-styled")));
+  assert.equal(styled.tail, plain.tail);
+  assert.equal(styled.prompt.signature, plain.prompt.signature);
+});
+
+test("a background or inverse marks the active tab, a foreground color doesn't", () => {
+  const tabs = [{ label: "One" }, { label: "Two" }];
+  assert.equal(activeTabIn("\x1b[0;38;5;44m☐ One\x1b[0m  \x1b[0;7m☐ Two\x1b[0m", tabs), 1);
+  assert.equal(activeTabIn("\x1b[0;44m☐ One\x1b[0m  ☐ Two", tabs), 0);
+  assert.equal(activeTabIn("\x1b[0;38;5;44m☐ One\x1b[0m  ☐ Two", tabs), null);
+  assert.equal(activeTabIn("\x1b[0;7m☐ One  ☐ Two\x1b[0m", tabs), null);
+  // tmux's form: one attribute per escape, cleared with 49.
+  assert.equal(activeTabIn("\x1b[48;5;153m\x1b[38;5;16m ☐ One \x1b[39m\x1b[49m  ☐ Two", tabs), 0);
+  assert.equal(activeTabIn("☐ One  \x1b[1m\x1b[44m☐ Two\x1b[49m", tabs), 1);
+});
+
+test("a question with previews: options, the highlighted preview, notes and Chat about this", () => {
+  const p = parse("ask-user-question-preview").prompt;
+  assert.equal(p.kind, "question");
+  assert.equal(p.question, "Which page layout do you want?");
+  assert.deepEqual(p.options.map((o: { label: string }) => o.label), ["Sidebar left", "Top nav", "Two columns"]);
+  assert.deepEqual(p.options.map((o: { description: string | null }) => o.description), [null, null, null]);
+  assert.equal(p.options[1].cursor, true);
+  assert.deepEqual(p.preview.lines, [
+    "┌──────────────────────────┐",
+    "│      HEADER / NAV        │",
+    "├──────────────────────────┤",
+    "│        CONTENT           │",
+    "│                          │",
+    "└──────────────────────────┘",
+  ]);
+  assert.deepEqual(p.notes, { text: "", editing: false });
+  assert.deepEqual(p.chat, { cursor: false });
+  assert.equal(p.options.some((o: { textEntry?: boolean }) => o.textEntry), false);
+
+  assert.deepEqual(parse("ask-user-question-preview-notes").prompt.notes, { text: "", editing: true });
+  assert.deepEqual(parse("ask-user-question-preview-notes-typed").prompt.notes, { text: "dark theme", editing: true });
+  const third = parse("ask-user-question-preview-third").prompt;
+  assert.deepEqual(third.notes, { text: "dark theme", editing: false });
+  assert.equal(third.preview.lines[1], "│  COLUMN 1   │  COLUMN 2  │");
+  assert.equal(parse("ask-user-question-preview-chat").prompt.chat.cursor, true);
+  // Moving the highlight changes the preview, not the prompt.
+  assert.equal(p.signature, third.signature);
+});
+
+test("a preview the terminal had to cut short says how much is hidden", () => {
+  const cut = fixture("ask-user-question-preview").replace(
+    /│ │      HEADER \/ NAV        │             │\n.*\n.*\n.*\n/,
+    "├─── ✂ ─── 4 lines hidden ─────────────────┤\n",
+  );
+  const p = parseScreen(cut).prompt;
+  assert.equal(p.preview.hidden, 4);
+  assert.ok(p.preview.lines.includes("… 4 more lines"));
 });
 
 test("AskUserQuestion review screen", () => {

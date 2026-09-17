@@ -13,6 +13,7 @@ export const KEYS = Object.freeze({
   shiftTab: "\x1b[Z",
   ctrlC: "\x03",
   ctrlU: "\x15",
+  ctrlE: "\x05",
   backspace: "\x7f",
   1: "1",
   2: "2",
@@ -39,6 +40,10 @@ export function bracketedPaste(text) {
 // when it is already there, or null when the option or the cursor isn't on
 // screen. The caller re-reads the screen between steps.
 export function cursorStepToward(prompt, n) {
+  // A preview prompt's Notes field takes keys while open, and its unnumbered
+  // "Chat about this" row sits below the options: leave either first.
+  if (prompt.notes?.editing) return "esc";
+  if (prompt.chat?.cursor) return "up";
   const goal = prompt.options.findIndex((o) => o.n === n);
   const cursor = prompt.options.findIndex((o) => o.cursor);
   if (goal === -1 || cursor === -1) return null;
@@ -46,15 +51,32 @@ export function cursorStepToward(prompt, n) {
   return goal > cursor ? "down" : "up";
 }
 
-// The keys that choose option `n` of a prompt. A numbered picker takes the
-// digit. An unnumbered list (the folder trust prompt) moves the cursor one row
-// at a time and presses Enter once it is on the target, so this returns just
-// the next move, or "enter" when the cursor is already there.
+// The next key toward choosing option `n` of a prompt; the caller sends it,
+// re-reads the screen and asks again until it gets a digit, "enter" or "here".
+// A numbered picker takes the digit. An unnumbered list (the folder trust
+// prompt) moves the cursor one row at a time, then Enter.
+//
+// A text-entry option (screen.mjs markTextEntry) types every key while the
+// cursor is on it, digits included. So with the cursor there, another option
+// first needs an arrow to leave it, and the option itself needs nothing more:
+// "here". Its digit moves the cursor in only when the field is empty in a
+// single-select list: with text typed the digit submits that text as the
+// answer, and in a multi-select list it only ticks the row's box. Otherwise
+// the field is reached with arrows.
 export function nextKeyForOption(prompt, n) {
   const target = prompt.options.find((o) => o.n === n);
   if (!target) return null;
   if (prompt.numbered !== false) {
     if (n < 1 || n > 9) return null;
+    if (prompt.notes?.editing) return "esc";
+    if (prompt.chat?.cursor) return "up";
+    const cursor = prompt.options.find((o) => o.cursor);
+    if (target.textEntry) {
+      if (cursor === target) return "here";
+      if (prompt.multiSelect || target.typed) return cursorStepToward(prompt, n);
+      return String(n);
+    }
+    if (cursor?.textEntry) return "up";
     return String(n);
   }
   const step = cursorStepToward(prompt, n);
@@ -66,4 +88,12 @@ export function nextKeyForOption(prompt, n) {
 export function letterKeyFor(prompt, key) {
   const k = String(key ?? "").toLowerCase();
   return /^[a-z]$/.test(k) && (prompt.letterKeys ?? []).some((l) => l.key === k) ? k : null;
+}
+
+// The next key toward a preview prompt's "Chat about this" row, then Enter on
+// it: that row has no number, so it is reached with arrows.
+export function nextKeyForChat(prompt) {
+  if (!prompt.chat) return null;
+  if (prompt.notes?.editing) return "esc";
+  return prompt.chat.cursor ? "enter" : "down";
 }

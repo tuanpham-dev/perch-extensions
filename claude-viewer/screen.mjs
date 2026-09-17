@@ -49,6 +49,69 @@ function isBlank(line) {
   return line.trim() === "";
 }
 
+// SGR escapes, as host.sessions.capture({ styles: true }) keeps them.
+const SGR_RE = /\x1b\[[0-9;]*m/g;
+
+export function stripStyles(text) {
+  return String(text ?? "").replace(SGR_RE, "");
+}
+
+// A styled row as code points, each marked with whether it is highlighted: a
+// background color or inverse video in effect, which is how a TUI marks the
+// current item. Escapes apply cumulatively, as a terminal applies them: the
+// daemon resets before every change, tmux sets one attribute at a time and
+// clears with 49 and 27.
+function styledChars(line) {
+  const chars = [];
+  let background = false;
+  let inverse = false;
+  let at = 0;
+  const apply = (params) => {
+    const p = params === "" ? [0] : params.split(";").map(Number);
+    for (let i = 0; i < p.length; i++) {
+      const n = p[i];
+      if (n === 0) background = inverse = false;
+      else if (n === 7) inverse = true;
+      else if (n === 27) inverse = false;
+      else if ((n >= 40 && n <= 47) || (n >= 100 && n <= 107)) background = true;
+      else if (n === 49) background = false;
+      else if (n === 38 || n === 48) {
+        if (n === 48) background = true;
+        i += p[i + 1] === 2 ? 4 : 2;
+      }
+    }
+  };
+  for (const m of line.matchAll(SGR_RE)) {
+    for (const ch of line.slice(at, m.index)) chars.push({ ch, lit: background || inverse });
+    apply(m[0].slice(2, -1));
+    at = m.index + m[0].length;
+  }
+  for (const ch of line.slice(at)) chars.push({ ch, lit: background || inverse });
+  return chars;
+}
+
+// AskUserQuestion's active tab, which the terminal tells apart by color alone:
+// the one tab whose label is highlighted. Null without styles or when that
+// isn't exactly one tab.
+export function activeTabIn(styledLine, tabs) {
+  if (!styledLine || !tabs || !styledLine.includes("\x1b[")) return null;
+  const chars = styledChars(styledLine);
+  const plain = chars.map((c) => c.ch);
+  let from = 0;
+  const lit = [];
+  tabs.forEach((tab, i) => {
+    const label = [...tab.label];
+    for (let at = from; at + label.length <= plain.length; at++) {
+      if (label.every((ch, k) => plain[at + k] === ch)) {
+        if (chars[at].lit) lit.push(i);
+        from = at + label.length;
+        return;
+      }
+    }
+  });
+  return lit.length === 1 ? lit[0] : null;
+}
+
 export function toLines(text) {
   const lines = String(text ?? "")
     .replace(/\r/g, "")
@@ -200,11 +263,15 @@ function readNumbered(lines, footerIdx) {
       if (n === 1) break;
       continue;
     }
-    // Continuation and description lines, blanks and a rule may sit between
-    // rows; anything longer than that is not an option list.
-    if (++gap > 8) break;
+    // Continuation and description lines and a rule may sit between rows;
+    // anything longer than that is not an option list. Blank lines don't
+    // count: a preview box lifted off the screen leaves a run of them.
+    if (!isBlank(lines[i]) && ++gap > 8) break;
   }
   if (rows.length === 0) return null;
+  // A multi-select AskUserQuestion ends its list with an unnumbered button
+  // row ("Next", or "Submit" on the last question), reached with Tab.
+  let action = null;
   const options = rows.map((row, k) => {
     const nextIndex = k + 1 < rows.length ? rows[k + 1].index : footerIdx;
     const { label, checked } = cleanOption(row.text);
@@ -218,6 +285,11 @@ function readNumbered(lines, footerIdx) {
       // Scroll hints of a list taller than the screen ("… +1 model",
       // "↓ 3 more below") are not part of any option.
       if (/^(…\s*\+\d+|[↑↓]\s*\d+\s+more)/.test(t)) continue;
+      const button = /^(❯\s+)?(Next|Submit)$/.exec(t);
+      if (button) {
+        action = { label: button[2], cursor: Boolean(button[1]) };
+        continue;
+      }
       const hardWrap = prevFull;
       prevFull = width > 0 && [...l].length >= width;
       const continues =
@@ -240,7 +312,35 @@ function readNumbered(lines, footerIdx) {
     if (current) full = full.replace(/\s✔$/, "");
     return { n: row.n, label: full, description: description.join(" ") || null, cursor: row.cursor, checked, current };
   });
-  return { options, top: rows[0].index, numbered: true };
+  return { options, top: rows[0].index, numbered: true, action };
+}
+
+// The option that is a text field in the terminal: AskUserQuestion's "Type
+// something" (the row just above "Chat about this") and a plan's "Tell Claude
+// what to change" (its last row). With the cursor on it, keys type into it,
+// digits included, and what is typed replaces its label on screen. So it is
+// found by position, keeps its placeholder as its label (and in the
+// signature), and carries the typed text separately.
+const TEXT_PLACEHOLDER = { question: "Type something", plan: "Tell Claude what to change" };
+
+function markTextEntry(kind, options) {
+  let entry = null;
+  if (kind === "question") {
+    const chat = options.find((o) => /^Chat about this$/i.test(o.label));
+    entry = chat ? options.find((o) => o.n === chat.n - 1) : options.find((o) => /^Type something/i.test(o.label));
+  } else if (kind === "plan") {
+    entry = options[options.length - 1];
+  }
+  if (!entry || entry.n === 1) return;
+  const placeholder = TEXT_PLACEHOLDER[kind];
+  const typed = entry.label.toLowerCase().startsWith(placeholder.toLowerCase()) ? "" : entry.label;
+  if (typed) {
+    // A long answer wraps into what the reader took as a description.
+    entry.label = placeholder;
+    entry.description = entry.description && kind === "question" ? null : entry.description;
+  }
+  entry.textEntry = true;
+  entry.typed = typed;
 }
 
 // The trust prompt's shape: one ❯ row, sibling rows aligned with its text,
@@ -324,6 +424,7 @@ function readReview(lines) {
   return {
     kind: "question",
     review: true,
+    tabRow: tabs ? rule + 1 : null,
     title: "Review your answers",
     question: "Ready to submit your answers?",
     body: [],
@@ -368,12 +469,85 @@ function classify({ footer, title, question, body, options, tabs }) {
   return "generic";
 }
 
+// AskUserQuestion with previews draws the highlighted option's preview in a
+// box to the right of the options, a "Notes:" line under the box, and an
+// unnumbered "Chat about this" row. Each is lifted out of the screen (its
+// cells blanked, so row numbers stay put) before the options are read, and
+// returned on its own.
+function extractPreviewLayout(lines, footerIdx) {
+  let bottom = -1;
+  let col = -1;
+  for (let i = footerIdx - 1; i >= 0 && i >= footerIdx - 12; i--) {
+    const m = /└─+┘$/.exec(lines[i]);
+    if (m) {
+      bottom = i;
+      col = m.index;
+      break;
+    }
+  }
+  if (bottom === -1) return null;
+  let top = -1;
+  for (let i = bottom - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.indexOf("┌", col) === col && /^┌─+┐$/.test(line.slice(col))) {
+      top = i;
+      break;
+    }
+    if (!/^[│├]/.test(line.slice(col))) return null;
+  }
+  if (top === -1) return null;
+
+  const out = lines.slice();
+  const blankFrom = (i) => {
+    out[i] = out[i].slice(0, col).replace(/\s+$/, "");
+  };
+  const previewLines = [];
+  let hidden = 0;
+  for (let i = top; i <= bottom; i++) {
+    const cell = lines[i].slice(col);
+    blankFrom(i);
+    if (i === top || i === bottom) continue;
+    const cut = /✂\D*(\d+)\s+lines? hidden/.exec(cell);
+    if (cut) {
+      hidden = Number(cut[1]);
+      previewLines.push(null);
+      continue;
+    }
+    previewLines.push(cell.replace(/^│ ?/, "").replace(/ ?│$/, "").replace(/\s+$/, ""));
+  }
+  const preview = { lines: previewLines.map((l) => l ?? `… ${hidden} more lines`), hidden };
+
+  let notes = null;
+  let chat = null;
+  for (let i = bottom + 1; i < footerIdx; i++) {
+    const m = /^Notes:\s*(.*)$/.exec(lines[i].slice(col).trim());
+    if (m && lines[i].slice(0, col).trim() === "") {
+      const text = m[1];
+      notes = /^press n to add notes$/i.test(text) || /^Add notes on this design…?$/i.test(text) ? { text: "" } : { text };
+      out[i] = "";
+      continue;
+    }
+    const c = /^(❯)?\s*Chat about this$/.exec(lines[i].trim());
+    if (c) {
+      chat = { cursor: Boolean(c[1]) };
+      out[i] = "";
+    }
+  }
+  return { lines: out, preview, notes, chat };
+}
+
 export function parsePrompt(lines) {
   const review = readReview(lines);
   if (review) return review;
   const footerIdx = findFooter(lines);
   if (footerIdx === -1) return null;
   const footer = lines[footerIdx].trim();
+  const layout = extractPreviewLayout(lines, footerIdx);
+  if (layout) {
+    lines = layout.lines;
+    // In the Notes field, keys type; the footer then offers Nvim for it.
+    if (layout.notes) layout.notes.editing = /ctrl\+g to edit/.test(footer);
+  }
   // Unnumbered lists are only trusted in confirm dialogs (the folder trust
   // prompt). Anything else unnumbered, like /config's settings list, stays
   // unmodeled: choosing there means arrows plus Enter on a list whose rows
@@ -386,9 +560,13 @@ export function parsePrompt(lines) {
   const rule = topRuleAbove(lines, read.top - 1);
   const header = lines.slice(rule + 1, read.top).filter((l) => !isBlank(l) && !DASHED_RE.test(l));
   let tabs = null;
+  let tabRow = null;
   if (header.length > 0) {
     tabs = parseTabs(header[0]);
-    if (tabs) header.shift();
+    if (tabs) {
+      tabRow = lines.indexOf(header[0], rule + 1);
+      header.shift();
+    }
   }
   // Rejoin text the terminal wrapped: a line that doesn't end a sentence,
   // followed by one that starts lowercase (or continues a word or path that
@@ -431,7 +609,8 @@ export function parsePrompt(lines) {
     if (question && t === question) continue;
     bodyLines.push(l.replace(/^ /, ""));
   }
-  const kind = classify({ footer, title, question, body: bodyLines, options: read.options, tabs });
+  const kind = layout?.chat && /Enter to select/.test(footer) ? "question" : classify({ footer, title, question, body: bodyLines, options: read.options, tabs });
+  markTextEntry(kind, read.options);
   const plan = kind === "plan" && rule >= 0 ? planBodyAbove(lines, rule) : null;
   return {
     kind,
@@ -445,6 +624,11 @@ export function parsePrompt(lines) {
     options: read.options,
     numbered: read.numbered,
     multiSelect: read.options.some((o) => o.checked !== null),
+    action: read.action ?? null,
+    preview: layout?.preview ?? null,
+    notes: layout?.notes ?? null,
+    chat: layout?.chat ?? null,
+    tabRow,
     footer,
     letterKeys: parseLetterKeys(footer),
   };
@@ -452,14 +636,21 @@ export function parsePrompt(lines) {
 
 // The whole screen. `stripLines` sets how many bottom lines `tail` carries for
 // the screen strip.
+// A capture taken with styles is read as plain text; the styles only pick out
+// what color alone marks (the active question tab).
 export function parseScreen(text, { stripLines = 12 } = {}) {
-  const lines = toLines(text);
+  const styled = String(text ?? "").includes("\x1b[") ? toLines(text) : null;
+  const lines = toLines(stripStyles(text));
   const mode = parseModeFooter(lines);
   const input = findInputBox(lines);
   const activity = parseActivity(lines, input?.top);
   const parsed = input ? null : parsePrompt(lines);
   const prompt = parsed && !parsed.unreadable ? { ...parsed, signature: "" } : null;
-  if (prompt) prompt.signature = promptSignature(prompt);
+  if (prompt) {
+    prompt.signature = promptSignature(prompt);
+    prompt.activeTab = prompt.tabRow !== null && prompt.tabRow !== undefined ? activeTabIn(styled?.[prompt.tabRow], prompt.tabs) : null;
+    delete prompt.tabRow;
+  }
   const unmodeled = !prompt && !input;
   // A fingerprint of the conversation above the input box. Claude Code shows
   // no spinner while it streams a text reply, so the watcher reads "that area

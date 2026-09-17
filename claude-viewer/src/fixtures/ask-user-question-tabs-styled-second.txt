@@ -1,0 +1,23 @@
+[0;38;5;231m●[0m I'm already running on Haiku 4.5. What would you like me to do?
+
+[0;38;5;246m✻[0m [0;38;5;246mChurned for 5s · done 9:25[0m
+
+[0;38;5;239;48;5;237m❯ [0;38;5;231;48;5;237mUse AskUserQuestion once with three questions: favorite color (Red, Green, [0;48;5;237m   [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mBlue), favorite fruit (Apple, Banana, Cherry), favorite season (Summer, [0;48;5;237m      [0m
+[0;48;5;237m  [0;38;5;231;48;5;237mWinter). Do nothing else.[0;48;5;237m                                                     [0m
+[0;38;5;246m────────────────────────────────────────────────────────────────────────────────[0m
+←  ☐ Color [0;38;5;16;48;5;153m ☐ Fruit [0m ☐ Season  ✔ Submit  →
+
+[0;1;38;5;231mWhat is your favorite fruit?[0m
+
+[0;38;5;153m❯[0m [0;38;5;246m1.[0m [0;38;5;153mApple[0m
+     [0;38;5;246mCrisp and sweet[0m
+  [0;38;5;246m2.[0m Banana
+     [0;38;5;246mCreamy and energizing[0m
+  [0;38;5;246m3.[0m Cherry
+     [0;38;5;246mSmall and tart[0m
+  [0;38;5;246m4.[0m [0;38;5;246mType[0m [0;38;5;246msomething.[0m
+[0;38;5;246m────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0;38;5;246mEnter[0m [0;38;5;246mto[0m [0;38;5;246mselect[0m [0;38;5;246m·[0m [0;38;5;246mTab/Arrow[0m [0;38;5;246mkeys[0m [0;38;5;246mto[0m [0;38;5;246mnavigate[0m [0;38;5;246m·[0m [0;38;5;246mEsc[0m [0;38;5;246mto[0m [0;38;5;246mcancel[0m

@@ -1,8 +1,9 @@
-// The bar above the conversation: what Claude is doing, context and estimated
-// cost (unless turned off), and the optional plan usage meters. The permission
-// mode and the model sit in the composer's bottom row.
+// What the tab shows about the session outside the conversation: Claude's
+// activity, in the terminal screen bar at the bottom of the tab, and the
+// context, estimated cost and plan limits, compact in the composer's bottom row
+// with the full figures in their tooltips.
 import { useEffect, useState } from "react";
-import { getJson, setting } from "./bridge";
+import { getJson } from "./bridge";
 import type { ScreenState } from "./types";
 import { contextWindowFor, formatTokens, type UsageTally } from "./usage";
 
@@ -45,93 +46,93 @@ function usePlanUsage(enabled: boolean): PlanUsage | null {
   return enabled ? usage : null;
 }
 
-export function Toolbar({
-  screen,
-  tally,
-  running,
-  showMeters,
-  showContext,
-}: {
-  screen: ScreenState | null;
-  tally: UsageTally;
-  running: boolean;
-  showMeters: boolean;
-  showContext: boolean;
-}) {
-  const usage = usePlanUsage(showMeters);
-  const activity = screen?.activity;
-  const working = activity?.state === "working";
-  const window = contextWindowFor(tally.model);
-  const pct = tally.context !== null && window ? Math.round((tally.context / window) * 100) : null;
-  const meter = (label: string, w: UsageWindow | null) => {
-    if (!w) return null;
-    const p = Math.max(0, Math.min(100, Math.round(w.utilization)));
-    const level = p >= 90 ? "crit" : p >= 70 ? "warn" : "ok";
+const levelOf = (pct: number) => (pct >= 90 ? "crit" : pct >= 70 ? "warn" : "ok");
+
+// Claude's activity as one line: waiting on a prompt, working (with its
+// elapsed time and tokens), how long the last turn took, or a screen that
+// can't be read. Null when there is nothing to say.
+export function ActivityStatus({ screen, running }: { screen: ScreenState | null; running: boolean }) {
+  if (!running || !screen) return null;
+  if (screen.stale) {
     return (
-      <div className="cv-meter" title={resetLabel(w.resetsAt)}>
-        <div className="cv-meter-row">
-          <span>{label}</span>
-          <span className="cv-meter-value">{p}%</span>
-        </div>
-        <div className="cv-meter-track">
-          <div className={`cv-meter-fill cv-meter-${level}`} style={{ width: `${p}%` }} />
-        </div>
-      </div>
+      <span className="cv-status cv-status-stale" title={screen.error ?? undefined}>
+        Screen unreadable
+      </span>
     );
-  };
-  return (
-    <div className="cv-toolbar">
-      <div className="cv-toolbar-left">
-        {running && screen?.prompt && (
-          <span className="cv-pill cv-activity cv-activity-waiting" aria-live="polite">
-            Waiting for you
-          </span>
-        )}
-        {running && !screen?.prompt && activity && (
-          <span className={`cv-pill cv-activity${working ? " cv-activity-working" : ""}`} aria-live="polite">
-            {working ? (
-              <>
-                <span className="cv-spinner" aria-hidden="true" />
-                {activity.label}
-                {activity.note ? ` · ${activity.note}` : ""}
-                {activity.elapsed ? ` · ${activity.elapsed}` : ""}
-                {activity.tokens ? ` · ${activity.tokens} tokens` : ""}
-              </>
-            ) : activity.verb ? (
-              `${activity.verb} for ${activity.elapsed}`
-            ) : (
-              "Ready"
-            )}
-          </span>
-        )}
-        {!running && <span className="cv-pill cv-closed">Not running in this window</span>}
-        {screen?.stale && <span className="cv-pill cv-stale" title={screen.error ?? undefined}>Screen unreadable</span>}
-      </div>
-      <div className="cv-toolbar-right">
-        {showContext && tally.context !== null && (
-          <span className="cv-stat" title={`Context used by the last turn${tally.model ? ` on ${tally.model}` : ""}`}>
-            ctx {pct !== null ? `${pct}% · ` : ""}
-            {formatTokens(tally.context)}
-          </span>
-        )}
-        {showContext && tally.seen.size > 0 && (
-          <span className="cv-stat" title={`Estimated at API rates${tally.unpriced ? `; ${tally.unpriced} messages from unknown models not counted` : ""}. A subscription plan isn't billed per token.`}>
-            est. ${tally.cost.toFixed(2)}
-          </span>
-        )}
-        {usage?.available && (
-          <div className="cv-meters">
-            {meter("5h", usage.fiveHour)}
-            {meter("7d", usage.sevenDay)}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  }
+  if (screen.prompt) return <span className="cv-status cv-status-waiting">Waiting for you</span>;
+  const activity = screen.activity;
+  if (!activity) return null;
+  if (activity.state === "working") {
+    const text = [activity.label, activity.note, activity.elapsed, activity.tokens ? `${activity.tokens} tokens` : null].filter(Boolean).join(" · ");
+    return (
+      <span className="cv-status cv-status-working" title={text}>
+        <span className="cv-spinner" aria-hidden="true" />
+        <span className="cv-status-text">{text}</span>
+      </span>
+    );
+  }
+  return <span className="cv-status">{activity.verb ? `${activity.verb} for ${activity.elapsed}` : "Ready"}</span>;
 }
 
-export function useSettingValue<T>(key: string, fallback: T, subscribe: (cb: () => void) => () => void): T {
-  const [value, setValue] = useState<T>(() => setting(key, fallback));
-  useEffect(() => subscribe(() => setValue(setting(key, fallback))), [key, subscribe]);
-  return value;
+// A ring filled to the context used, a dot, the estimated cost; then the two
+// plan limits as stacked bars, 5-hour on top.
+export function UsageStats({ tally, showContext, showMeters }: { tally: UsageTally; showContext: boolean; showMeters: boolean }) {
+  const usage = usePlanUsage(showMeters);
+  const contextWindow = contextWindowFor(tally.model);
+  const hasContext = showContext && tally.context !== null;
+  const hasCost = showContext && tally.seen.size > 0;
+  const pct = hasContext && contextWindow ? Math.min(100, Math.round((tally.context! / contextWindow) * 100)) : null;
+  const limits = usage?.available ? ([["5-hour", usage.fiveHour], ["7-day", usage.sevenDay]] as const) : null;
+
+  const contextTitle = [
+    hasContext
+      ? `Context used by the last turn: ${pct !== null ? `${pct}% of ${formatTokens(contextWindow!)}, ` : ""}${tally.context!.toLocaleString()} tokens${tally.model ? ` (${tally.model})` : ""}`
+      : null,
+    hasCost
+      ? `Estimated cost: $${tally.cost.toFixed(2)} at API rates${tally.unpriced ? `, not counting ${tally.unpriced} messages from unknown models` : ""}. A subscription plan isn't billed per token.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  // The ring's circumference is 2πr with r = 5.
+  const ring = 2 * Math.PI * 5;
+  return (
+    <>
+      {(hasContext || hasCost) && (
+        <span className="cv-usage" title={contextTitle}>
+          {hasContext &&
+            (pct !== null ? (
+              <svg className={`cv-ring cv-level-${levelOf(pct)}`} width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <circle className="cv-ring-track" cx="7" cy="7" r="5" />
+                <circle className="cv-ring-fill" cx="7" cy="7" r="5" strokeDasharray={`${(pct / 100) * ring} ${ring}`} transform="rotate(-90 7 7)" />
+              </svg>
+            ) : (
+              <span>{formatTokens(tally.context!)}</span>
+            ))}
+          {hasContext && hasCost && <span aria-hidden="true">·</span>}
+          {hasCost && <span>${tally.cost.toFixed(2)}</span>}
+        </span>
+      )}
+      {limits && (limits[0][1] || limits[1][1]) && (
+        <span
+          className="cv-limits"
+          title={limits
+            .filter(([, w]) => w)
+            .map(([label, w]) => `${label} limit: ${Math.round(w!.utilization)}% used${w!.resetsAt ? `, ${resetLabel(w!.resetsAt)}` : ""}`)
+            .join("\n")}
+        >
+          {limits.map(([label, w]) => {
+            const p = w ? Math.max(0, Math.min(100, Math.round(w.utilization))) : 0;
+            return (
+              <span key={label} className="cv-limit-track">
+                <span className={`cv-limit-fill cv-level-${levelOf(p)}`} style={{ width: `${p}%` }} />
+              </span>
+            );
+          })}
+        </span>
+      )}
+    </>
+  );
 }

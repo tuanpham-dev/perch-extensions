@@ -1,0 +1,18 @@
+❯ Use AskUserQuestion to ask me one single-select question: which color do I
+  prefer, options Red, Green, Blue. Do nothing else.
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Color
+
+Which color do you prefer?
+
+  1. Red
+     A warm, vibrant color
+  2. Green
+     A cool, natural color
+❯ 3. Blue
+     A calm, serene color
+  4. hello world
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

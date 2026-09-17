@@ -1,14 +1,26 @@
 // Message rendering: markdown with highlighted code blocks, user bubbles,
 // thinking, commands and their output, and the compaction divider.
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { LinkedText, linkChildren } from "./FileLinks";
 import { CodeBlock, langFor } from "./Highlight";
 import { formatTokens } from "./usage";
 
 type HastNode = { type: string; value?: string; tagName?: string; properties?: { className?: unknown }; children?: HastNode[] };
+
+type ElementProps = { node?: unknown; children?: ReactNode } & React.HTMLAttributes<HTMLElement>;
+
+// An element whose plain text runs get file and URL links. Code blocks keep
+// their highlighting instead (see pre below).
+function linked(Tag: string) {
+  return function Linked({ node: _node, children, ...props }: ElementProps) {
+    const Element = Tag as "span";
+    return <Element {...props}>{linkChildren(children)}</Element>;
+  };
+}
 
 function hastText(node: HastNode | undefined): string {
   if (!node) return "";
@@ -17,6 +29,9 @@ function hastText(node: HastNode | undefined): string {
 }
 
 const components = {
+  ...Object.fromEntries(["p", "li", "td", "th", "strong", "em", "del", "h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => [tag, linked(tag)])),
+  // Only inline code reaches here: pre renders its own code element.
+  code: linked("code"),
   pre({ node }: { node?: HastNode }) {
     const code = node?.children?.find((c) => c.tagName === "code");
     const classes = code?.properties?.className;
@@ -104,7 +119,9 @@ export function CommandOutput({ text, error }: { text: string; error: boolean })
   const long = lines.length > 12;
   return (
     <div className={`cv-output${error ? " cv-output-error" : ""}`}>
-      <pre>{long && !open ? lines.slice(0, 12).join("\n") : text}</pre>
+      <pre>
+        <LinkedText text={long && !open ? lines.slice(0, 12).join("\n") : text} />
+      </pre>
       {long && (
         <button className="link-btn" onClick={() => setOpen(!open)}>
           {open ? "Show less" : `Show all ${lines.length} lines`}

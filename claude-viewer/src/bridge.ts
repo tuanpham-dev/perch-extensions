@@ -6,12 +6,18 @@ export type SettingsApi = {
   onDidChange(cb: () => void): () => void;
 };
 
+export type MenuItem = { label: string; onClick: () => void; separator?: boolean; disabled?: boolean; icon?: string };
+export type ShowMenu = (x: number, y: number, items: MenuItem[]) => void;
+
 export type TokenColorRule = {
   scope?: string | string[];
   settings?: { foreground?: string; background?: string; fontStyle?: string };
 };
 
 export type AppApi = {
+  openFileTab?(path: string, line?: number): void;
+  canPreview?(path: string): boolean;
+  openPreview?(path: string): void;
   openSessionWindow?(sessionName: string, opts?: { createCwd?: string; windowIndex?: number }): void;
   getThemeColors?(): Record<string, string>;
   getTokenColors?(): TokenColorRule[];

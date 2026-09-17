@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { KEYS, bracketedPaste, cursorStepToward, isKeyName, letterKeyFor, nextKeyForOption } from "../keys.mjs";
+import { KEYS, bracketedPaste, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption } from "../keys.mjs";
 
 const numbered = {
   numbered: true,
@@ -30,6 +30,50 @@ test("unnumbered lists move the cursor toward the target", () => {
   const onSecond = { ...unnumbered, options: unnumbered.options.map((o) => ({ ...o, cursor: o.n === 2 })) };
   assert.equal(nextKeyForOption(onSecond, 1), "up");
   assert.equal(nextKeyForOption(onSecond, 2), "enter");
+});
+
+const question = (cursorN: number, multiSelect = false) => ({
+  numbered: true,
+  multiSelect,
+  options: [
+    { n: 1, label: "Red", cursor: cursorN === 1 },
+    { n: 2, label: "Blue", cursor: cursorN === 2 },
+    { n: 3, label: "Type something", cursor: cursorN === 3, textEntry: true, typed: "" },
+    { n: 4, label: "Chat about this", cursor: cursorN === 4 },
+  ],
+});
+
+test("with the cursor in the text field, an option first moves out of it", () => {
+  assert.equal(nextKeyForOption(question(3), 4), "up");
+  assert.equal(nextKeyForOption(question(3), 1), "up");
+  assert.equal(nextKeyForOption(question(2), 4), "4");
+});
+
+test("the text field is reached by its digit, or is already there", () => {
+  assert.equal(nextKeyForOption(question(1), 3), "3");
+  assert.equal(nextKeyForOption(question(3), 3), "here");
+});
+
+test("a text field with something typed is reached with arrows: its digit would submit the text", () => {
+  const typed = question(1);
+  typed.options[2].typed = "old draft";
+  assert.equal(nextKeyForOption(typed, 3), "down");
+});
+
+test("a multi-select text field is reached with arrows: its digit only ticks the box", () => {
+  assert.equal(nextKeyForOption(question(1, true), 3), "down");
+  assert.equal(nextKeyForOption(question(3, true), 3), "here");
+});
+
+test("a preview question leaves its Notes field and its Chat row before moving", () => {
+  const preview = (over: Record<string, unknown>) => ({ ...question(1), options: question(1).options.slice(0, 2), notes: { text: "", editing: false }, chat: { cursor: false }, ...over });
+  assert.equal(cursorStepToward(preview({}), 2), "down");
+  assert.equal(cursorStepToward(preview({ notes: { text: "x", editing: true } }), 2), "esc");
+  assert.equal(cursorStepToward(preview({ chat: { cursor: true } }), 1), "up");
+  assert.equal(nextKeyForOption(preview({ notes: { text: "", editing: true } }), 2), "esc");
+  assert.equal(nextKeyForChat(preview({})), "down");
+  assert.equal(nextKeyForChat(preview({ chat: { cursor: true } })), "enter");
+  assert.equal(nextKeyForChat(question(1)), null);
 });
 
 test("bracketed paste wraps text and strips embedded paste markers", () => {

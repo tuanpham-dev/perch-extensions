@@ -8,6 +8,9 @@ export type PromptOption = {
   cursor: boolean;
   checked: boolean | null;
   current?: boolean;
+  // A text field in the terminal ("Type something"), and what is typed in it.
+  textEntry?: boolean;
+  typed?: string;
 };
 
 export type Prompt = {
@@ -22,6 +25,16 @@ export type Prompt = {
   options: PromptOption[];
   numbered: boolean;
   multiSelect: boolean;
+  // AskUserQuestion's active tab (index into tabs), from the screen's colors.
+  activeTab?: number | null;
+  // AskUserQuestion with previews: the highlighted option's preview, the
+  // Notes field (editing: open in the terminal), and the unnumbered "Chat
+  // about this" row.
+  preview?: { lines: string[]; hidden: number } | null;
+  notes?: { text: string; editing?: boolean } | null;
+  chat?: { cursor: boolean } | null;
+  // A multi-select list's Next or Submit button row.
+  action?: { label: string; cursor: boolean } | null;
   footer: string | null;
   // Single-letter keys the footer offers for the highlighted row.
   letterKeys?: { key: string; label: string }[];

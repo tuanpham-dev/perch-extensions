@@ -176,7 +176,9 @@ export function createWatcher({ host, log, getSettings }) {
   async function read(entry, opts) {
     let text;
     try {
-      text = await host.sessions.capture(entry.windowId, { scrollback: SCROLLBACK_LINES });
+      // With styles: color is all that marks the active question tab. A Perch
+      // without styled captures returns plain text, which reads the same.
+      text = await host.sessions.capture(entry.windowId, { scrollback: SCROLLBACK_LINES, styles: true });
     } catch (err) {
       entry.misses = (entry.misses ?? 0) + 1;
       if (entry.misses >= 2 && !entry.stale) {
@@ -192,7 +194,7 @@ export function createWatcher({ host, log, getSettings }) {
     if (fromFile) screen = { ...screen, prompt: { ...screen.prompt, plan: fromFile } };
     else if (screen.prompt?.kind === "plan" && screen.prompt.plan?.truncated) {
       try {
-        const deep = await host.sessions.capture(entry.windowId, { scrollback: PLAN_SCROLLBACK_LINES });
+        const deep = await host.sessions.capture(entry.windowId, { scrollback: PLAN_SCROLLBACK_LINES, styles: true });
         screen = parseScreen(deep, { stripLines: opts.stripLines });
       } catch {
         // Keep the shallow read.
