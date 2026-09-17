@@ -526,10 +526,11 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
   // line wrapped across (the daemon keeps them apart; readers handle both)
   // and keeps trailing spaces, which are trimmed here so both backends hand
   // back the same shape. Trailing blank rows are dropped, as the daemon does.
-  async function capture(target, scrollback = 0) {
+  // `styles` adds -e: colors and attributes stay in as SGR escapes.
+  async function capture(target, scrollback = 0, opts = {}) {
     const { paneId } = await resolve(target);
     const lines = Math.max(0, Math.floor(Number(scrollback) || 0));
-    const args = ["capture-pane", "-p", "-J", "-t", paneId];
+    const args = ["capture-pane", "-p", "-J", ...(opts?.styles ? ["-e"] : []), "-t", paneId];
     if (lines > 0) args.push("-S", `-${lines}`);
     const rows = (await tmux(args)).split("\n").map((row) => row.replace(/\s+$/, ""));
     while (rows.length > 0 && rows[rows.length - 1] === "") rows.pop();
