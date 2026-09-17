@@ -1,0 +1,85 @@
+  Corrections
+  - ~~1Create~~ → Create (Spelling): there's an extra "1" at the start, probably a typo.
+
+  Learn something new
+  You can say "a one-word file" instead of "a file containing the single word hello." For example: "Please
+  create a one-word file called notes.txt." Using a number and a noun joined with a hyphen as an adjective
+  (like "a two-page report" or "a five-minute break") is short and sounds natural.
+
+✻ Cooked for 5s · done 13:52
+
+❯ Use the AskUserQuestion tool to ask me one single-select question: which color do I prefer, with options
+  Red, Green, Blue.
+
+● User answered Claude's questions:
+  ⎿  · Which color do you prefer? → Green
+
+● You picked Green.
+
+  Learn something new
+  To ask about preferences, "Which color do I prefer?" works, but people often say "Which color do I like
+  best?" or "What's my favorite color?" in everyday talk. "Prefer" usually compares two things: "I prefer
+  green to blue." Note that it's "prefer X to Y," not "prefer X than Y."
+
+✻ Sautéed for 5s · done 13:52
+
+❯ Use the AskUserQuestion tool once with two questions: first a multiSelect question 'Which fruits?' with
+  options Apple, Banana, Cherry; second a single-select question 'Which size?' with options Small, Large.
+
+● User declined to answer questions
+  ⎿  · Which fruits? (Apple / Banana / Cherry)
+     · Which size? (Small / Large)
+
+✻ Cogitated for 2s · done 13:52
+
+❯ Make a very short plan to add a README.md with one line to this folder, then exit plan mode.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● I'll add a README.md with # cvprobe to the project root, then verify the file exists.
+  ⎿  User rejected Claude's plan:
+     ╭──────────────────────────────────────────────────────────────────╮
+     │ Add README.md                                                    │
+     │                                                                  │
+     │ Context                                                          │
+     │                                                                  │
+     │ The probe folder has no README. Add a minimal one-line README.   │
+     │                                                                  │
+     │ Steps                                                            │
+     │                                                                  │
+     │ 1. Create README.md in the project root with one line: # cvprobe │
+     │                                                                  │
+     │ Verification                                                     │
+     │                                                                  │
+     │ - Check that README.md exists and contains exactly one line.     │
+     ╰──────────────────────────────────────────────────────────────────╯
+
+✻ Cooked for 8s · done 13:52
+
+❯ /model
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Select model
+  Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model
+  names, specify with --model.
+
+    1. Default (recommended)  Opus 5 with 1M context · Best for everyday, complex tasks
+    2. Opus (1M context)      Opus 5 with 1M context · Best for everyday, complex tasks
+    3. Fable                  Fable 5.1 · Most capable for your hardest and longest-running tasks
+    4. Sonnet                 Sonnet 5 · Efficient for routine tasks
+    5. Haiku                  Haiku 4.5 · Fastest for quick answers
+  ❯ 6. Opus ✔                 Opus 5 · Best for everyday, complex tasks
+
+  ● High effort (default) ←/→ to adjust
+
+  Enter to set as default · s to use this session only · Esc to cancel
+
+
+
+
+
+
+
+
+

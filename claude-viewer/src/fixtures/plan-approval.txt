@@ -1,0 +1,85 @@
+  When you want someone to do something word for word, you can say "to the letter." For example: "I followed
+  your instructions to the letter." It means the same as "exactly," but sounds more natural in everyday
+  conversation.
+
+✻ Crunched for 9s · done 13:51
+
+❯ 1Create a file named notes.txt containing the single word hello. Use the Write tool.
+
+● Write(notes.txt)
+  ⎿  Wrote 1 line to notes.txt
+      1 hello
+
+● I created notes.txt in the project folder using the Write tool. It contains only the word hello.
+
+  Corrections
+  - ~~1Create~~ → Create (Spelling): there's an extra "1" at the start, probably a typo.
+
+  Learn something new
+  You can say "a one-word file" instead of "a file containing the single word hello." For example: "Please
+  create a one-word file called notes.txt." Using a number and a noun joined with a hyphen as an adjective
+  (like "a two-page report" or "a five-minute break") is short and sounds natural.
+
+✻ Cooked for 5s · done 13:52
+
+❯ Use the AskUserQuestion tool to ask me one single-select question: which color do I prefer, with options
+  Red, Green, Blue.
+
+● User answered Claude's questions:
+  ⎿  · Which color do you prefer? → Green
+
+● You picked Green.
+
+  Learn something new
+  To ask about preferences, "Which color do I prefer?" works, but people often say "Which color do I like
+  best?" or "What's my favorite color?" in everyday talk. "Prefer" usually compares two things: "I prefer
+  green to blue." Note that it's "prefer X to Y," not "prefer X than Y."
+
+✻ Sautéed for 5s · done 13:52
+
+❯ Use the AskUserQuestion tool once with two questions: first a multiSelect question 'Which fruits?' with
+  options Apple, Banana, Cherry; second a single-select question 'Which size?' with options Small, Large.
+
+● User declined to answer questions
+  ⎿  · Which fruits? (Apple / Banana / Cherry)
+     · Which size? (Small / Large)
+
+✻ Cogitated for 2s · done 13:52
+
+❯ Make a very short plan to add a README.md with one line to this folder, then exit plan mode.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● I'll add a README.md with # cvprobe to the project root, then verify the file exists.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Ready to code?
+
+ Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Add README.md
+
+ Context
+
+ The probe folder has no README. Add a minimal one-line README.
+
+ Steps
+
+ 1. Create README.md in the project root with one line: # cvprobe
+
+ Verification
+
+ - Check that README.md exists and contains exactly one line.
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+ ❯ 1. Yes, and use auto mode
+   2. Yes, manually approve edits
+   3. Tell Claude what to change
+      shift+tab to approve with this feedback
+
+ ctrl+g to edit in Nvim · ~/.claude/plans/replicated-spinning-flamingo.md
+

@@ -1,0 +1,29 @@
+ ⛵  scratchpad/cvmodel   main  claude
+ ▐▛███▛█   Claude Code v2.1.273
+ ▐▛███▛█   Claude Code v2.1.273
+▝▜██████▀  Opus 5 · Claude Max
+  ▝▝ ▝▝    /…/43e91422-dc76-4802-b70a-9e3183a16273/scratchpad/cvmodel
+
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 5 and saved as your default for new sessions
+
+❯ /model                                                                        
+
+────────────────────────────────────────────────────────────────────────────────
+  Select model
+  Switch between Claude models. Your pick becomes the default for new 
+  sessions. For other/previous model names, specify with --model.
+
+  ↑ 2. Opus (1M context)      Opus 5 with 1M context · Best for everyday, 
+                              complex tasks
+    3. Fable                  Fable 5.1 · Most capable for your hardest and 
+                              longest-running tasks
+    4. Sonnet                 Sonnet 5 · Efficient for routine tasks
+    5. Haiku                  Haiku 4.5 · Fastest for quick answers
+  ❯ 6. Opus ✔                 Opus 5 · Best for everyday, complex tasks
+     … +1 model
+
+  ● High effort (default) ←/→ to adjust
+
+  Enter to set as default · s to use this session only · Esc to cancel
