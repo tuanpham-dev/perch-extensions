@@ -1,15 +1,15 @@
-// The bar above the conversation: permission mode (click to cycle), what
-// Claude is doing, context and estimated cost (unless turned off), and the
-// optional plan usage meters. The model sits with the mode and status.
+// The bar above the conversation: what Claude is doing, context and estimated
+// cost (unless turned off), and the optional plan usage meters. The permission
+// mode and the model sit in the composer's bottom row.
 import { useEffect, useState } from "react";
 import { getJson, setting } from "./bridge";
 import type { ScreenState } from "./types";
-import { contextWindowFor, currentModelLabel, formatTokens, type UsageTally } from "./usage";
+import { contextWindowFor, formatTokens, type UsageTally } from "./usage";
 
 type UsageWindow = { utilization: number; resetsAt: string | null };
 type PlanUsage = { available: boolean; fiveHour: UsageWindow | null; sevenDay: UsageWindow | null };
 
-const MODE_HINT: Record<string, string> = {
+export const MODE_HINT: Record<string, string> = {
   auto: "Auto mode: Claude decides which actions need your approval",
   manual: "Manual mode: Claude asks before acting",
   acceptEdits: "Accept edits: file edits don't ask",
@@ -51,17 +51,14 @@ export function Toolbar({
   running,
   showMeters,
   showContext,
-  onCycleMode,
 }: {
   screen: ScreenState | null;
   tally: UsageTally;
   running: boolean;
   showMeters: boolean;
   showContext: boolean;
-  onCycleMode: () => void;
 }) {
   const usage = usePlanUsage(showMeters);
-  const mode = screen?.mode;
   const activity = screen?.activity;
   const working = activity?.state === "working";
   const window = contextWindowFor(tally.model);
@@ -85,11 +82,6 @@ export function Toolbar({
   return (
     <div className="cv-toolbar">
       <div className="cv-toolbar-left">
-        {running && mode && (
-          <button className={`cv-pill cv-mode cv-mode-${mode.id}`} onClick={onCycleMode} title={`${MODE_HINT[mode.id] ?? mode.label}. Click to cycle (Shift+Tab).`}>
-            {mode.label}
-          </button>
-        )}
         {running && screen?.prompt && (
           <span className="cv-pill cv-activity cv-activity-waiting" aria-live="polite">
             Waiting for you
@@ -110,11 +102,6 @@ export function Toolbar({
             ) : (
               "Ready"
             )}
-          </span>
-        )}
-        {currentModelLabel(tally) && (
-          <span className="cv-pill cv-model" title={tally.switchedTo ? `Switched with /model: ${tally.switchedTo}` : (tally.model ?? undefined)}>
-            {currentModelLabel(tally)}
           </span>
         )}
         {!running && <span className="cv-pill cv-closed">Not running in this window</span>}

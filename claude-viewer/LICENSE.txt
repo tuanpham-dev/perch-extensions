@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+The star in icon.svg is the "claude" icon from Codicons
+  https://github.com/microsoft/vscode-codicons
+  Copyright (c) Microsoft Corporation, licensed under Creative Commons
+  Attribution 4.0 International (https://creativecommons.org/licenses/by/4.0/).
+  Drawn white and scaled onto a colored rounded square.

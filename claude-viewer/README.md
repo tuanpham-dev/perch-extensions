@@ -1,13 +1,14 @@
 # Claude Viewer
 
-A Claude Code terminal session as rich chat you can drive from the web. Open it from the chat icon on any window running `claude` (in the PROJECTS pane, or the tab bar of that window's terminal). The terminal keeps running Claude as before; this tab reads it and types into it.
+A Claude Code terminal session as rich chat you can drive from the web. Open it from the Claude icon on any window running `claude` (in the PROJECTS pane, or the tab bar of that window's terminal). The terminal keeps running Claude as before; this tab reads it and types into it.
 
 ## What it shows
 
 - **The conversation**, from Claude Code's own transcript: markdown with syntax-highlighted code (colored by your Perch theme's own token colors, so it matches the editor under Plastic, GitHub or any other theme), collapsible thinking, slash commands and their output, and a divider where the context was compacted.
 - **Tool calls** as cards with a preview of what the terminal would show: a highlighted diff for Edit and Write, output lines for Bash, a count for Read, matches for Grep and Glob, the latest steps of a running subagent, and a thumbnail for screenshots and images. Expand a card for its full input and result.
 - **Images** open full screen. Step through every image in the conversation with the arrows, the arrow keys or a swipe; zoom with the wheel, a pinch, a double-click or double-tap on the image, or the + and - buttons; drag to pan a zoomed image. It closes from a click on the dark area around the image, the × button, or Esc.
-- **The toolbar**: the permission mode (click to cycle, like Shift+Tab), what Claude is doing right now (with elapsed time and tokens), the model in use (updated right after a `/model` switch), the context used by the last turn, and an estimated cost at API rates. The terminal button in the tab bar opens the window's own terminal tab. The 5-hour and 7-day plan meters are there too if you turn them on.
+- **The toolbar**: what Claude is doing right now (with elapsed time and tokens), the context used by the last turn, and an estimated cost at API rates. The terminal button in the tab bar opens the window's own terminal tab. The 5-hour and 7-day plan meters are there too if you turn them on.
+- **The composer**: a message box that grows to 4 lines, with one button inside it that sends, stops Claude while it works, or takes the text already in the terminal's input. The row under it has the attach button and the permission mode (click to cycle, like Shift+Tab) on the left, and the model in use (updated right after a `/model` switch) and a terminal screen button on the right.
 
 ## What you can do without switching to the terminal
 
@@ -18,14 +19,14 @@ A Claude Code terminal session as rich chat you can drive from the web. Open it 
   - AskUserQuestion, with tabs, checkboxes, free-text answers and the review screen
   - numbered pickers such as `/model`, with a button for each key the picker's footer offers for a row (on `/model`, "Use this session only")
 - **Send messages**: several lines at once, `/` for commands and skills, `@` for files in the project, and files pasted, attached or dropped anywhere on the tab (images show as thumbnails; other files are uploaded and their path added to the message). Anything already typed in the terminal's input box shows as the composer's placeholder while it is empty; press Tab or the **Use** button to take it into your message. While Claude is working and the composer is empty, its button is **Stop**, which interrupts the turn like Esc.
-- **Anything else** the terminal shows that has no buttons here, such as `/config`, opens the **Terminal screen** strip by itself: the bottom lines of the terminal with a keypad (arrows, Enter, Esc, Tab, Shift+Tab, Backspace, Ctrl+C and digits).
+- **Anything else** the terminal shows that has no buttons here, such as `/config`, opens the **Terminal screen** strip by itself (the heading at the bottom of the tab or the terminal screen button in the composer opens it any time): the bottom lines of the terminal with a keypad (arrows, Enter, Esc, Tab, Shift+Tab, Backspace, Ctrl+C and digits).
 
 Every click that answers a prompt is checked against a fresh read of the terminal first. If the terminal has moved on (you answered it there, or Claude cancelled it), nothing is sent and the card updates.
 
 ## When Claude is waiting
 
 - The tab's title gets a dot.
-- The chat icon on the window's row turns into a bell.
+- The Claude icon on the window's row turns into a bell.
 - A push notification goes to every browser subscribed to notifications in Settings (turn off with **Push notifications**).
 
 This works with no tab open: the server watches every Claude window.

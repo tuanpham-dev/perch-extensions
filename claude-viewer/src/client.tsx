@@ -77,7 +77,7 @@ export function activate(ctx: {
 
   const handle = ctx.registerWindowAction({
     id: "open",
-    icon: (w) => (waiting.has(rowKey(w.sessionName, w.windowIndex)) ? "bell-dot" : "comment-discussion"),
+    icon: (w) => (waiting.has(rowKey(w.sessionName, w.windowIndex)) ? "bell-dot" : "claude"),
     title: "Open in Claude Viewer",
     isVisible: (w) => programs.has(w.command),
     showInTabBar: true,

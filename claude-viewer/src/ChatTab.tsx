@@ -15,10 +15,11 @@ import { Composer, type ComposerHandle, type PendingImage, type SlashCommand } f
 import { Lightbox, LightboxContext } from "./Lightbox";
 import { MessageList } from "./MessageList";
 import { PromptCard } from "./PromptCard";
-import { ScreenStrip } from "./ScreenStrip";
-import { Toolbar } from "./Toolbar";
+import { ScreenStrip, ScreenStripHeading, ScreenStripToggle, useScreenStrip } from "./ScreenStrip";
+import { MODE_HINT, Toolbar } from "./Toolbar";
+import { useOverlayInset } from "./useOverlayInset";
 import type { ScreenState, SessionInfo } from "./types";
-import { addToTally, createTally, type UsageTally } from "./usage";
+import { addToTally, createTally, currentModelLabel, type UsageTally } from "./usage";
 
 const SESSION_POLL_MS = 3000;
 
@@ -273,6 +274,16 @@ export function ChatTab({
   // leave events keeps the overlay from flickering over child elements.
   const composerRef = useRef<ComposerHandle>(null);
   const [dragDepth, setDragDepth] = useState(0);
+  // The height of an app overlay band (one-hand's gesture strip) over the
+  // tab's bottom edge. The terminal screen heading grows to it so the band
+  // covers the heading, not the composer; with no heading the tab pads itself.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const strip = useScreenStrip(screen);
+  const showStrip = running && screen !== null && !screen.unsupported;
+  const mode = running ? screen?.mode ?? null : null;
+  const modelLabel = currentModelLabel(tally);
+  const overlayInset = useOverlayInset(rootRef);
+
   const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
 
   const openTerminal =
@@ -283,8 +294,9 @@ export function ChatTab({
   return (
     <LightboxContext.Provider value={lightbox}>
     <div
+      ref={rootRef}
       className="claude-viewer cv-root"
-      style={{ "--cv-font-size": `${settings.fontSize}px` } as CSSProperties}
+      style={{ "--cv-font-size": `${settings.fontSize}px`, paddingBottom: (!showStrip && overlayInset) || undefined } as CSSProperties}
       onDragEnter={(e) => {
         if (!hasFiles(e) || !running) return;
         e.preventDefault();
@@ -317,7 +329,6 @@ export function ChatTab({
         running={running}
         showMeters={settings.showMeters}
         showContext={settings.showContext}
-        onCycleMode={() => void post("/cycle-mode")}
       />
       {active &&
         toolbarTarget &&
@@ -372,8 +383,26 @@ export function ChatTab({
         onSend={send}
         disabled={!running}
         disabledReason={info && !info.running ? "This window isn't running Claude any more." : "Waiting for the terminal"}
+        footerStart={
+          mode && (
+            <button className={`cv-foot-btn cv-foot-mode cv-foot-mode-${mode.id}`} onClick={() => void post("/cycle-mode")} title={`${MODE_HINT[mode.id] ?? mode.label}. Click to cycle (Shift+Tab).`}>
+              {mode.label.charAt(0).toUpperCase() + mode.label.slice(1)}
+            </button>
+          )
+        }
+        footerEnd={
+          <>
+            {modelLabel && (
+              <span className="cv-foot-model" title={tally.switchedTo ? `Switched with /model: ${tally.switchedTo}` : (tally.model ?? undefined)}>
+                {modelLabel}
+              </span>
+            )}
+            {showStrip && <ScreenStripToggle strip={strip} />}
+          </>
+        }
       />
-      {running && screen && !screen.unsupported && <ScreenStrip windowId={windowId} screen={screen} onState={acceptScreen} />}
+      {showStrip && <ScreenStrip windowId={windowId} screen={screen} strip={strip} onState={acceptScreen} />}
+      {showStrip && <ScreenStripHeading strip={strip} minHeight={overlayInset} />}
       {screen?.unsupported && (
         <div className="cv-banner">This Perch can't read terminal screens, so prompts and the mode aren't shown. Update Perch to answer prompts here.</div>
       )}

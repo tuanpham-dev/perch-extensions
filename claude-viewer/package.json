@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Claude Viewer",
-  "description": "A Claude Code terminal session as rich chat you can drive from the web: markdown and highlighted code, tool cards with diffs and screenshots, and every prompt the terminal asks (tool permissions, plan approval, folder trust, questions, pickers like /model) answered with a click. Mode, activity, context and cost in the toolbar, a push notification when Claude is waiting, and a live screen strip with a keypad for anything else. Open it from the chat icon on a window running Claude.",
+  "description": "A Claude Code terminal session as rich chat you can drive from the web: markdown and highlighted code, tool cards with diffs and screenshots, and every prompt the terminal asks (tool permissions, plan approval, folder trust, questions, pickers like /model) answered with a click. Activity, context and cost in the toolbar, mode and model under the message box, a push notification when Claude is waiting, and a live screen strip with a keypad for anything else. Open it from the Claude icon on a window running Claude.",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
