@@ -1,0 +1,256 @@
+/* ---- git-graph: the GRAPH tab ---- */
+
+.gg-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.gg-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.gg-rows {
+  position: relative;
+  width: 100%;
+}
+
+.gg-item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.gg-empty {
+  padding: 12px 14px;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.gg-error {
+  padding: 6px 14px;
+  background: var(--error);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gg-count {
+  padding: 0 8px;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding-right: 14px;
+  box-sizing: border-box;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gg-row:hover,
+.gg-row.expanded {
+  background: var(--list-hover-bg);
+}
+
+.gg-lane {
+  flex-shrink: 0;
+  display: block;
+}
+
+.gg-edge {
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.gg-dot {
+  stroke: var(--bg);
+  stroke-width: 1;
+}
+
+/* Twelve lane colors, each legible on a light and a dark ground. */
+.c0 { stroke: #f0713f; fill: #f0713f; }
+.c1 { stroke: #3b82f6; fill: #3b82f6; }
+.c2 { stroke: #22a06b; fill: #22a06b; }
+.c3 { stroke: #b45fd1; fill: #b45fd1; }
+.c4 { stroke: #e0b348; fill: #e0b348; }
+.c5 { stroke: #35b5c4; fill: #35b5c4; }
+.c6 { stroke: #e2607f; fill: #e2607f; }
+.c7 { stroke: #7f9c3a; fill: #7f9c3a; }
+.c8 { stroke: #9b7ff0; fill: #9b7ff0; }
+.c9 { stroke: #c98a2e; fill: #c98a2e; }
+.c10 { stroke: #4aa3e0; fill: #4aa3e0; }
+.c11 { stroke: #d0596a; fill: #d0596a; }
+
+.gg-refs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  max-width: 45%;
+  overflow: hidden;
+}
+
+.gg-ref {
+  padding: 0 6px;
+  border: 1px solid var(--input-border);
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: context-menu;
+}
+
+.gg-ref:hover {
+  border-color: var(--accent);
+}
+
+.gg-ref.branch {
+  border-color: #3b82f6;
+  color: #7fb4ff;
+}
+
+.gg-ref.branch.current {
+  background: color-mix(in srgb, #3b82f6 22%, transparent);
+  font-weight: 600;
+}
+
+.gg-ref.remote {
+  border-color: #b45fd1;
+  color: #cd9cf0;
+}
+
+.gg-ref.tag {
+  border-color: #e0b348;
+  color: #f0c86b;
+}
+
+.gg-ref.head {
+  border-color: var(--accent);
+  color: var(--fg-accent);
+}
+
+.gg-ref.stash {
+  border-color: var(--fg-inactive);
+  color: var(--fg-inactive);
+}
+
+.gg-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gg-author,
+.gg-time {
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.gg-author {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Expanded file list ---- */
+
+.gg-files {
+  padding-bottom: 6px;
+}
+
+.gg-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  padding-right: 14px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.gg-file:hover {
+  background: var(--list-hover-bg);
+}
+
+.gg-file-empty {
+  height: 22px;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.gg-status {
+  flex-shrink: 0;
+  width: 1.4em;
+  font-weight: 700;
+  text-align: center;
+}
+
+.gg-status.s-A { color: var(--git-added-fg); }
+.gg-status.s-D { color: var(--error); }
+.gg-status.s-M { color: var(--git-modified-fg); }
+.gg-status.s-R, .gg-status.s-C { color: var(--git-renamed-fg); }
+
+.gg-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono-font, monospace);
+}
+
+.gg-file-stat {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.gg-added { color: var(--git-added-fg); }
+.gg-removed { color: var(--error); }
+.gg-binary { color: var(--fg-inactive); }
+
+.gg-more {
+  display: block;
+  width: 100%;
+  padding: 6px 14px;
+  background: none;
+  border: none;
+  color: var(--fg-accent);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gg-more:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.gg-more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  .gg-author {
+    display: none;
+  }
+
+  .gg-refs {
+    max-width: 55%;
+  }
+}

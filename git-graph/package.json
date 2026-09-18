@@ -1,0 +1,32 @@
+{
+  "name": "git-graph",
+  "private": true,
+  "publisher": "perch",
+  "version": "1.0.0",
+  "displayName": "Git Graph",
+  "description": "A GRAPH tab for the active repository: every branch's commits as a lane graph with their branch, remote and tag labels. Click a commit for its changed files and their diffs; right-click a commit or a ref label to check out, branch, tag, cherry-pick, revert, reset or delete.",
+  "icon": "./icon.svg",
+  "contributes": {
+    "configuration": {
+      "title": "Git Graph",
+      "properties": {
+        "gitGraph.pollInterval": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1000,
+          "maximum": 60000,
+          "description": "How often (ms) the open GRAPH tab checks whether any ref moved, reloading only when one did. Runs only while the tab is the active one - an inactive or closed tab makes no requests."
+        },
+        "gitGraph.showRemoteBranches": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include remote-tracking branches in the graph. Off draws only local branches, tags and stashes, which on a repository with many stale remote branches is a much shorter graph."
+        }
+      }
+    }
+  },
+  "perch": {
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  }
+}
