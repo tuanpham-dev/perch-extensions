@@ -1,0 +1,473 @@
+/* ---- git-history: File History and Blame tabs ---- */
+
+.gh-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: auto;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.gh-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.gh-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--terminal-font, monospace);
+  font-size: 12px;
+}
+
+/* Everything inside a block's gutter is chrome around the code, one step
+   down from it so the code stays the thing you read. */
+.gh-gutter {
+  font-size: 12px;
+}
+
+.gh-rev {
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-family: var(--terminal-font, monospace);
+  font-size: 12px;
+}
+
+.gh-empty,
+.gh-error {
+  padding: 10px 14px;
+  font-size: 12px;
+}
+
+.gh-empty {
+  color: var(--fg-inactive);
+}
+
+.gh-error {
+  background: var(--error);
+  color: #fff;
+}
+
+/* ---- History rows ---- */
+
+.gh-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px;
+  min-height: 26px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gh-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.gh-hash {
+  flex-shrink: 0;
+  width: 7ch;
+  color: var(--fg-accent);
+  font-family: var(--terminal-font, monospace);
+  font-size: 12px;
+}
+
+.gh-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-renamed {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--input-border);
+  border-radius: 9px;
+  color: var(--fg-inactive);
+  font-size: 11px;
+}
+
+.gh-author,
+.gh-time {
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.gh-author {
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-more {
+  display: block;
+  width: 100%;
+  padding: 6px 14px;
+  background: none;
+  border: none;
+  color: var(--fg-accent);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gh-more:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.gh-more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- Blame ---- */
+
+.gh-blame {
+  /* One horizontal scroller for the whole file. Per-block scrolling would
+     let one commit's lines slide sideways while its neighbours stayed put,
+     which makes a long line impossible to read in context. */
+  overflow-x: auto;
+  font-family: var(--terminal-font, monospace);
+  /* The same size the app's own diff uses, so blame, the history diff and
+     the commit details diff all read as one surface. */
+  font-size: var(--terminal-font-size, 13px);
+  line-height: 1.5;
+}
+
+/* One block per run of lines from the same commit. Three columns: the age
+   stripe, the gutter, the code. Blocks are what make a blame readable - a
+   real file is a few long runs, so per-line annotation would be blank
+   almost everywhere and nothing would mark where a commit's territory
+   ends. */
+.gh-run {
+  display: grid;
+  /* The code column sizes to its own content so the row can be wider than
+     the viewport; the two fixed columns before it keep every block's
+     gutter at the same x. */
+  grid-template-columns: 3px 21ch max-content;
+  min-width: 100%;
+  width: max-content;
+  align-items: start;
+  border-top: 1px solid var(--border);
+}
+
+.gh-run:first-child {
+  border-top: none;
+}
+
+/* Alternating shading is the main grouping signal: adjacent blocks always
+   differ, whatever the theme's border colour resolves to. */
+.gh-run.alt {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+/* Every block of the commit under the pointer lights up at once, which is
+   how you see one commit's whole footprint in the file. */
+.gh-run.hovered {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.gh-run.uncommitted .gh-gutter {
+  font-style: italic;
+}
+
+/* Age heat: newest commits warm, oldest cool, bucketed against this file's
+   own history so "old" means old for this file. */
+.gh-age {
+  align-self: stretch;
+  min-height: 100%;
+}
+
+.gh-age.a0 { background: #3f5570; }
+.gh-age.a1 { background: #46707f; }
+.gh-age.a2 { background: #4f8a6d; }
+.gh-age.a3 { background: #8a8a4a; }
+.gh-age.a4 { background: #b5733c; }
+.gh-age.a5 { background: #d0563f; }
+.gh-age.a-wip { background: var(--fg-inactive); }
+
+/* The gutter follows you down a long block rather than scrolling away at
+   its top, so the commit you are reading is always named. */
+.gh-gutter {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 10px 5px;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--fg-inactive);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gh-gutter:hover .gh-gutter-hash {
+  text-decoration: underline;
+}
+
+.gh-gutter-top,
+.gh-gutter-bottom {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gh-gutter-hash {
+  color: var(--fg-accent);
+}
+
+.gh-gutter-age,
+.gh-gutter-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+/* The message answers "why is this line here", which is what a blame is
+   opened for; two lines of it is enough to recognise the change. */
+.gh-gutter-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.gh-gutter-author {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.gh-gutter-wip {
+  color: var(--fg-inactive);
+}
+
+.gh-run-lines {
+  min-width: 0;
+}
+
+.gh-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.gh-line:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.gh-lineno {
+  flex-shrink: 0;
+  width: 5ch;
+  text-align: right;
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.gh-code {
+  margin: 0;
+  padding-right: 14px;
+  white-space: pre;
+  font: inherit;
+}
+
+.gh-summary-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 11px;
+}
+
+/* On a narrow view the gutter keeps only what identifies the commit. */
+@media (max-width: 720px) {
+  .gh-run {
+    grid-template-columns: 3px 13ch 1fr;
+  }
+
+  .gh-gutter-summary,
+  .gh-gutter-bottom {
+    display: none;
+  }
+}
+
+/* ---- Two-column History: the commit list beside the change it made ---- */
+
+.gh-view.two-column {
+  overflow: hidden;
+}
+
+/* The column widths come from the component, which remembers them. */
+.gh-split {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+}
+
+/* While dragging, nothing under the pointer should select or swallow the
+   pointer events the divider is capturing. */
+.gh-split.dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.gh-split.dragging .gh-split-list,
+.gh-split.dragging .gh-split-diff {
+  pointer-events: none;
+}
+
+.gh-split-list {
+  overflow: auto;
+}
+
+/* A 1px line in the layout - the columns sit exactly one pixel apart - with
+   the grab area widened by a pseudo-element that overflows it, so the
+   target is comfortable without the gap looking thick. */
+.gh-split-handle {
+  position: relative;
+  cursor: col-resize;
+  background: var(--border);
+}
+
+.gh-split-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+.gh-split-handle:hover,
+.gh-split-handle:focus-visible,
+.gh-split.dragging .gh-split-handle {
+  background: var(--accent);
+  outline: none;
+}
+
+.gh-split-diff {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.gh-row.selected {
+  background: var(--list-active-bg, var(--list-hover-bg));
+}
+
+/* ---- The diff pane ---- */
+
+.gh-diff {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.gh-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gh-diff-hash {
+  flex-shrink: 0;
+  color: var(--fg-accent);
+  font-family: var(--terminal-font, monospace);
+  font-size: 12px;
+}
+
+.gh-diff-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.gh-diff-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: var(--terminal-font, monospace);
+  font-size: var(--terminal-font-size, 13px);
+  line-height: 1.5;
+}
+
+.gh-diff-line {
+  display: flex;
+  align-items: baseline;
+  white-space: pre;
+}
+
+.gh-diff-line.add {
+  background: color-mix(in srgb, var(--git-added-fg) 14%, transparent);
+}
+
+.gh-diff-line.del {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+
+/* Hunk headers and the "diff --git"/"index" preamble: present, but never
+   competing with the code for attention. */
+.gh-diff-line.meta {
+  color: var(--fg-inactive);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+
+.gh-diff-no {
+  flex-shrink: 0;
+  width: 5ch;
+  padding-right: 6px;
+  text-align: right;
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.gh-diff-sign {
+  flex-shrink: 0;
+  width: 2ch;
+  text-align: center;
+  user-select: none;
+}
+
+.gh-diff-line.add .gh-diff-sign {
+  color: var(--git-added-fg);
+}
+
+.gh-diff-line.del .gh-diff-sign {
+  color: var(--error);
+}
+
+.gh-diff-text {
+  margin: 0;
+  padding-right: 14px;
+  font: inherit;
+}
