@@ -30,6 +30,10 @@ export interface MenuItem {
 
 export interface SettingsApi {
   get(key: string): unknown;
+  // Writes one of this extension's own settings - the same store the
+  // Settings UI edits - so the tree/list toggle IS the setting, not a
+  // second copy of it.
+  set?(key: string, value: unknown): void;
   onDidChange(cb: () => void): () => void;
 }
 
@@ -119,6 +123,55 @@ export function readPollInterval(): number {
 
 export function readShowRemotes(): boolean {
   return extSettings?.get("gitGraph.showRemoteBranches") !== false;
+}
+
+export function readShowTags(): boolean {
+  return extSettings?.get("gitGraph.showTags") !== false;
+}
+
+export function readShowStashes(): boolean {
+  return extSettings?.get("gitGraph.showStashes") !== false;
+}
+
+export function readFirstParent(): boolean {
+  return extSettings?.get("gitGraph.firstParent") === true;
+}
+
+// How many commits one page of the graph holds - the first load and every
+// Load More after it.
+export function readPageSize(): number {
+  const raw = Number(extSettings?.get("gitGraph.commitsPerPage"));
+  if (!Number.isFinite(raw) || raw <= 0) return 300;
+  return Math.min(5000, Math.max(50, Math.round(raw)));
+}
+
+export function readDateStyle(): "relative" | "absolute" {
+  return extSettings?.get("gitGraph.dateStyle") === "absolute" ? "absolute" : "relative";
+}
+
+export function readShowHash(): boolean {
+  return extSettings?.get("gitGraph.showHashColumn") !== false;
+}
+
+export function readShowUncommitted(): boolean {
+  return extSettings?.get("gitGraph.showUncommittedChanges") !== false;
+}
+
+export function readFileView(): "list" | "tree" {
+  return extSettings?.get("gitGraph.fileView") === "tree" ? "tree" : "list";
+}
+
+export function writeFileView(view: "list" | "tree"): void {
+  extSettings?.set?.("gitGraph.fileView", view);
+}
+
+// Bumped whenever any setting changes, so a view that reads settings during
+// render re-reads them: the host applies a settings change live, and a graph
+// that only noticed on remount would sit there showing the old page size.
+export function useSettingsRevision(): number {
+  const [revision, setRevision] = useState(0);
+  useEffect(() => extSettings?.onDidChange(() => setRevision((n) => n + 1)), []);
+  return revision;
 }
 
 // ---- Repo tracking ----

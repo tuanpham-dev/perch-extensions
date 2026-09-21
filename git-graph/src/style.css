@@ -49,6 +49,243 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- The graph's own toolbar row ---- */
+
+/* Sits at the top of the view, above the find bar. Everything in it may
+   shrink - the menu labels ellipsize first - so one row holds on a phone
+   without wrapping or pushing the Find button off the edge. */
+.gg-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gg-toolbar-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+
+.gg-toolbar-button {
+  flex-shrink: 0;
+}
+
+.gg-toolbar .gg-count {
+  flex-shrink: 0;
+  padding: 0 4px;
+}
+
+/* ---- The two filter menus ---- */
+
+.gg-menu-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 28ch;
+  padding: 1px 4px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gg-menu-button:hover,
+.gg-menu-button.open {
+  background: var(--list-hover-bg);
+  color: var(--fg);
+}
+
+/* Something is narrowed: the label alone is easy to miss in a tab strip. */
+.gg-menu-button.active {
+  color: var(--fg-accent);
+}
+
+.gg-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gg-menu-caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* Portalled to the body, so it needs its own stacking and its own frame. */
+.gg-menu-panel {
+  position: fixed;
+  /* Above the app's own chrome, below a context menu opened on top of it
+     (.context-menu is 1000). */
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 420px);
+  padding: 4px;
+  box-sizing: border-box;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.gg-menu-search {
+  flex-shrink: 0;
+  margin-bottom: 4px;
+  padding: 3px 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.gg-menu-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gg-menu-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.gg-menu-group-label {
+  padding: 4px 6px 2px;
+  color: var(--fg-inactive);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gg-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gg-menu-row:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.gg-menu-row:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.gg-menu-check {
+  flex-shrink: 0;
+  width: 14px;
+  font-size: 12px;
+  color: var(--fg-accent);
+}
+
+.gg-menu-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gg-menu-row-detail {
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gg-menu-footer {
+  flex-shrink: 0;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.gg-menu-note {
+  padding: 4px 6px;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ---- The find bar ---- */
+
+.gg-find {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+
+.gg-find-icon {
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+}
+
+.gg-find-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.gg-find-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gg-find-status {
+  flex-shrink: 0;
+  min-width: 7ch;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.gg-find-status.none {
+  color: var(--error);
+}
+
+.gg-find-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
 .gg-row {
   display: flex;
   align-items: center;
@@ -63,6 +300,50 @@
 .gg-row:hover,
 .gg-row.expanded {
   background: var(--list-hover-bg);
+}
+
+/* A find hit, and the one the ↑/↓ buttons are parked on. Background only:
+   the row's own colors - lane, ref chips, status letters - have to survive
+   being matched. */
+.gg-row.match {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.gg-row.current-match {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* The Commit column, last in the row like VS Code's Git Graph. A fixed
+   width so the column lines up down the page whatever the hashes are. On by
+   default; always shown while the lanes are hidden, since a filtered row
+   needs some identity to read or copy. */
+.gg-hash {
+  flex-shrink: 0;
+  width: 7ch;
+  color: var(--fg-inactive);
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+}
+
+/* ---- The Uncommitted Changes row ---- */
+
+.gg-row.wip .gg-subject {
+  font-style: italic;
+}
+
+/* Its lane: grey and dashed from the row down to HEAD, and a hollow dot -
+   something that isn't a commit yet. (.c-1 is WIP_COLOR in graphModel.) */
+.gg-edge.c-1 {
+  stroke: var(--fg-inactive);
+  stroke-dasharray: 3 2;
+}
+
+.gg-dot.c-1 {
+  fill: var(--bg);
+  stroke: var(--fg-inactive);
+  stroke-width: 1.5;
 }
 
 .gg-lane {
@@ -171,7 +452,19 @@
 /* ---- Expanded file list ---- */
 
 .gg-files {
+  /* Anchors .gg-lanes-below, which runs the full height of the list. */
+  position: relative;
   padding-bottom: 6px;
+}
+
+/* The lines that leave the expanded commit's row, carried down past its
+   file list so they meet the next row instead of stopping short. */
+.gg-lanes-below {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  pointer-events: none;
 }
 
 .gg-file {
@@ -205,6 +498,37 @@
 .gg-status.s-D { color: var(--error); }
 .gg-status.s-M { color: var(--git-modified-fg); }
 .gg-status.s-R, .gg-status.s-C { color: var(--git-renamed-fg); }
+.gg-status.s-U { color: var(--git-added-fg); }
+.gg-status.s-conflict { color: var(--error); }
+
+/* A folder row in the tree view. */
+.gg-dir {
+  color: var(--fg);
+}
+
+.gg-dir-chevron {
+  flex-shrink: 0;
+  width: 1.4em;
+  font-size: 12px;
+  text-align: center;
+  color: var(--fg-inactive);
+}
+
+.gg-dir .gg-file-path {
+  font-family: inherit;
+}
+
+.gg-dir-count {
+  flex-shrink: 0;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--list-hover-bg);
+  color: var(--fg-inactive);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
 
 .gg-file-path {
   flex: 1;
@@ -252,5 +576,63 @@
 
   .gg-refs {
     max-width: 55%;
+  }
+
+  /* Two labelled menus, the count and Find share one row: each menu gets at
+     most a third of it and ellipsizes inside that. */
+  .gg-menu-button {
+    max-width: 34vw;
+  }
+
+  .gg-find-toggle {
+    gap: 2px;
+  }
+}
+
+/* A phone: the count is the first thing to go - the Load More button still
+   says when there is more - so the two filter labels keep their room. */
+@media (max-width: 420px) {
+  .gg-toolbar .gg-count {
+    display: none;
+  }
+
+  .gg-menu-button {
+    max-width: 40vw;
+  }
+}
+
+/* Touch: VS Code-sized 22px controls are too small to hit with a finger. */
+@media (pointer: coarse) {
+  .gg-toolbar {
+    padding: 4px 8px;
+  }
+
+  .gg-menu-button {
+    min-height: 32px;
+    padding: 2px 8px;
+    font-size: 13px;
+  }
+
+  .gg-toolbar-button,
+  .gg-find .icon-button {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .gg-find-input,
+  .gg-menu-search {
+    /* 16px stops iOS Safari zooming the page when the field takes focus. */
+    font-size: 16px;
+    padding: 5px 8px;
+  }
+
+  .gg-menu-row {
+    min-height: 36px;
+    font-size: 14px;
+  }
+
+  .gg-find-toggle {
+    min-height: 32px;
+    font-size: 13px;
   }
 }

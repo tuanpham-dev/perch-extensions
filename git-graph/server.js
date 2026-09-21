@@ -66,6 +66,9 @@ function resolveSafePath(root, relPath) {
 }
 
 const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
+// The pseudo-hash of the graph's Uncommitted Changes row. Not hex, so it can
+// never be mistaken for (or collide with) a real commit.
+const WORKING = "WORKING";
 // A ref name passed as a positional argument must not start with "-", or git
 // parses it as an option.
 const SAFE_REF_RE = /^[^-]/;
@@ -116,6 +119,24 @@ function parseNameStatusZ(raw) {
   return out;
 }
 
+// A query value the client sent as a list: either repeated parameters or one
+// \x1f-joined string, the same separator the log records use.
+function toList(value) {
+  if (Array.isArray(value)) return value.flatMap((v) => toList(v));
+  if (typeof value !== "string") return [];
+  return value
+    .split("\x1f")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+// A ref the branch filter named. It is passed to `git log` as a positional
+// argument, so it must not start with "-" (git would read it as an option)
+// and must not carry whitespace or control characters. Everything the filter
+// offers comes from this extension's own /refs listing; this is the guard for
+// a hand-edited request.
+const REF_ARG_RE = /^[^-\s\x00-\x1f][^\s\x00-\x1f]*$/;
+
 export function activate({ router }) {
   async function requireRoot(req, res) {
     const cwd = typeof req.query.cwd === "string" ? req.query.cwd : (req.body?.cwd ?? "");
@@ -165,23 +186,64 @@ export function activate({ router }) {
     res.json({ root });
   });
 
+  // Which commits the graph walks: the refs the branch filter names, or -
+  // when it names none - every ref of the kinds its toggles leave on.
+  // Explicit flags rather than --all so one toggle can drop one kind of ref
+  // without taking the others with it.
+  function logScope(query) {
+    const refs = toList(query.refs).filter((ref) => REF_ARG_RE.test(ref));
+    if (refs.length > 0) return refs.slice(0, 200);
+    const scope = ["--branches"];
+    if (query.remotes !== "0") scope.push("--remotes");
+    if (query.tags !== "0") scope.push("--tags");
+    if (query.stashes !== "0") scope.push("--glob=refs/stash");
+    // HEAD last so a detached HEAD is still walked when no branch points at
+    // it, without displacing the refs above.
+    scope.push("HEAD");
+    return scope;
+  }
+
+  // The narrowing that applies to whichever scope came back above. --author
+  // patterns are fixed strings so a name with a "." or "+" in it matches
+  // itself; several are OR-ed by git, which is what the author filter's
+  // multi-select means.
+  function logFilters(query) {
+    const args = [];
+    const authors = toList(query.authors).slice(0, 50);
+    for (const author of authors) args.push(`--author=${author}`);
+    if (authors.length > 0) args.push("--fixed-strings", "--regexp-ignore-case");
+    if (query.firstParent === "1") args.push("--first-parent");
+    return args;
+  }
+
   // The DAG. --topo-order keeps a branch's commits together instead of
   // interleaving them by date, which is what makes the lanes readable.
   router.get("/log", async (req, res) => {
     const root = await requireRoot(req, res);
     if (!root) return;
     const rawLimit = Number(req.query.limit);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(2000, Math.floor(rawLimit)) : 300;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(5000, Math.floor(rawLimit)) : 300;
     const rawSkip = Number(req.query.skip);
     const skip = Number.isFinite(rawSkip) && rawSkip > 0 ? Math.floor(rawSkip) : 0;
-    const withRemotes = req.query.remotes !== "0";
     try {
       const remoteNames = (await git(["remote"], root)).split("\n").map((r) => r.trim()).filter(Boolean);
-      const scope = withRemotes
-        ? ["--all"]
-        : ["--branches", "--tags", "--glob=refs/stash", "HEAD"];
+      const scope = logScope(req.query);
+      const filters = logFilters(req.query);
+      // The trailing "--" keeps a ref name that also names a file from being
+      // read as a path.
       const raw = await git(
-        ["log", "--topo-order", `--format=${LOG_FORMAT}`, "-n", String(limit), "--skip", String(skip), ...scope],
+        [
+          "log",
+          "--topo-order",
+          `--format=${LOG_FORMAT}`,
+          "-n",
+          String(limit),
+          "--skip",
+          String(skip),
+          ...filters,
+          ...scope,
+          "--",
+        ],
         root,
         LOG_TIMEOUT,
       );
@@ -201,7 +263,7 @@ export function activate({ router }) {
         });
       let total = commits.length;
       try {
-        const counted = await git(["rev-list", "--count", ...scope], root, LOG_TIMEOUT);
+        const counted = await git(["rev-list", "--count", ...filters, ...scope, "--"], root, LOG_TIMEOUT);
         // With several scopes rev-list prints one count per line; the graph
         // only needs a ceiling for its "N of M" readout.
         total = counted
@@ -271,6 +333,73 @@ export function activate({ router }) {
     }
   });
 
+  // ---- The branch filter's listing ----
+  //
+  // Names and nothing else: the filter menu needs something to tick, not the
+  // per-ref detail git-scm's BRANCHES pane renders. Branches come back
+  // most-recently-committed first, which is the order someone picking "the
+  // one I was just on" wants.
+  router.get("/refs", async (req, res) => {
+    const root = await requireRoot(req, res);
+    if (!root) return;
+    try {
+      const [rawLocal, rawRemote, rawTags, head] = await Promise.all([
+        git(["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"], root),
+        git(["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes"], root),
+        git(["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", "refs/tags"], root),
+        git(["symbolic-ref", "--short", "-q", "HEAD"], root).catch(() => ""),
+      ]);
+      const names = (raw) =>
+        raw
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+      res.json({
+        current: head.trim() || null,
+        local: names(rawLocal),
+        // "origin/HEAD" is a pointer at the remote's default branch, not a
+        // branch of its own - ticking it would duplicate whatever it points
+        // at.
+        remotes: names(rawRemote).filter((name) => !name.endsWith("/HEAD")),
+        tags: names(rawTags),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // How far back the author list looks. `git shortlog` would walk the whole
+  // history to build the same list; one bounded log is enough to offer the
+  // people who actually show up in a graph, and the README says so.
+  const AUTHOR_SCAN = 5000;
+
+  // The author filter's listing, over whatever the branch filter is showing:
+  // narrowing to one branch should offer that branch's authors.
+  router.get("/authors", async (req, res) => {
+    const root = await requireRoot(req, res);
+    if (!root) return;
+    try {
+      const raw = await git(
+        ["log", "--format=%an%x1f%ae", "-n", String(AUTHOR_SCAN), ...logScope(req.query), "--"],
+        root,
+        LOG_TIMEOUT,
+      );
+      const counts = new Map();
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        const [name, email] = line.split("\x1f");
+        if (!name) continue;
+        const entry = counts.get(name) ?? { name, email: email ?? "", commits: 0 };
+        entry.commits++;
+        counts.set(name, entry);
+      }
+      const authors = [...counts.values()].sort((a, b) => b.commits - a.commits || a.name.localeCompare(b.name));
+      res.json({ authors, scanned: Math.min(AUTHOR_SCAN, raw.split("\n").filter(Boolean).length) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.get("/commit-files", async (req, res) => {
     const root = await requireRoot(req, res);
     if (!root) return;
@@ -317,6 +446,13 @@ export function activate({ router }) {
     if (!root) return;
     const hash = typeof req.query.hash === "string" ? req.query.hash : "";
     const relPath = typeof req.query.path === "string" ? req.query.path : "";
+    // WORKING is the graph's Uncommitted Changes row: HEAD against the file
+    // on disk, the whole of what a commit right now would record (staged
+    // and unstaged alike, which is what the row counts).
+    if (hash === WORKING) {
+      await workingDiffSides(root, relPath, req, res);
+      return;
+    }
     if (!COMMIT_HASH_RE.test(hash)) {
       res.status(400).json({ error: "hash must be a hex commit SHA" });
       return;
@@ -349,6 +485,109 @@ export function activate({ router }) {
           readOnlyReason: "This is a committed revision.",
         },
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  async function workingDiffSides(root, relPath, req, res) {
+    const abs = relPath ? resolveSafePath(root, relPath) : null;
+    if (!abs) {
+      res.status(400).json({ error: "path is required and must stay inside the repository" });
+      return;
+    }
+    const oldPath = typeof req.query.oldPath === "string" && req.query.oldPath ? req.query.oldPath : relPath;
+    if (!resolveSafePath(root, oldPath)) {
+      res.status(400).json({ error: "oldPath escapes the repository root" });
+      return;
+    }
+    let before = "";
+    let inHead = true;
+    try {
+      before = await git(["show", `HEAD:${oldPath}`], root);
+    } catch {
+      inHead = false;
+    }
+    const fs = await import("node:fs");
+    const onDisk = fs.existsSync(abs);
+    res.json({
+      original: { content: before, label: inHead ? "HEAD" : "HEAD (new file)" },
+      // The right side is the file itself, so it is editable - the same
+      // thing git-scm's Working Tree diff offers - unless it was deleted.
+      modified: onDisk
+        ? { content: fs.readFileSync(abs, "utf8"), label: "Working Tree", path: abs }
+        : { content: "", label: "Working Tree (deleted)", readOnlyReason: "This file was deleted." },
+    });
+  }
+
+  // ---- Uncommitted changes ----
+  //
+  // Everything a commit right now would record, against HEAD: staged,
+  // unstaged and untracked, in one list. The graph draws it as a row above
+  // HEAD. `summary=1` returns only the count and a digest - what the poll
+  // needs to notice a change - without the per-file numstat.
+  function statusLetter(xy) {
+    if (xy === "??") return "U";
+    // Both sides modified, or added/deleted by both: an unresolved merge.
+    if (xy.includes("U") || xy === "AA" || xy === "DD") return "!";
+    if (xy.includes("R")) return "R";
+    if (xy.includes("D")) return "D";
+    if (xy[0] === "A") return "A";
+    return "M";
+  }
+
+  function parseStatusZ(raw) {
+    const tokens = raw.split("\0");
+    const out = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token.length < 4) continue;
+      const xy = token.slice(0, 2);
+      const filePath = token.slice(3);
+      let oldPath = null;
+      // A rename or copy carries its source as the next NUL-separated field.
+      if (xy.includes("R") || xy.includes("C")) oldPath = tokens[++i] ?? null;
+      out.push({ path: filePath, oldPath, status: statusLetter(xy) });
+    }
+    return out;
+  }
+
+  router.get("/uncommitted", async (req, res) => {
+    const root = await requireRoot(req, res);
+    if (!root) return;
+    try {
+      let head = null;
+      try {
+        head = (await git(["rev-parse", "HEAD"], root)).trim();
+      } catch {
+        // An unborn branch: nothing to draw a row above.
+      }
+      const raw = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], root);
+      const entries = head ? parseStatusZ(raw) : [];
+      const digest = createHash("sha1").update(`${head}\n${raw}`).digest("hex");
+      if (req.query.summary === "1") {
+        res.json({ head, count: entries.length, digest });
+        return;
+      }
+      let numstat = new Map();
+      try {
+        numstat = parseNumstatZ(await git(["diff", "HEAD", "--numstat", "-z", "-M"], root));
+      } catch {
+        // Counts are decoration; the list stands without them.
+      }
+      const files = entries.map((entry) => {
+        const counts = numstat.get(entry.path);
+        return {
+          path: entry.path,
+          oldPath: entry.oldPath,
+          status: entry.status,
+          added: counts?.added ?? 0,
+          removed: counts?.removed ?? 0,
+          binary: counts?.binary ?? false,
+        };
+      });
+      files.sort((a, b) => a.path.localeCompare(b.path));
+      res.json({ head, count: files.length, digest, files });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

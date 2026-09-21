@@ -2,7 +2,7 @@
 // `node --test --experimental-strip-types` (see package.json's test script).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { layoutGraph, maxLanes, type GraphCommit } from "./graphModel.ts";
+import { layoutGraph, maxLanes, WIP_COLOR, type GraphCommit } from "./graphModel.ts";
 
 const c = (hash: string, ...parents: string[]): GraphCommit => ({ hash, parents });
 
@@ -55,12 +55,42 @@ describe("layoutGraph", () => {
 
     // The convergence is drawn on the row where it becomes known - Y's -
     // not held open until Z is reached. That is what keeps the graph as
-    // narrow as git's own --graph.
-    const converge = byHash.Y.edges.find((e) => e.kind === "converge");
-    assert.ok(converge, "the second lane is collapsed as soon as both wait for Z");
-    assert.equal(converge.fromLane, 1);
-    assert.equal(converge.toLane, 0);
-    assert.deepEqual(byHash.Z.edges, [], "so Z's own row has nothing left to join");
+    // narrow as git's own --graph. Y's lane was born on Y's own row, so the
+    // join leaves Y's dot rather than the top edge of a lane that was not
+    // there yet, and Y records no straight edge into a lane that ends here.
+    assert.deepEqual(
+      byHash.Y.edges,
+      [{ fromLane: 1, toLane: 0, color: 1, kind: "merge" }],
+      "the second lane is collapsed as soon as both wait for Z",
+    );
+    assert.deepEqual(
+      byHash.Z.edges,
+      [{ fromLane: 0, toLane: 0, color: 0, kind: "branch" }],
+      "so Z's own row only has to join the lane arriving from above",
+    );
+  });
+
+  it("leaves no stub below a lane that ends on the row it was born", () => {
+    //  X      lane 0, waiting for P
+    //  Y      a tip whose parent is P too: it takes lane 1 and gives it up
+    //         on the same row
+    //  P
+    const rows = layoutGraph([c("X", "P"), c("Y", "P"), c("P")]);
+    const y = rows[1];
+    assert.equal(
+      y.edges.some((e) => e.kind === "straight"),
+      false,
+      "a straight edge here would be drawn down into a lane that no longer exists",
+    );
+    assert.equal(
+      y.edges.some((e) => e.kind === "converge"),
+      false,
+      "and a converge would be drawn from the top edge, above a dot with nothing above it",
+    );
+    assert.deepEqual(
+      y.edges.map((e) => `${e.kind}:${e.fromLane}->${e.toLane}`),
+      ["merge:1->0"],
+    );
   });
 
   it("frees a collapsed lane for the next unrelated tip", () => {
@@ -77,7 +107,32 @@ describe("layoutGraph", () => {
     const rows = layoutGraph([c("A", "B"), c("B")]);
     const last = rows[rows.length - 1];
     assert.equal(last.hash, "B");
-    assert.deepEqual(last.edges, [], "a root commit has nothing below it");
+    assert.deepEqual(
+      last.edges,
+      [{ fromLane: 0, toLane: 0, color: 0, kind: "branch" }],
+      "a root commit is joined to the row above and has nothing below it",
+    );
+  });
+
+  it("joins every dot to the row above it", () => {
+    // The rail down a column is drawn in two halves: each row's "straight"
+    // edge from its dot to its bottom edge, and the next row's "branch" edge
+    // from its top edge to its dot. Missing the second half left a gap above
+    // every commit.
+    const rows = layoutGraph([c("A", "B"), c("B", "C"), c("C", "D")]);
+    const incoming = (i: number) =>
+      rows[i].edges.some((e) => e.kind === "branch" && e.fromLane === rows[i].lane && e.toLane === rows[i].lane);
+    assert.equal(incoming(0), false, "a branch tip has nothing above it to join");
+    assert.equal(incoming(1), true);
+    assert.equal(incoming(2), true);
+  });
+
+  it("joins a merge commit's dot both upward and along its parents", () => {
+    //  A      the tip
+    //  M      a merge below it: joined from above, and out to both parents
+    const rows = layoutGraph([c("A", "M"), c("M", "B", "S"), c("B"), c("S")]);
+    const kinds = rows[1].edges.map((e) => `${e.kind}:${e.fromLane}->${e.toLane}`);
+    assert.deepEqual(kinds, ["branch:0->0", "straight:0->0", "merge:0->1"]);
   });
 
   it("draws a parent outside the loaded window as a continuing lane", () => {
@@ -98,6 +153,66 @@ describe("layoutGraph", () => {
       yRow.through.map((t) => t.lane),
       [0],
     );
+  });
+
+  it("starts a merged-in branch's lane at the merge, not above it", () => {
+    //  A        mainline
+    //  M        the merge: it is what brings lane 1 into existence
+    //  |\
+    //  | B      the side branch's tip
+    //  P        the shared parent
+    const rows = layoutGraph([c("A", "M"), c("M", "P", "B"), c("B", "P"), c("P")]);
+    const merge = rows[1];
+    assert.deepEqual(
+      merge.through,
+      [],
+      "drawing lane 1 behind this row would run the branch's column up past the commit that merged it",
+    );
+    assert.ok(merge.edges.some((e) => e.kind === "merge" && e.toLane === 1));
+    // The row below it is where that lane legitimately starts passing.
+    assert.deepEqual(rows[2].through, [{ lane: 0, color: 0 }]);
+  });
+
+  it("keeps a lane that a merge only joins among the pass-through lines", () => {
+    //  Two tips, then a merge whose second parent is the lane the second tip
+    //  is already waiting for: that lane was not opened here, so it still
+    //  passes behind the row.
+    const rows = layoutGraph([c("X", "P"), c("Y", "Q"), c("M", "P", "Q"), c("P"), c("Q")]);
+    const merge = rows.find((r) => r.hash === "M");
+    assert.ok(merge);
+    assert.ok(
+      merge.through.some((t) => t.lane === 1),
+      "Q's lane runs from Y's row through this one",
+    );
+  });
+
+  it("records the lanes crossing each row's bottom edge", () => {
+    //  M      merge: lanes 0 and 1 both leave its bottom edge
+    //  |\
+    //  A B
+    //  |/
+    //  P      root: nothing leaves it
+    const rows = layoutGraph([c("M", "A", "B"), c("A", "P"), c("B", "P"), c("P")]);
+    assert.deepEqual(
+      rows[0].below.map((b) => b.lane),
+      [0, 1],
+      "an expanded merge has to carry both lines through its file list",
+    );
+    assert.deepEqual(rows[rows.length - 1].below, [], "and a root commit carries none");
+  });
+
+  it("draws the uncommitted lane in the WIP colour and hands HEAD a real one", () => {
+    //  *      Uncommitted Changes, parent HEAD
+    //  H      HEAD
+    //  P
+    const rows = layoutGraph([{ hash: "WORKING", parents: ["H"], color: WIP_COLOR }, c("H", "P"), c("P")]);
+    assert.equal(rows[0].color, WIP_COLOR);
+    assert.equal(rows[0].below[0].color, WIP_COLOR, "the dashed line runs down to HEAD");
+    assert.notEqual(rows[1].color, WIP_COLOR, "HEAD's own history is not work in progress");
+    const incoming = rows[1].edges.find((e) => e.kind === "branch");
+    assert.equal(incoming?.color, WIP_COLOR, "the segment arriving at HEAD is still the dashed one");
+    const outgoing = rows[1].edges.find((e) => e.kind === "straight");
+    assert.equal(outgoing?.color, rows[1].color);
   });
 
   it("returns nothing for no commits", () => {

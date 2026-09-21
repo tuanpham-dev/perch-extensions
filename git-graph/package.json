@@ -2,9 +2,9 @@
   "name": "git-graph",
   "private": true,
   "publisher": "perch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Git Graph",
-  "description": "A GRAPH tab for the active repository: every branch's commits as a lane graph with their branch, remote and tag labels. Click a commit for its changed files and their diffs; right-click a commit or a ref label to check out, branch, tag, cherry-pick, revert, reset or delete.",
+  "description": "A GRAPH tab for the active repository: every branch's commits as a lane graph with their branch, remote and tag labels. Filter by branch, remote, tag or author, find a commit by message, author, hash or ref, click a commit for its changed files and their diffs, and right-click a commit or a ref label to check out, branch, tag, cherry-pick, revert, reset or delete.",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
@@ -20,7 +20,65 @@
         "gitGraph.showRemoteBranches": {
           "type": "boolean",
           "default": true,
-          "description": "Include remote-tracking branches in the graph. Off draws only local branches, tags and stashes, which on a repository with many stale remote branches is a much shorter graph."
+          "description": "Include remote-tracking branches in a graph the first time it is opened. Off draws only local branches, tags and stashes, which on a repository with many stale remote branches is a much shorter graph. The Branches menu in the tab bar changes this per repository, and its choice is remembered from then on."
+        },
+        "gitGraph.showTags": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include commits that are only reachable from a tag. Same as the Branches menu's Show tags, which overrides this per repository."
+        },
+        "gitGraph.showStashes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include stash entries in the graph. Same as the Branches menu's Show stashes, which overrides this per repository."
+        },
+        "gitGraph.firstParent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Follow only each merge's first parent, so the graph shows the mainline and not the commits that were merged into it. The lanes stay correct - git rewrites the history it walks, it does not drop commits from the middle of one."
+        },
+        "gitGraph.commitsPerPage": {
+          "type": "integer",
+          "default": 300,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "How many commits the graph loads at a time, for the first page and for every Load More after it. Larger pages mean fewer round trips and a longer wait for each one."
+        },
+        "gitGraph.dateStyle": {
+          "type": "string",
+          "default": "relative",
+          "enum": [
+            "relative",
+            "absolute"
+          ],
+          "enumItemLabels": [
+            "Relative (3 days ago)",
+            "Absolute (20 Sep 2026, 14:03)"
+          ],
+          "description": "How the date column reads. The other form is always in the row's tooltip."
+        },
+        "gitGraph.showHashColumn": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show each commit's short hash as the last column, where VS Code's Git Graph puts it. It stays visible whenever the lanes are hidden - under an author filter, or the find bar's Filter - so a row still has something to read and copy."
+        },
+        "gitGraph.showUncommittedChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an Uncommitted Changes row above HEAD whenever the working tree has staged, unstaged or untracked changes. Expand it to see the files; clicking one opens HEAD against the file on disk, which you can edit there."
+        },
+        "gitGraph.fileView": {
+          "type": "string",
+          "default": "list",
+          "enum": [
+            "list",
+            "tree"
+          ],
+          "enumItemLabels": [
+            "List",
+            "Tree"
+          ],
+          "description": "How an expanded commit lists its changed files: one path per row, or grouped into folders. The button at the right of the graph's toolbar switches this too."
         }
       }
     }
