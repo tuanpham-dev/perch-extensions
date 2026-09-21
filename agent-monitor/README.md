@@ -23,9 +23,15 @@ one window per tab, so a window's mark always reflects a single pane.
 
 ## The AGENTS board
 
-The same states, for every agent at once, in the editor area: **Agent Board: Open**
-(`Ctrl+Shift+Alt+A`, rebindable in Keyboard Shortcuts) opens an **Agents** tab that lays
-every agent window out as a kanban board. Running it again focuses the tab already open.
+The same states, for every agent at once, in the editor area: an **Agents** tab that lays
+every agent window out as a kanban board. Two ways in:
+
+- **Agent Board: Open** in the command palette (`Ctrl+Shift+Alt+A` by default, rebindable
+  in Keyboard Shortcuts).
+- The robot icon in the status bar, which turns amber while an agent is waiting on you.
+  Hovering it says how many are waiting and how many are working.
+
+Opening it again focuses the tab already there.
 
 - **Columns.** *Group by: Status* draws Working, Waiting on you, Done and Idle, always all
   four so the board keeps its shape; an interrupted turn is a red card in Done.

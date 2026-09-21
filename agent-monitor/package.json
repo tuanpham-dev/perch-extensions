@@ -2,9 +2,9 @@
   "name": "agent-monitor",
   "private": true,
   "publisher": "perch",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "displayName": "Agent Monitor",
-  "description": "Classifies every terminal window running an AI coding agent as working/waiting/done/idle and marks that window's own PROJECTS-pane row the way Orca does: a spinner, an amber ?, an emerald dot, a red dot for an interrupted turn, a gray dot for idle. Reads the app's own agent list from Settings \u2192 AI Providers, with zero-config detection from pane titles and Claude Code transcripts; installing the app's agent hooks there upgrades permission-prompt and done detection to the agent's own events, for every agent in that list rather than Claude Code alone.",
+  "description": "Classifies every terminal window running an AI coding agent as working/waiting/done/idle and marks that window's own PROJECTS-pane row the way Orca does: a spinner, an amber ?, an emerald dot, a red dot for an interrupted turn, a gray dot for idle. Reads the app's own agent list from Settings \u2192 AI Providers, with zero-config detection from pane titles and Claude Code transcripts; installing the app's agent hooks there upgrades permission-prompt and done detection to the agent's own events, for every agent in that list rather than Claude Code alone. The AGENTS board lays every agent window out as a kanban of those same states, grouped by status or by project, from the robot icon in the status bar or Agent Board: Open.",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {

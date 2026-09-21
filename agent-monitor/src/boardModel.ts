@@ -115,6 +115,21 @@ export function summaryOf(row: BoardAgent): string {
   return parts.join(" · ");
 }
 
+// The whole fleet in one line, for the status-bar launcher's tooltip:
+// "2 waiting on you, 1 working". Only the two states worth interrupting for
+// - done and idle are what the board is for reading at leisure, and a
+// tooltip that lists every state says nothing. Empty when neither applies,
+// and the launcher then names itself alone.
+export function attentionSummary(rows: readonly Pick<BoardAgent, "state">[]): string {
+  const count = (state: AgentState) => rows.filter((r) => r.state === state).length;
+  const waiting = count("waiting");
+  const working = count("working");
+  const parts: string[] = [];
+  if (waiting > 0) parts.push(`${waiting} waiting on you`);
+  if (working > 0) parts.push(`${working} working`);
+  return parts.join(", ");
+}
+
 // ---- Projects and scope ----
 
 function parentName(repo: string): string {

@@ -596,3 +596,10 @@
     scroll-snap-align: start;
   }
 }
+
+/* The status-bar launcher, amber while an agent is blocked on you - the same
+   signal the "?" mark gives on that window's PROJECTS row, from the same
+   variable, so the two never drift apart. */
+.agent-monitor-statusbar-waiting {
+  color: var(--agent-monitor-waiting, #f59e0b);
+}

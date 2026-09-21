@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  attentionSummary,
   columnIdOf,
   columnsFor,
   defaultBoardState,
@@ -17,6 +18,7 @@ import {
   relativeTime,
   sortCards,
   summaryOf,
+  type AgentState,
   type BoardAgent,
 } from "./boardModel.ts";
 
@@ -267,5 +269,20 @@ describe("looksHookless", () => {
     assert.equal(looksHookless([agent("a"), agent("b", { state: "done" })]), true);
     assert.equal(looksHookless([agent("a"), agent("b", { prompt: "hi" })]), false);
     assert.equal(looksHookless([]), false);
+  });
+});
+
+describe("attentionSummary", () => {
+  const rows = (...states: AgentState[]) => states.map((state) => ({ state }));
+
+  it("counts the states worth interrupting for, waiting first", () => {
+    assert.equal(attentionSummary(rows("working", "waiting", "waiting")), "2 waiting on you, 1 working");
+    assert.equal(attentionSummary(rows("working")), "1 working");
+    assert.equal(attentionSummary(rows("waiting")), "1 waiting on you");
+  });
+
+  it("says nothing about done and idle, which the board is for", () => {
+    assert.equal(attentionSummary(rows("done", "idle", "done")), "");
+    assert.equal(attentionSummary([]), "");
   });
 });

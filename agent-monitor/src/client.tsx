@@ -11,10 +11,11 @@
 // Settings → AI Providers now, for every agent at once rather than for Claude
 // Code alone (plans/agent-platform-core.md).
 import "./style.css";
-import type { ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { injectStylesheet } from "./injectStylesheet";
 import BoardView from "./BoardView";
-import { labelOf, markOf } from "./boardModel";
+import Icon from "./Icon";
+import { attentionSummary, labelOf, markOf } from "./boardModel";
 import { host, type AppApi, type SettingsApi } from "./host";
 
 // ---- Module-level host bridge ----
@@ -112,6 +113,14 @@ interface ExtensionContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registerFileViewer(viewer: { id: string; extensions: string[]; component: ComponentType<any> }): void;
   registerCommand(command: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
+  // Optional: an older host has no status bar for extensions to contribute to.
+  registerStatusBarItem?(item: {
+    id: string;
+    title?: string;
+    placement?: "left" | "right";
+    order?: number;
+    component: typeof AgentBoardStatusItem;
+  }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   app: AppApi;
@@ -125,6 +134,48 @@ const BOARD_PATH = "agents";
 
 function openBoard(): void {
   host.app?.openViewerTab(BOARD_VIEWER, BOARD_PATH, { title: "Agents" });
+}
+
+// ---- Status-bar launcher ----
+//
+// The board is worth reaching without remembering a chord, the way Git Graph
+// and Jira both offer theirs. Icon only, so the bar stays as narrow on a
+// phone as it is on a desktop; what the counts say rides in the tooltip.
+//
+// Its own subscription rather than a prop: the poll below owns the agent
+// list, and the item lives outside any component that could be handed it.
+const agentListeners = new Set<() => void>();
+
+function useAgentRows(): AgentRow[] {
+  const [rows, setRows] = useState<AgentRow[]>(() => [...agentsByWindowKey.values()]);
+  useEffect(() => {
+    const read = () => setRows([...agentsByWindowKey.values()]);
+    agentListeners.add(read);
+    read();
+    return () => {
+      agentListeners.delete(read);
+    };
+  }, []);
+  return rows;
+}
+
+function AgentBoardStatusItem() {
+  const rows = useAgentRows();
+  const summary = attentionSummary(rows);
+  const waiting = rows.some((r) => r.state === "waiting");
+  return (
+    <button
+      className="status-bar-item"
+      title={summary ? `Open the Agents board - ${summary}` : "Open the Agents board"}
+      aria-label="Open the Agents board"
+      onClick={openBoard}
+    >
+      {/* Amber while an agent is blocked on you, the same signal and the
+          same hue as the "?" mark on its PROJECTS row - the one state that
+          is asking for you rather than reporting at you. */}
+      <Icon name="robot" className={waiting ? "agent-monitor-statusbar-waiting" : undefined} />
+    </button>
+  );
 }
 
 const POLL_MS = 10_000;
@@ -146,6 +197,15 @@ export function activate(ctx: ExtensionContext): void {
     defaultBinding: "ctrl+shift+alt+KeyA",
     run: openBoard,
   });
+  // Left group, after Git Graph (1) and Jira (2): the launchers sit together,
+  // and core's own readouts keep the right end.
+  ctx.registerStatusBarItem?.({
+    id: "openBoard",
+    title: "Agent Board",
+    placement: "left",
+    order: 3,
+    component: AgentBoardStatusItem,
+  });
 
   refreshDecorations = ctx.registerSessionDecorationProvider({
     id: "agents",
@@ -159,6 +219,7 @@ export function activate(ctx: ExtensionContext): void {
       .then((rows) => {
         agentsByWindowKey = new Map(rows.map((r) => [rowKey(r), r]));
         refreshDecorations?.();
+        for (const listener of agentListeners) listener();
       })
       .catch(() => {
         // Transient — next poll retries.
