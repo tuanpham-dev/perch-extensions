@@ -28,6 +28,7 @@ import {
   type FacetKey,
   type IssueFilters,
 } from "./filterModel";
+import { SORT_FIELDS, sortLabel, type ListView, type SortField } from "./sortModel";
 import type { Facets } from "./types";
 
 export interface FilterBarProps {
@@ -39,6 +40,12 @@ export interface FilterBarProps {
   showAssignee: boolean;
   onApply: (filters: IssueFilters) => void;
   onToggleSelectMode: () => void;
+  // Sort and group: how the list is ordered and split, apart from which
+  // tickets it holds. In the funnel popover everywhere; `inlineView` also puts
+  // them in the row itself, where the editor tab has the width for them.
+  view: ListView;
+  onView: (view: ListView) => void;
+  inlineView?: boolean;
   // Opens the editor tab. Passed by the sidebar panes only - the tab's own
   // filter row has nowhere bigger to go.
   onOpenTab?: () => void;
@@ -80,6 +87,49 @@ function optionsFor(facet: FacetKey, facets: Facets | null, showAssignee: boolea
   }
 }
 
+// The sort field, its direction and the grouping, as one small cluster used
+// both in the popover and inline in the editor tab's filter row.
+function ViewControls({ view, onView, compact }: { view: ListView; onView: (view: ListView) => void; compact: boolean }) {
+  const arrow = view.sort.dir === "asc" ? "\u2191" : "\u2193";
+  return (
+    <div className={`jira-viewcontrols${compact ? " compact" : ""}`}>
+      <label className="jira-viewcontrol">
+        <span>Sort</span>
+        <select
+          className="jira-input"
+          value={view.sort.field}
+          onChange={(e) => onView({ ...view, sort: { ...view.sort, field: e.target.value as SortField } })}
+        >
+          {SORT_FIELDS.map((f) => (
+            <option key={f.field} value={f.field}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        className="jira-selaction jira-sortdir"
+        title={`${sortLabel(view.sort.field)}, ${view.sort.dir === "asc" ? "ascending" : "descending"} - click to flip`}
+        onClick={() => onView({ ...view, sort: { ...view.sort, dir: view.sort.dir === "asc" ? "desc" : "asc" } })}
+      >
+        {compact ? arrow : `${arrow} ${view.sort.dir === "asc" ? "Ascending" : "Descending"}`}
+      </button>
+      <label className="jira-viewcontrol">
+        <span>Group</span>
+        <select
+          className="jira-input"
+          value={view.groupByProject ? "project" : "none"}
+          onChange={(e) => onView({ ...view, groupByProject: e.target.value === "project" })}
+        >
+          <option value="none">None</option>
+          <option value="project">Project</option>
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function FacetPopover({
   anchor,
   filters,
@@ -87,6 +137,8 @@ function FacetPopover({
   showAssignee,
   onApply,
   onClose,
+  view,
+  onView,
 }: {
   anchor: PopoverAnchor;
   filters: IssueFilters;
@@ -94,13 +146,15 @@ function FacetPopover({
   showAssignee: boolean;
   onApply: (filters: IssueFilters) => void;
   onClose: () => void;
+  view: ListView;
+  onView: (view: ListView) => void;
 }) {
   const groups = FACET_KEYS.map((facet) => ({ facet, options: optionsFor(facet, facets, showAssignee) })).filter(
     // A facet whose Jira metadata call failed arrives empty, and is left out
     // rather than shown as a heading with nothing under it.
     (group) => group.options.length > 0,
   );
-  const { ref, style } = usePopoverPosition<HTMLDivElement>(anchor, [groups.length, filters]);
+  const { ref, style } = usePopoverPosition<HTMLDivElement>(anchor, [groups.length, filters, view]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -128,6 +182,10 @@ function FacetPopover({
         <button className="icon-button" title="Close" onClick={onClose}>
           <Icon name="close" />
         </button>
+      </div>
+      <div className="jira-facet-group">
+        <div className="jira-pop-section">Order</div>
+        <ViewControls view={view} onView={onView} compact={false} />
       </div>
       {groups.length === 0 && <div className="jira-empty">No filter values available.</div>}
       {groups.map(({ facet, options }) => (
@@ -157,6 +215,9 @@ export default function FilterBar({
   onApply,
   onToggleSelectMode,
   onOpenTab,
+  view,
+  onView,
+  inlineView = false,
 }: FilterBarProps) {
   const [anchor, setAnchor] = useState<PopoverAnchor | null>(null);
   // Held locally between keystrokes so typing never waits on a round trip;
@@ -202,6 +263,7 @@ export default function FilterBar({
           aria-label="Search issues"
           onChange={(e) => onType(e.target.value)}
         />
+        {inlineView && <ViewControls view={view} onView={onView} compact />}
         <button
           className={`icon-button jira-funnel${count > 0 ? " active" : ""}`}
           title={count > 0 ? `Filters (${count} active)` : "Filters"}
@@ -261,6 +323,8 @@ export default function FilterBar({
           showAssignee={showAssignee}
           onApply={onApply}
           onClose={() => setAnchor(null)}
+          view={view}
+          onView={onView}
         />
       )}
     </div>

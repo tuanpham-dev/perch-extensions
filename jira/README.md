@@ -87,6 +87,64 @@ left it with. They live in a `jira.filters` key in the settings document, which 
 the same filter is there on your phone. It has no row in the settings table below on purpose: it
 is rewritten every time you tick a box, and **Clear** is how you reset it.
 
+## Sorting
+
+Either list can be sorted by **Key**, **Summary**, **Status**, **Priority**, **Assignee**, **Type**,
+**Created** or **Updated**, in either direction - from the Sort control in the funnel popover, or in
+the editor tab by clicking a column heading (click it again to flip the direction). The default is
+Updated, newest first, which is the order the lists always had.
+
+**Sorting asks Jira, like the filters do.** The choice becomes the query's `ORDER BY`, so sorting by
+key gives you the lowest keys in the backlog, not the `jira.maxResults` newest tickets shuffled. While
+a sort is chosen it replaces the `ORDER BY` of a custom `jira.jql` or `jira.projectJql`. Tickets that
+tie on the sorted field are ordered by key, so they never swap places between reloads.
+
+## Grouping by project
+
+The Group control splits a list into one section per Jira project, headed by the project's key, name
+and ticket count, in the order each project first appears in the sorted list. A section's heading
+collapses and expands it. Shift-click ranges follow what is on screen, so they skip collapsed sections.
+
+Sort and grouping are remembered per repository and per list - in a `jira.listViews` key the panel
+writes, apart from the filters, so **Clear** resets the filters and leaves the sort alone.
+
+## Board
+
+The editor tab's **Table / Board** switch lays the list out as a kanban board instead: one column per
+group of statuses, cards in the chosen sort order within each column, and - with Group by project on
+- one swimlane per project. A card shows the key, summary, type, priority and the assignee's
+initials. Clicking it opens the ticket in the details pane; Ctrl-click or its checkbox adds it to the
+selection, so Start work and Add to worktree act on board picks too. On a phone, press and hold a
+card, or turn on the select toggle, and taps then pick cards instead of opening them. Cards can't be dragged: the board
+shows where tickets are, and changing a ticket's status stays in Jira.
+
+**Columns.** **Edit columns** on the board lets you add, rename, reorder and remove columns, give each
+one a colour from a small palette (shown as a bar over its title and a light wash behind its cards),
+and choose which statuses each one holds; a status can be in one column only. When a column holds
+more than one status, each of its cards shows its own status. The configuration is one board for
+every project and both lists, saved in a `jira.board` key the panel writes (it syncs like the rest of
+your settings). Until you set it up, every status is its own column, To Do statuses first and Done
+last.
+
+As you scroll a board, each column scrolls only until its last card is in view, then holds there
+while longer columns carry on - so every card in a column is reachable without scrolling to the end
+of the longest one, and a short column stays in view beside a long one.
+
+**Statuses no column claims** get a column of their own, named after the status, but only while a ticket
+on the board has that status. Your columns always come first; these follow, To Do statuses first and
+Done last. Tick **Hide statuses that aren't in any column** in the editor to leave them off the board
+instead - the toolbar then says how many tickets it is hiding.
+
+In the editor, each column's **Statuses** button opens a searchable checklist of every status: tick
+as many as you like and untick to take one out. A status another column already holds is greyed out
+and names that column; untick it there to move it. **Save** is in the editor's header, which stays in view however many columns you add.
+
+**What the board loads.** The board fetches up to `jira.boardMaxResults` tickets (100 by default) and
+also shows tickets that reached Done in the last `jira.boardDoneDays` days (14 by default; 0 shows
+none), so a Done column shows recent movement. The table and the sidebar keep `jira.maxResults` and
+leave Done out, as before. A custom `jira.jql` or `jira.projectJql` is used on the board exactly as
+written - the extension can't safely change your own query to let finished tickets back in.
+
 ## Several tickets, one worktree
 
 Tickets can be picked in bulk and sent to a single worktree.
@@ -143,8 +201,9 @@ fetched - the saved filters, the branch template, the cache time itself - don't 
 ## Editor tab
 
 The sidebar is narrow, so the same lists also open as an editor tab: the **Open in an editor tab**
-button at the end of either pane's filter row, or **Jira: Open in Editor Tab** from the command
-palette.
+button at the end of either pane's filter row, the Jira icon in the status bar, or **Jira: Open in
+Editor Tab** from the command palette. The status bar icon can be turned off with
+`jira.showStatusBarIcon`; hovering it shows how many tickets are assigned to you.
 
 The tab switches between **Assigned to me** and **Project**, lays each ticket out as a table row
 with a column per field (key, summary, status, assignee, type, priority, updated), and opens the
@@ -215,10 +274,13 @@ Jira-side failure is reported as a note in the panel rather than as a failed "St
 | `jira.jql` | `""` | Replaces the "assigned to me" query. Empty means `assignee = currentUser() AND statusCategory != Done` |
 | `jira.projectJql` | `""` | Replaces the project query, bypassing the project-key chain |
 | `jira.maxResults` | `30` | How many issues each section fetches |
+| `jira.boardMaxResults` | `100` | How many issues the editor tab's board fetches per list |
+| `jira.boardDoneDays` | `14` | Days a finished ticket stays on the board. `0` shows no Done tickets |
 | `jira.commentLimit` | `20` | How many of the issue's most recent comments "Start work" hands the agent. `0` sends none |
 | `jira.detailCacheSeconds` | `300` | How long an opened ticket's details are reused before being fetched again. `0` turns caching off |
 | `jira.branchTemplate` | `{key}-{slug}` | Branch name for "Start work" - `{key}`, `{slug}`, `{type}` |
 | `jira.worktreeLocation` | `{repo}/.worktrees/{branch}` | Where "Start work" creates its worktree - same convention as the app's own worktree location (Settings → Behavior) |
+| `jira.showStatusBarIcon` | `true` | Show a Jira icon in the status bar that opens the editor tab |
 | `jira.sendAutoSubmit` | `false` | Submit the issue context to the agent immediately, instead of typing it for review |
 | `jira.updateIssueOnStartWork` | `false` | Let "Start work" transition and assign the issue in Jira |
 | `jira.inProgressStatus` | `In Progress` | Target status for that transition |

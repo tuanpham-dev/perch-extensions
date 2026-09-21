@@ -203,21 +203,42 @@
    costs one narrow column. */
 .jira-facts {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 4px 14px;
+  /* As many columns as fit at 120px - two in a phone-width pane (~360px),
+     three in the editor tab's default ~410px pane (3 x 120 + 2 gaps = 388) -
+     so seven facts take three rows, not seven. */
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px 14px;
   margin: 0;
   font-size: 12px;
 }
 
+.jira-fact {
+  min-width: 0;
+}
+
+.jira-fact.wide {
+  grid-column: 1 / -1;
+}
+
 .jira-facts dt {
+  margin-bottom: 1px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--fg-inactive, #999);
 }
 
 .jira-facts dd {
   margin: 0;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg, #ccc);
+}
+
+.jira-facts dd.jira-labels {
+  white-space: normal;
 }
 
 .jira-labels {
@@ -464,7 +485,8 @@
    contain-fit mask on a tightly-cropped viewBox would fill the full 16px and
    read as visibly larger than its siblings. The box itself is 1em rather
    than a hard 16px so both track the codicon font size. */
-.sidebar-tab[data-tab-id="ext.perch.jira.jira"] .codicon::before {
+.sidebar-tab[data-tab-id="ext.perch.jira.jira"] .codicon::before,
+.jira-statusbar-icon.codicon::before {
   content: "";
   display: block;
   width: 1em;
@@ -480,7 +502,8 @@
   mask-size: 85%;
 }
 
-.sidebar-tab[data-tab-id="ext.perch.jira.jira"] .codicon {
+.sidebar-tab[data-tab-id="ext.perch.jira.jira"] .codicon,
+.jira-statusbar-icon.codicon {
   --jira-tab-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8.2376 10.3896 30.1941 30.4282'%3E%3Cpath fill='%23000' d='M17.9475 31.0469H15.2429C11.1638 31.0469 8.23755 28.5484 8.23755 24.8899H22.7804C23.5341 24.8899 24.0218 25.4252 24.0218 26.1837V40.8178C20.3861 40.8178 17.9475 37.8731 17.9475 33.7684V31.0469ZM25.1303 23.7745H22.4257C18.3466 23.7745 15.4203 21.3206 15.4203 17.6621H29.9631C30.7168 17.6621 31.2489 18.1528 31.2489 18.9113V33.5454C27.6132 33.5454 25.1303 30.6007 25.1303 26.496V23.7745ZM32.3573 16.5467H29.6527C25.5736 16.5467 22.6473 14.0482 22.6473 10.3896H37.1902C37.9439 10.3896 38.4316 10.925 38.4316 11.6389V26.273C34.7959 26.273 32.3573 23.3283 32.3573 19.2236V16.5467Z'/%3E%3C/svg%3E");
 }
 
@@ -1319,4 +1342,539 @@
 .jira-layout-toggle .icon-button.active {
   color: var(--list-active-fg, var(--fg-bright, #eee));
   background: var(--list-active-bg, color-mix(in srgb, var(--focus-border, #4a9eff) 20%, transparent));
+}
+
+/* ---- Sorting ---- */
+
+/* A column heading is its sort control, so it keeps the heading's small caps
+   look rather than looking like one of the action buttons. */
+.jira-sorthead {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.jira-sorthead:hover,
+.jira-sorthead.active {
+  color: var(--fg-bright, #eee);
+}
+
+/* Sort, direction and group: in the funnel popover, and inline in the editor
+   tab's filter row. */
+.jira-viewcontrols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.jira-viewcontrol {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-viewcontrol .jira-input {
+  width: auto;
+  height: 22px;
+  padding: 0 4px;
+}
+
+.jira-viewcontrols.compact {
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+.jira-sortdir {
+  padding: 1px 7px;
+  line-height: 18px;
+}
+
+/* ---- Grouping ---- */
+
+.jira-group {
+  list-style: none;
+  background: var(--bg, #1e1e1e);
+  border-bottom: 1px solid var(--border, #333);
+}
+
+/* Sticky only in the table, just under its sticky heading row. In the
+   sidebar the filter bar already holds the top of the scroll box, and a
+   sticky section heading would slide in behind it. */
+.jira-list-table .jira-group {
+  position: sticky;
+  top: 26px;
+  z-index: 1;
+}
+
+.jira-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px 4px 4px;
+  border: none;
+  background: color-mix(in srgb, var(--fg, #ccc) 5%, transparent);
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jira-group-head:hover {
+  background: var(--list-hover-bg, rgba(255, 255, 255, 0.06));
+}
+
+.jira-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-inactive, #999);
+}
+
+/* ---- Board ---- */
+
+.jira-board-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.jira-board-summary {
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+}
+
+/* One grid template shared by the header row and every body row, so a
+   column's heading always sits over its cards - in every swimlane too. It
+   scrolls both ways inside the list area; the column headings stay put. */
+.jira-board {
+  --jira-col-width: 248px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.jira-board-head,
+.jira-board-row {
+  display: grid;
+  grid-template-columns: repeat(var(--jira-cols, 1), var(--jira-col-width));
+  gap: 8px;
+  padding: 0 10px;
+  width: max-content;
+}
+
+.jira-board-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-top: 8px;
+  padding-bottom: 6px;
+  background: var(--bg, #1e1e1e);
+}
+
+.jira-board-row {
+  padding-bottom: 10px;
+}
+
+.jira-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg, #ccc);
+}
+
+.jira-col-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A status no configured column claims keeps a plain title; its tooltip says
+   it isn't one of the configured columns. */
+
+.jira-col-body {
+  min-height: 48px;
+  padding: 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg, #ccc) 4%, transparent);
+}
+
+/* Sticky within the column's own cell, at a `top` Board.tsx works out per
+   column: under the headings for a column that fits on screen, or with its
+   last card at the bottom of the screen for one that doesn't - see Stack. */
+.jira-col-stack {
+  position: sticky;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jira-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  cursor: pointer;
+  user-select: none;
+}
+
+.jira-card:hover {
+  border-color: color-mix(in srgb, var(--focus-border, #4a9eff) 60%, var(--border, #333));
+}
+
+.jira-card:focus-visible {
+  outline: 1px solid var(--focus-border, #4a9eff);
+  outline-offset: 1px;
+}
+
+.jira-card.picked {
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 14%, var(--bg-elevated, var(--bg, #1e1e1e)));
+}
+
+.jira-card.open {
+  box-shadow: inset 3px 0 0 var(--focus-border, #4a9eff);
+}
+
+.jira-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.jira-card-top .jira-check {
+  margin: 0;
+}
+
+.jira-card:hover .jira-check {
+  opacity: 1;
+}
+
+.jira-card-top .jira-avatar {
+  margin-left: auto;
+}
+
+.jira-card-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--fg-bright, #eee);
+}
+
+.jira-card-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--fg-inactive, #999);
+}
+
+/* A swimlane's heading stays at the left edge as the board scrolls
+   sideways, so you always know whose row you are in. */
+.jira-lane {
+  border-top: 1px solid var(--border, #333);
+}
+
+.jira-lane-head {
+  position: sticky;
+  left: 0;
+  width: auto;
+  max-width: 100%;
+  margin: 4px 0;
+  background: none;
+}
+
+/* ---- Column editor ---- */
+
+.jira-columneditor {
+  width: min(460px, calc(100vw - 24px));
+}
+
+.jira-columnlist {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.jira-columnrow {
+  padding: 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+}
+
+.jira-columnrow-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.jira-columnrow-head .jira-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.jira-columnrow-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.jira-addstatus {
+  width: auto;
+  height: 20px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
+.jira-columneditor > .jira-selaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The Table / Board switch's icons sit inline with their labels. */
+.jira-scope-button .codicon {
+  font-size: 13px;
+}
+
+/* ---- Touch screens ----
+
+   A phone has no hover, and several things here were revealed on hover. */
+@media (hover: none) {
+  /* The row's Start work button is shown outright. Hidden, it was still
+     there to be tapped - an invisible button on the right of every row that
+     started a worktree. */
+  .jira-start {
+    opacity: 1;
+  }
+
+  /* A checkbox waiting for a hover that never comes is only dead space at the
+     start of every row and card, so it leaves the layout until select mode
+     is on or something is picked. The table keeps its (empty) checkbox cell,
+     since its columns are placed by position. */
+  .jira-list-list:not(.picking) .jira-check,
+  .jira-board:not(.picking) .jira-card .jira-check {
+    display: none;
+  }
+
+  .jira-list-list:not(.picking) .jira-row-main {
+    padding-left: 12px;
+  }
+}
+
+/* While picking, every card shows its checkbox, as the list's rows do. */
+.jira-board.picking .jira-check {
+  opacity: 1;
+}
+
+/* A narrow tab gives the search box the row. The inline Sort and Group
+   controls squeezed it down to a few letters on a phone, and they are in the
+   funnel popover too, so nothing becomes unreachable. */
+@container jira-tab (max-width: 600px) {
+  .jira-viewcontrols.compact {
+    display: none;
+  }
+}
+
+
+/* ---- Column colours ----
+
+   One palette, named in the settings (boardModel's COLUMN_COLORS). Each hue
+   is mid-strength so it reads on light and dark themes; the column shows it as
+   a bar over its title and a faint wash behind its cards, so the cards stay
+   in the theme's own colours and remain readable. */
+[data-color="red"] { --jira-col-color: #e5534b; }
+[data-color="orange"] { --jira-col-color: #e0823d; }
+[data-color="yellow"] { --jira-col-color: #c69026; }
+[data-color="green"] { --jira-col-color: #57ab5a; }
+[data-color="teal"] { --jira-col-color: #2fb8b0; }
+[data-color="blue"] { --jira-col-color: #539bf5; }
+[data-color="purple"] { --jira-col-color: #986ee2; }
+[data-color="pink"] { --jira-col-color: #e275ad; }
+
+/* Every heading reserves the bar's room, transparent when uncoloured, so a
+   coloured and an uncoloured title sit on the same line. */
+.jira-col-head {
+  padding-top: 4px;
+  border-top: 3px solid transparent;
+}
+
+.jira-col-head[data-color] {
+  border-top-color: var(--jira-col-color);
+}
+
+.jira-col-body[data-color] {
+  background: color-mix(in srgb, var(--jira-col-color) 12%, transparent);
+}
+
+.jira-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.jira-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--jira-col-color);
+  cursor: pointer;
+}
+
+/* "No colour": an outlined circle with a slash through it. */
+.jira-swatch.none {
+  background:
+    linear-gradient(135deg, transparent 45%, var(--fg-inactive, #999) 45% 55%, transparent 55%),
+    var(--bg, #1e1e1e);
+  border-color: var(--border, #333);
+}
+
+.jira-swatch.current {
+  box-shadow: 0 0 0 2px var(--bg-elevated, var(--bg, #1e1e1e)), 0 0 0 4px var(--focus-border, #4a9eff);
+}
+
+.jira-swatch:focus-visible {
+  outline: 2px solid var(--focus-border, #4a9eff);
+  outline-offset: 2px;
+}
+
+/* The status chip on a card in a multi-status column. */
+.jira-card-meta .jira-chip {
+  font-size: 10px;
+}
+
+/* ---- Column editor: pinned header, status picker, hide option ---- */
+
+/* The header stays in view while the columns scroll beneath it, so Save is
+   always one tap away. The negative offsets cover the popover's own padding,
+   so no card content shows above the header as it scrolls. */
+.jira-columneditor-head {
+  position: sticky;
+  top: -10px;
+  z-index: 2;
+  margin: -10px -12px 6px;
+  padding: 10px 12px 8px;
+  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.jira-columneditor-head .jira-selaction {
+  flex: none;
+}
+
+.jira-addstatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+.jira-statuspicker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  background: var(--bg, #1e1e1e);
+}
+
+.jira-statuspicker-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.jira-statuspicker-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.jira-statuspicker-row:hover {
+  background: var(--list-hover-bg, rgba(255, 255, 255, 0.06));
+}
+
+.jira-statuspicker-owner {
+  margin-left: auto;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-hideunassigned {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.jira-hideunassigned input:disabled + span {
+  opacity: 0.6;
+}
+
+/* The status bar item: the bar's own 13px icon size, with the mark drawn at
+   70% of its box rather than the sidebar tab's 85%. The Jira mark is a solid,
+   wide shape, so at the codicons' size it read heavier than the thin line
+   icons beside it. */
+.jira-statusbar-icon.codicon {
+  font-size: 13px;
+}
+
+.jira-statusbar-icon.codicon::before {
+  -webkit-mask-size: 70%;
+  mask-size: 70%;
+}
+
+/* A status another column holds: listed so every status is accounted for,
+   but dimmed and not selectable here. */
+.jira-statuspicker-row.taken {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.jira-statuspicker-row.taken:hover {
+  background: none;
 }

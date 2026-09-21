@@ -57,6 +57,20 @@
           "maximum": 100,
           "description": "Issues fetched per section."
         },
+        "jira.boardMaxResults": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Issues the editor tab's board fetches per list."
+        },
+        "jira.boardDoneDays": {
+          "type": "integer",
+          "default": 14,
+          "minimum": 0,
+          "maximum": 90,
+          "description": "Days a finished ticket stays on the board. 0 shows no Done tickets."
+        },
         "jira.commentLimit": {
           "type": "integer",
           "default": 20,
@@ -95,6 +109,11 @@
           "type": "string",
           "default": "In Progress",
           "description": "Status \"Start work\" moves the issue to."
+        },
+        "jira.showStatusBarIcon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a Jira icon in the status bar that opens the Jira editor tab."
         }
       }
     }

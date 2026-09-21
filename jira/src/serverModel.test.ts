@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import { test } from "node:test";
-import { adfToMarkdown, composeJql, parseWorktreeList, shortenHome } from "../server.js";
+import { adfToMarkdown, composeJql, openClause, parseWorktreeList, readSortParams, shortenHome } from "../server.js";
 
 interface Filters {
   status: string[];
@@ -282,4 +282,55 @@ test("an attachment is named rather than dropped", () => {
 test("no description is an empty string", () => {
   assert.equal(adfToMarkdown(null), "");
   assert.equal(adfToMarkdown(doc()), "");
+});
+
+// ---- Sorting ----
+
+test("a chosen sort replaces the base query's ORDER BY", () => {
+  assert.equal(composeJql(MINE, filters(), { field: "key", dir: "asc" }), "assignee = currentUser() AND statusCategory != Done ORDER BY key ASC");
+});
+
+test("any field but key gets key as a tiebreaker, so equal rows keep one order", () => {
+  assert.ok(composeJql(MINE, filters(), { field: "status", dir: "desc" }).endsWith("ORDER BY status DESC, key ASC"));
+});
+
+test("the sort field names map to their JQL fields", () => {
+  assert.ok(composeJql('project = "CAP"', filters(), { field: "type", dir: "asc" }).endsWith("ORDER BY issuetype ASC, key ASC"));
+});
+
+test("filters and a sort compose together", () => {
+  assert.equal(
+    composeJql(MINE, filters({ type: ["Bug"] }), { field: "priority", dir: "desc" }),
+    '(assignee = currentUser() AND statusCategory != Done) AND issuetype in ("Bug") ORDER BY priority DESC, key ASC',
+  );
+});
+
+test("a sort also replaces a custom query's own ORDER BY", () => {
+  assert.equal(composeJql("project = CAP ORDER BY rank", filters(), { field: "key", dir: "desc" }), "project = CAP ORDER BY key DESC");
+});
+
+test("no filters and no sort stays byte-identical", () => {
+  assert.equal(composeJql(MINE, filters(), null), MINE);
+});
+
+test("only known sort fields and directions are accepted", () => {
+  assert.deepEqual(readSortParams({ sort: "key", dir: "ASC" }), { field: "key", dir: "asc" });
+  assert.equal(readSortParams({ sort: "key; DROP", dir: "asc" }), null);
+  assert.equal(readSortParams({ sort: "constructor", dir: "asc" }), null);
+  assert.equal(readSortParams({ sort: "key", dir: "sideways" }), null);
+  assert.equal(readSortParams({}), null);
+});
+
+// ---- The board's query ----
+
+test("the lists exclude Done exactly as before", () => {
+  assert.equal(openClause(false, 14), "statusCategory != Done");
+});
+
+test("the board lets recently finished tickets back in", () => {
+  assert.equal(openClause(true, 14), "(statusCategory != Done OR statusCategoryChangedDate >= -14d)");
+});
+
+test("a done window of 0 keeps Done off the board", () => {
+  assert.equal(openClause(true, 0), "statusCategory != Done");
 });

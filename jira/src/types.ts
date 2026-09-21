@@ -27,6 +27,10 @@ export interface IssueRow {
   type: string;
   assignee: string | null;
   priority: string | null;
+  // For grouping by project. Optional: a row from an older server lacks them,
+  // and groupModel falls back to the key's prefix.
+  projectKey?: string | null;
+  projectName?: string | null;
   updated: string | null;
   url: string;
 }

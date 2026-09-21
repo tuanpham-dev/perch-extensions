@@ -51,6 +51,31 @@ import {
 } from "./filterModel";
 import { applyMarquee, orderedSelection, prune, selectRange, toggle } from "./selectionModel";
 import { TtlCache } from "./ttlCache";
+import {
+  DEFAULT_VIEW,
+  parseViewStore,
+  readView,
+  serializeViewStore,
+  sortParams,
+  toggleSort,
+  writeView,
+  type ListView,
+  type SortField,
+  type ViewStore,
+} from "./sortModel";
+import { displayKeys, groupByProject } from "./groupModel";
+import { initials } from "./format";
+import Board from "./Board";
+import ColumnEditor from "./ColumnEditor";
+import {
+  CATEGORY_ORDER,
+  hidingUnassigned,
+  parseBoardConfig,
+  resolveColumns,
+  serializeBoardConfig,
+  unplacedIssues,
+  type BoardConfig,
+} from "./boardModel";
 import type {
   Facets,
   IssueDetail,
@@ -312,6 +337,13 @@ interface JiraState {
   // Persisted per repo in jira.filters - see filterModel.ts.
   filters: Record<ListId, IssueFilters>;
   filterStore: FilterStore;
+  // How each list is ordered and whether it is grouped, remembered per repo
+  // in jira.listViews - apart from the filters, so Clear leaves it alone.
+  views: Record<ListId, ListView>;
+  viewStore: ViewStore;
+  // Collapsed project sections, as "<list>:<project key>". Per session, like
+  // the host's own tree chevrons.
+  collapsedGroups: Set<string>;
   facets: Facets | null;
   // One set of issue keys for both panes: the same ticket listed twice is one
   // ticket, and selecting it in either place means the same thing.
@@ -328,6 +360,28 @@ interface JiraState {
   // and reopening the tab lands where it was.
   tabList: ListId;
   focused: FocusedState | null;
+  // Table or board, remembered per browser. The board has its own list -
+  // larger, and with recently finished tickets - fetched only while the board
+  // is on screen (boardActive, set by the tab) and only for the tab's list.
+  tabView: TabView;
+  boardActive: boolean;
+  board: IssuesResponse | null;
+  // The one global column configuration, from jira.board.
+  boardConfig: BoardConfig;
+  // The column editor, open from the board's toolbar.
+  columnEditor: { anchor: PopoverAnchor } | null;
+}
+
+type TabView = "table" | "board";
+
+const TAB_VIEW_KEY = "perch.jira.tabView";
+
+function readTabView(): TabView {
+  try {
+    return localStorage.getItem(TAB_VIEW_KEY) === "board" ? "board" : "table";
+  } catch {
+    return "table";
+  }
 }
 
 const NO_FILTERS: Record<ListId, IssueFilters> = { mine: EMPTY_FILTERS, project: EMPTY_FILTERS };
@@ -345,6 +399,9 @@ let state: JiraState = {
   popover: null,
   filters: NO_FILTERS,
   filterStore: {},
+  views: { mine: DEFAULT_VIEW, project: DEFAULT_VIEW },
+  viewStore: {},
+  collapsedGroups: new Set(),
   facets: null,
   selection: new Set(),
   selectMode: false,
@@ -354,6 +411,11 @@ let state: JiraState = {
   projectPicker: null,
   tabList: "mine",
   focused: null,
+  tabView: readTabView(),
+  boardActive: false,
+  board: null,
+  boardConfig: { columns: [] },
+  columnEditor: null,
 };
 
 const listeners = new Set<() => void>();
@@ -384,8 +446,17 @@ let refreshToken = 0;
 // narrows the JQL rather than the client sifting the rows that came back -
 // see server.js's "Filters -> JQL". `text` is already debounced by FilterBar
 // before it reaches the store, so this fires once per settled search.
-function issuesUrl(cwd: string, list: ListId): string {
-  const params = new URLSearchParams([["cwd", cwd], ["scope", list], ...filterParams(state.filters[list])]);
+// The sort rides along too (only when it isn't the default, so an untouched
+// list asks for exactly the query it always did), and `board` asks for the
+// board's larger list with recently finished tickets.
+function issuesUrl(cwd: string, list: ListId, board = false): string {
+  const params = new URLSearchParams([
+    ["cwd", cwd],
+    ["scope", list],
+    ...filterParams(state.filters[list]),
+    ...sortParams(state.views[list].sort),
+    ...(board ? [["board", "1"] as [string, string]] : []),
+  ]);
   return `/issues?${params.toString()}`;
 }
 
@@ -412,6 +483,7 @@ function refresh(): void {
       loadFacets(token, q);
       loadProjects(token);
       loadIssues(cwd);
+      if (state.boardActive) loadBoard(cwd, state.tabList);
     })
     .catch((err: Error) => {
       if (token !== refreshToken) return;
@@ -429,6 +501,7 @@ function refreshIssues(): void {
     return;
   }
   loadIssues(state.cwd);
+  if (state.boardActive) loadBoard(state.cwd, state.tabList);
 }
 
 // Its own counter rather than refreshToken's: a list-only reload must not
@@ -444,7 +517,7 @@ function loadIssues(cwd: string): void {
       if (token !== issuesToken || state.cwd !== cwd) return;
       // A selected issue the new lists no longer carry drops out of the
       // selection too, so the count can never name tickets nothing shows.
-      const known = [...mine.issues, ...project.issues].map((issue) => issue.key);
+      const known = [...mine.issues, ...project.issues, ...(state.board?.issues ?? [])].map((issue) => issue.key);
       setState({
         mine: mine.issues,
         project,
@@ -457,6 +530,43 @@ function loadIssues(cwd: string): void {
       if (token !== issuesToken) return;
       setState({ error: err.message, loading: false });
     });
+}
+
+// The board's own list, for the tab's list only. A ticket picked on the board
+// but outside the table's cap (or already Done) stays picked across a reload
+// because the prune above counts board tickets too.
+let boardToken = 0;
+
+function loadBoard(cwd: string, list: ListId): void {
+  const token = ++boardToken;
+  apiGet<IssuesResponse>(issuesUrl(cwd, list, true))
+    .then((board) => {
+      if (token !== boardToken || state.cwd !== cwd || state.tabList !== list) return;
+      setState({ board });
+    })
+    .catch((err: Error) => {
+      if (token !== boardToken) return;
+      setState({ error: err.message });
+    });
+}
+
+export function setTabView(view: TabView): void {
+  if (state.tabView === view) return;
+  setState({ tabView: view });
+  try {
+    localStorage.setItem(TAB_VIEW_KEY, view);
+  } catch {
+    // Blocked storage: the choice holds for this session.
+  }
+}
+
+// Called by the tab while the board is showing. Turning it on fetches the
+// board list; turning it off keeps what was fetched, so going back to the
+// board shows it at once while a fresh copy loads.
+export function setBoardActive(on: boolean): void {
+  if (state.boardActive === on) return;
+  setState({ boardActive: on });
+  if (on && state.cwd && state.status?.configured && state.status.authed) loadBoard(state.cwd, state.tabList);
 }
 
 // ---- Ticket details, cached ----
@@ -548,12 +658,45 @@ export function filtersFor(list: ListId): IssueFilters {
 // returns the whole store as well as this repo's slice: applyFilters writes
 // back into that store, so losing it would clobber every other repo's saved
 // filters on the next tick.
-function loadFiltersFor(cwd: string | null): Pick<JiraState, "filters" | "filterStore"> {
+function loadFiltersFor(cwd: string | null): Pick<JiraState, "filters" | "filterStore" | "views" | "viewStore"> {
   const filterStore = parseFilterStore(extSettings?.get("jira.filters"));
+  const viewStore = parseViewStore(extSettings?.get("jira.listViews"));
   return {
     filterStore,
     filters: { mine: readFilters(filterStore, cwd, "mine"), project: readFilters(filterStore, cwd, "project") },
+    viewStore,
+    views: { mine: readView(viewStore, cwd, "mine"), project: readView(viewStore, cwd, "project") },
   };
+}
+
+// ---- Sort and group ----
+
+// A new sort asks Jira again - it decides which tickets come back, not only
+// their order. Grouping only rearranges what is already here, so it fetches
+// nothing.
+export function applyView(list: ListId, view: ListView): void {
+  const before = state.views[list];
+  const viewStore = state.cwd ? writeView(state.viewStore, state.cwd, list, view) : state.viewStore;
+  setState({ views: { ...state.views, [list]: view }, viewStore });
+  if (state.cwd) extSettings?.set("jira.listViews", serializeViewStore(viewStore));
+  if (before.sort.field !== view.sort.field || before.sort.dir !== view.sort.dir) refreshIssues();
+}
+
+export function sortBy(list: ListId, field: SortField): void {
+  const view = state.views[list];
+  applyView(list, { ...view, sort: toggleSort(view.sort, field) });
+}
+
+export function toggleGroup(list: ListId, project: string): void {
+  const id = `${list}:${project}`;
+  const next = new Set(state.collapsedGroups);
+  if (!next.delete(id)) next.add(id);
+  setState({ collapsedGroups: next });
+}
+
+function collapsedFor(list: ListId): Set<string> {
+  const prefix = `${list}:`;
+  return new Set([...state.collapsedGroups].filter((id) => id.startsWith(prefix)).map((id) => id.slice(prefix.length)));
 }
 
 // ---- Selection ----
@@ -587,7 +730,7 @@ export function clearSelection(): void {
 // In the order the panes list them, which is the order the brief and the Jira
 // transitions follow. A ticket listed in both panes is returned once.
 function selectedIssues(): IssueRow[] {
-  return orderedSelection([state.mine, state.project?.issues ?? []], state.selection);
+  return orderedSelection([state.mine, state.project?.issues ?? [], state.board?.issues ?? []], state.selection);
 }
 
 // ---- Start work ----
@@ -720,11 +863,20 @@ export async function startWorkWithPicker(
 // ---- The editor tab ----
 
 export function setTabList(list: ListId): void {
-  if (state.tabList !== list) setState({ tabList: list });
+  if (state.tabList === list) return;
+  // The board list belongs to one list; the other's is fetched fresh.
+  setState({ tabList: list, board: null });
+  if (state.boardActive && state.cwd && state.status?.authed) loadBoard(state.cwd, list);
 }
 
 // Opens a ticket in the tab's detail pane. A response that lands after the
 // user has moved on to another ticket is dropped rather than painted over it.
+// Closing the detail pane's ticket. Stacked on a phone, that also hands the
+// pane's height back to the list - see JiraTab.
+export function clearFocus(): void {
+  if (state.focused) setState({ focused: null });
+}
+
 export function focusIssue(issue: IssueRow, { fresh = false }: { fresh?: boolean } = {}): void {
   if (!fresh && state.focused?.key === issue.key && state.focused.detail) return;
   // A cached ticket shows at once, with no "Loading…" flash in between; a
@@ -1092,18 +1244,6 @@ function ago(iso: string | null): string {
   return !age || age === "just now" ? age : `${age} ago`;
 }
 
-function initials(name: string): string {
-  return (
-    name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((word) => word[0])
-      .join("")
-      .toUpperCase() || "?"
-  );
-}
-
 function DetailBody({ detail, error }: { detail: IssueDetail | null; error: string | null }) {
   if (error) return <div className="jira-error">{error}</div>;
   if (!detail) return <div className="jira-empty">Loading…</div>;
@@ -1133,15 +1273,19 @@ function DetailBody({ detail, error }: { detail: IssueDetail | null; error: stri
     <div className="jira-detail">
       <h2 className="jira-detail-title">{detail.summary}</h2>
 
+      {/* Each fact is a label over its value, flowed into as many columns as
+          the pane fits - two on a phone or in a narrow pane, three when
+          there's room - instead of one long label/value list. <div> around
+          each dt/dd pair is valid inside a <dl>. */}
       <dl className="jira-facts">
         {facts.map(([name, value]) => (
-          <Fragment key={name}>
+          <div key={name} className="jira-fact">
             <dt>{name}</dt>
             <dd>{value}</dd>
-          </Fragment>
+          </div>
         ))}
         {detail.labels.length > 0 && (
-          <>
+          <div className="jira-fact wide">
             <dt>Labels</dt>
             <dd className="jira-labels">
               {detail.labels.map((label) => (
@@ -1150,7 +1294,7 @@ function DetailBody({ detail, error }: { detail: IssueDetail | null; error: stri
                 </span>
               ))}
             </dd>
-          </>
+          </div>
         )}
       </dl>
 
@@ -1198,6 +1342,37 @@ function DetailBody({ detail, error }: { detail: IssueDetail | null; error: stri
 
 // ---- Issue list (shared by both panes) ----
 
+// A table column heading that sorts by its column.
+function SortHead({
+  list,
+  field,
+  label,
+  view,
+  optional = false,
+}: {
+  list: ListId;
+  field: SortField;
+  label: string;
+  view: ListView;
+  optional?: boolean;
+}) {
+  const active = view.sort.field === field;
+  const dir = view.sort.dir === "asc" ? "ascending" : "descending";
+  return (
+    <span className={optional ? "jira-col-optional" : undefined}>
+      <button
+        className={`jira-sorthead${active ? " active" : ""}`}
+        title={active ? `Sorted by ${label}, ${dir} - click to flip` : `Sort by ${label}`}
+        aria-sort={active ? dir : "none"}
+        onClick={() => sortBy(list, field)}
+      >
+        {label}
+        {active && <span aria-hidden="true">{view.sort.dir === "asc" ? " \u2191" : " \u2193"}</span>}
+      </button>
+    </span>
+  );
+}
+
 // "list" is the sidebar's compact two-line row; "table" is the editor tab's,
 // with a column per field and a click that opens the ticket in the tab's
 // detail pane instead of a popover. Selection and every gesture behave the
@@ -1215,7 +1390,12 @@ function IssueList({
   showMenu?: SidebarPanelHostProps["showMenu"];
   variant?: IssueListVariant;
 }) {
-  const { busyKey, popover, selection, selectMode, focused } = useJira();
+  const { busyKey, popover, selection, selectMode, focused, views, collapsedGroups } = useJira();
+  const view = views[list];
+  // Sections when grouping by project, in the order each project first shows
+  // up in the sorted list.
+  const groups = view.groupByProject ? groupByProject(issues) : null;
+  const collapsed = groups ? collapsedFor(list) : new Set<string>();
   // The drag is anchored to the wrapper rather than the <ul>, so a press in
   // the empty space below the last row starts a marquee too, and so the
   // overlay is a sibling of the list rather than a stray <div> inside it.
@@ -1225,7 +1405,10 @@ function IssueList({
   // frame against this snapshot rather than against live state, which is what
   // lets the band release rows it has already passed back over.
   const dragBase = useRef<ReadonlySet<string>>(new Set());
-  const keys = issues.map((issue) => issue.key);
+  // Shift-click ranges run over what is on screen, in on-screen order - so
+  // across sections, and never into a collapsed one.
+  const keys = groups ? displayKeys(groups, collapsed) : issues.map((issue) => issue.key);
+  void collapsedGroups;
 
   const { marqueeRect, onMarqueeMouseDown } = useMarqueeSelection({
     containerRef: listRef,
@@ -1283,6 +1466,97 @@ function IssueList({
   // than the singular wording for a moment.
   const multiplePresets = useAgentPresets().length > 1;
 
+  const renderRow = (issue: IssueRow) => {
+      const open =
+        variant === "table"
+          ? focused?.key === issue.key
+          : popover?.key === issue.key && popover.list === list;
+      const picked = selection.has(issue.key);
+      return (
+        <li
+          key={issue.key}
+          className={`jira-row${open ? " open" : ""}${picked ? " picked" : ""}`}
+          ref={(el) => {
+            if (el) rowRefs.current.set(issue.key, el);
+            else rowRefs.current.delete(issue.key);
+          }}
+          {...bindLongPress(() => toggleSelected(list, issue.key))}
+        >
+          <input
+            type="checkbox"
+            className="jira-check"
+            checked={picked}
+            // The row's own click handler covers ctrl and shift; this is
+            // the plain tick, and it must not also reach the row.
+            onClick={(e) => e.stopPropagation()}
+            onChange={() => toggleSelected(list, issue.key)}
+            aria-label={`Select ${issue.key}`}
+          />
+          {/* The row opens the details popover rather than linking straight
+              out to Jira: reading the ticket is the common case, and the
+              popover carries its own "Open in Jira" link for the other one.
+              Summary on its own line, because a key plus a status chip plus
+              an age leaves nothing readable beside it at sidebar width. */}
+          {variant === "table" ? (
+            // The row's cells sit inside one button so the whole row is a
+            // single click target, as in the sidebar; display: contents
+            // lets them take their own columns on the row's grid.
+            <button className="jira-row-main jira-cells" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
+              <span className="jira-key">{issue.key}</span>
+              <span className="jira-title">{issue.summary}</span>
+              <span>
+                <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
+                  {issue.status}
+                </span>
+              </span>
+              <span className="jira-cell-muted jira-col-optional">{issue.assignee ?? "Unassigned"}</span>
+              <span className="jira-cell-muted jira-col-optional">{issue.type}</span>
+              <span className="jira-cell-muted jira-col-optional">{issue.priority ?? ""}</span>
+              <span className="jira-age">{relativeTime(issue.updated)}</span>
+            </button>
+          ) : (
+            <button className="jira-row-main" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
+              <span className="jira-title">{issue.summary}</span>
+              <span className="jira-sub">
+                <span className="jira-key">{issue.key}</span>
+                <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
+                  {issue.status}
+                </span>
+                <span className="jira-age">{relativeTime(issue.updated)}</span>
+              </span>
+            </button>
+          )}
+          <button
+            className="icon-button jira-start"
+            title={
+              multiplePresets
+                ? "Start work: create a worktree session and pick an agent"
+                : "Start work: create a worktree session for this issue"
+            }
+            disabled={busyKey === issue.key}
+            onClick={(e) => void handleStartClick(issue, e)}
+            // Right-click reaches the other destination for one ticket:
+            // a worktree that already exists.
+            onContextMenu={(e) => {
+              if (!showMenu) return;
+              e.preventDefault();
+              // Read before the menu's callback runs - the event must not
+              // be touched from inside it.
+              const { clientX, clientY } = e;
+              showMenu(clientX, clientY, [
+                {
+                  label: "Add to worktree...",
+                  onClick: () => void addToWorktree([issue], showMenu, clientX, clientY),
+                },
+              ]);
+            }}
+          >
+            <Icon name={busyKey === issue.key ? "loading" : "play"} />
+          </button>
+        </li>
+      );
+  };
+
   // A checkbox is shown once anything is selected or select mode is on; the
   // rest of the time CSS reveals it on the pointed-at row only, so a list at
   // rest stays as quiet as it was.
@@ -1294,108 +1568,43 @@ function IssueList({
       {variant === "table" && (
         // Column headings, as a row laid out on the same grid as the rows
         // below - a real <table> can't carry the <li> drag-selection wiring.
-        <li className="jira-row jira-thead" aria-hidden="true">
+        // Each heading sorts by its column; clicking the sorted one again
+        // flips the direction. The spans stay the grid cells (the narrow-list
+        // rules hide cells by position), with the button inside.
+        <li className="jira-row jira-thead">
           <span />
-          <span>Key</span>
-          <span>Summary</span>
-          <span>Status</span>
-          <span className="jira-col-optional">Assignee</span>
-          <span className="jira-col-optional">Type</span>
-          <span className="jira-col-optional">Priority</span>
-          <span>Updated</span>
+          <SortHead list={list} field="key" label="Key" view={view} />
+          <SortHead list={list} field="summary" label="Summary" view={view} />
+          <SortHead list={list} field="status" label="Status" view={view} />
+          <SortHead list={list} field="assignee" label="Assignee" view={view} optional />
+          <SortHead list={list} field="type" label="Type" view={view} optional />
+          <SortHead list={list} field="priority" label="Priority" view={view} optional />
+          <SortHead list={list} field="updated" label="Updated" view={view} />
           <span />
         </li>
       )}
-      {issues.map((issue) => {
-        const open =
-          variant === "table"
-            ? focused?.key === issue.key
-            : popover?.key === issue.key && popover.list === list;
-        const picked = selection.has(issue.key);
-        return (
-          <li
-            key={issue.key}
-            className={`jira-row${open ? " open" : ""}${picked ? " picked" : ""}`}
-            ref={(el) => {
-              if (el) rowRefs.current.set(issue.key, el);
-              else rowRefs.current.delete(issue.key);
-            }}
-            {...bindLongPress(() => toggleSelected(list, issue.key))}
-          >
-            <input
-              type="checkbox"
-              className="jira-check"
-              checked={picked}
-              // The row's own click handler covers ctrl and shift; this is
-              // the plain tick, and it must not also reach the row.
-              onClick={(e) => e.stopPropagation()}
-              onChange={() => toggleSelected(list, issue.key)}
-              aria-label={`Select ${issue.key}`}
-            />
-            {/* The row opens the details popover rather than linking straight
-                out to Jira: reading the ticket is the common case, and the
-                popover carries its own "Open in Jira" link for the other one.
-                Summary on its own line, because a key plus a status chip plus
-                an age leaves nothing readable beside it at sidebar width. */}
-            {variant === "table" ? (
-              // The row's cells sit inside one button so the whole row is a
-              // single click target, as in the sidebar; display: contents
-              // lets them take their own columns on the row's grid.
-              <button className="jira-row-main jira-cells" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
-                <span className="jira-key">{issue.key}</span>
-                <span className="jira-title">{issue.summary}</span>
-                <span>
-                  <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
-                    {issue.status}
-                  </span>
-                </span>
-                <span className="jira-cell-muted jira-col-optional">{issue.assignee ?? "Unassigned"}</span>
-                <span className="jira-cell-muted jira-col-optional">{issue.type}</span>
-                <span className="jira-cell-muted jira-col-optional">{issue.priority ?? ""}</span>
-                <span className="jira-age">{relativeTime(issue.updated)}</span>
-              </button>
-            ) : (
-              <button className="jira-row-main" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
-                <span className="jira-title">{issue.summary}</span>
-                <span className="jira-sub">
-                  <span className="jira-key">{issue.key}</span>
-                  <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
-                    {issue.status}
-                  </span>
-                  <span className="jira-age">{relativeTime(issue.updated)}</span>
-                </span>
-              </button>
-            )}
-            <button
-              className="icon-button jira-start"
-              title={
-                multiplePresets
-                  ? "Start work: create a worktree session and pick an agent"
-                  : "Start work: create a worktree session for this issue"
-              }
-              disabled={busyKey === issue.key}
-              onClick={(e) => void handleStartClick(issue, e)}
-              // Right-click reaches the other destination for one ticket:
-              // a worktree that already exists.
-              onContextMenu={(e) => {
-                if (!showMenu) return;
-                e.preventDefault();
-                // Read before the menu's callback runs - the event must not
-                // be touched from inside it.
-                const { clientX, clientY } = e;
-                showMenu(clientX, clientY, [
-                  {
-                    label: "Add to worktree...",
-                    onClick: () => void addToWorktree([issue], showMenu, clientX, clientY),
-                  },
-                ]);
-              }}
-            >
-              <Icon name={busyKey === issue.key ? "loading" : "play"} />
-            </button>
-          </li>
-        );
-      })}
+      {groups
+        ? groups.map((group) => {
+            const shut = collapsed.has(group.key);
+            return (
+              <Fragment key={`group:${group.key}`}>
+                <li className="jira-group">
+                  <button
+                    className="jira-group-head"
+                    aria-expanded={!shut}
+                    onClick={() => toggleGroup(list, group.key)}
+                  >
+                    <Icon name={shut ? "chevron-right" : "chevron-down"} />
+                    <span className="jira-key">{group.key}</span>
+                    {group.name !== group.key && <span className="jira-group-name">{group.name}</span>}
+                    <span className="jira-count">{group.issues.length}</span>
+                  </button>
+                </li>
+                {!shut && group.issues.map(renderRow)}
+              </Fragment>
+            );
+          })
+        : issues.map(renderRow)}
     </ul>
     {marqueeRect && (
       <div
@@ -1584,6 +1793,8 @@ function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
           onApply={(filters) => applyFilters("mine", filters)}
           onToggleSelectMode={() => setSelectMode(!s.selectMode)}
           onOpenTab={() => openJiraTab("mine")}
+          view={s.views.mine}
+          onView={(view) => applyView("mine", view)}
         />
       )}
       {picked && <SelectionBarFor showMenu={showMenu} origin="mine" />}
@@ -1620,6 +1831,8 @@ function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
           onApply={(filters) => applyFilters("project", filters)}
           onToggleSelectMode={() => setSelectMode(!s.selectMode)}
           onOpenTab={() => openJiraTab("project")}
+          view={s.views.project}
+          onView={(view) => applyView("project", view)}
         />
       )}
       {picked && <SelectionBarFor showMenu={showMenu} origin="project" />}
@@ -1687,6 +1900,62 @@ interface ViewerHostProps {
   setTitle?: (title: string) => void;
 }
 
+// A status's category (To Do / In Progress / Done), for placing columns: what
+// Jira's status metadata says, else what any ticket carrying that status says.
+function categoryLookup(s: JiraState, issues: readonly IssueRow[]): (status: string) => string | null {
+  const known = new Map<string, string>();
+  for (const status of s.facets?.statuses ?? []) if (status.category) known.set(status.name, status.category);
+  for (const issue of issues) if (issue.statusCategory && !known.has(issue.status)) known.set(issue.status, issue.statusCategory);
+  return (status) => known.get(status) ?? null;
+}
+
+// The board for the tab's list: columns from the global configuration, with a
+// column for each leftover status, and swimlanes when grouping by project.
+function BoardArea({ list }: { list: ListId }) {
+  const s = useJira();
+  if (!s.board) return <div className="jira-empty">Loading the board…</div>;
+  const issues = s.board.issues;
+  const columns = resolveColumns(s.boardConfig, issues, categoryLookup(s, issues));
+  // With "hide statuses not in any column" on, those tickets are off the
+  // board - said out loud here so they don't simply seem to be missing.
+  const hidden = hidingUnassigned(s.boardConfig) ? unplacedIssues(s.boardConfig, issues) : [];
+  const shown = hidden.length > 0 ? issues.filter((issue) => !hidden.includes(issue)) : issues;
+  const lanes = s.views[list].groupByProject ? groupByProject(shown) : null;
+  return (
+    <>
+      <div className="jira-board-toolbar">
+        <span className="jira-board-summary">
+          {shown.length} {shown.length === 1 ? "ticket" : "tickets"}
+          {hidden.length > 0 && (
+            <span title={[...new Set(hidden.map((issue) => issue.status))].join(", ")}>
+              {" "}
+              &middot; {hidden.length} hidden (not in any column)
+            </span>
+          )}
+        </span>
+        <button
+          className="jira-selaction"
+          title="Choose which statuses each column holds"
+          onClick={(e) => openColumnEditor(anchorOf(e.currentTarget))}
+        >
+          Edit columns
+        </button>
+      </div>
+      <Board
+        columns={columns}
+        lanes={lanes}
+        selection={s.selection}
+        picking={s.selectMode || s.selection.size > 0}
+        focusedKey={s.focused?.key ?? null}
+        collapsedLanes={collapsedFor(list)}
+        onOpen={(issue) => focusIssue(issue)}
+        onToggleSelected={(issue) => toggleSelected(list, issue.key)}
+        onToggleLane={(key) => toggleGroup(list, key)}
+      />
+    </>
+  );
+}
+
 function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
   const s = useJira();
   const gate = gateMessage(s);
@@ -1701,7 +1970,22 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
     setTitle?.(title);
   }, [title, setTitle]);
 
-  const focusedIssue = s.focused ? (issues.find((issue) => issue.key === s.focused!.key) ?? null) : null;
+  const onBoard = s.tabView === "board";
+  const boardIssues = s.board?.issues ?? null;
+  // The open ticket may be one only the board holds (past the table's cap,
+  // or already Done), so both lists are searched.
+  const focusedIssue = s.focused
+    ? (issues.find((issue) => issue.key === s.focused!.key) ??
+      boardIssues?.find((issue) => issue.key === s.focused!.key) ??
+      null)
+    : null;
+
+  // The board list is fetched only while the board is actually on screen.
+  useEffect(() => {
+    setBoardActive(onBoard);
+    return () => setBoardActive(false);
+  }, [onBoard]);
+
   const [layout, chooseLayout] = useLayoutChoice();
   const split = useSplitResize(layout);
   const busy = s.busyKey !== null;
@@ -1783,6 +2067,22 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
             {s.project && <span className="jira-scope-count">{s.project.issues.length}</span>}
           </button>
         </div>
+        <div className="jira-scope" role="group" aria-label="View">
+          <button
+            aria-pressed={!onBoard}
+            className={`jira-scope-button${!onBoard ? " active" : ""}`}
+            onClick={() => setTabView("table")}
+          >
+            <Icon name="list-flat" /> Table
+          </button>
+          <button
+            aria-pressed={onBoard}
+            className={`jira-scope-button${onBoard ? " active" : ""}`}
+            onClick={() => setTabView("board")}
+          >
+            <Icon name="project" /> Board
+          </button>
+        </div>
         {!gate && list === "project" && <ProjectCaption host="tab" />}
         {!gate && actions && <div className="jira-head-actions">{actions}</div>}
         {!gate && (
@@ -1818,6 +2118,9 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
           showAssignee={list === "project"}
           onApply={(filters) => applyFilters(list, filters)}
           onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+          view={s.views[list]}
+          onView={(view) => applyView(list, view)}
+          inlineView
         />
       )}
       {s.startError && <div className="jira-error">{s.startError}</div>}
@@ -1832,7 +2135,9 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
       ) : (
         <div className={`jira-split${layout ? ` layout-${layout}` : ""}`} ref={split.splitRef}>
           <div className="jira-split-list">
-            {issues.length === 0 ? (
+            {onBoard ? (
+              <BoardArea list={list} />
+            ) : issues.length === 0 ? (
               <EmptyList
                 list={list}
                 filtered={filtered}
@@ -1842,6 +2147,12 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
               <IssueList issues={issues} list={list} showMenu={showMenu} variant="table" />
             )}
           </div>
+          {/* Stacked (a phone, or top-and-bottom chosen) with no ticket
+              open, the details pane is left out rather than holding almost
+              half the height to say "select a ticket". Side by side it stays,
+              since there the hint costs the list nothing but width. */}
+          {(s.focused || split.direction === "row") && (
+          <>
           <div className={`jira-splitter ${split.direction}`} {...split.handleProps} />
           <aside className="jira-split-detail" aria-label="Ticket details" style={split.detailStyle}>
             {s.focused ? (
@@ -1864,6 +2175,9 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
                       <Icon name="link-external" />
                     </a>
                   )}
+                  <button className="icon-button jira-detail-close" title="Close" onClick={clearFocus}>
+                    <Icon name="close" />
+                  </button>
                 </div>
                 <DetailBody detail={s.focused.detail} error={s.focused.error} />
               </>
@@ -1871,10 +2185,39 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
               <div className="jira-empty">Select a ticket to read it here.</div>
             )}
           </aside>
+          </>
+          )}
         </div>
       )}
       <Floating host="tab" />
+      {s.columnEditor && (
+        <ColumnEditor
+          anchor={s.columnEditor.anchor}
+          config={s.boardConfig}
+          statuses={editorStatuses(s)}
+          onSave={saveBoardConfig}
+          onCancel={closeColumnEditor}
+        />
+      )}
     </div>
+  );
+}
+
+// ---- Status bar ----
+
+// The Jira mark in the status bar; a click opens the editor tab. The count of
+// tickets assigned to you rides in the tooltip rather than on the bar, which
+// keeps the item one glyph wide on a phone's compact bar.
+function JiraStatusItem() {
+  const s = useJira();
+  const [, rerender] = useState(0);
+  useEffect(() => extSettings?.onDidChange(() => rerender((n) => n + 1)), []);
+  if (extSettings?.get("jira.showStatusBarIcon") === false) return null;
+  const assigned = s.status?.authed ? ` - ${s.mine.length} assigned to you` : "";
+  return (
+    <button className="status-bar-item jira-statusbar" title={`Open Jira${assigned}`} onClick={() => openJiraTab()}>
+      <span className="codicon codicon-project jira-statusbar-icon" aria-hidden="true" />
+    </button>
   );
 }
 
@@ -1893,6 +2236,8 @@ const REFRESH_KEYS = [
   "jira.jql",
   "jira.projectJql",
   "jira.maxResults",
+  "jira.boardMaxResults",
+  "jira.boardDoneDays",
 ];
 const DETAIL_KEYS = ["jira.siteUrl", "jira.email", "jira.commentLimit"];
 
@@ -1902,6 +2247,40 @@ function fingerprint(keys: readonly string[]): string {
 
 let refreshPrint = "";
 let detailsPrint = "";
+let boardPrint = "";
+
+// The column editor's Save: one global configuration, into the synced
+// settings document, not declared in the manifest.
+export function saveBoardConfig(config: BoardConfig): void {
+  const serialized = serializeBoardConfig(config);
+  boardPrint = JSON.stringify(serialized);
+  setState({ boardConfig: config, columnEditor: null });
+  extSettings?.set("jira.board", serialized);
+}
+
+export function openColumnEditor(anchor: PopoverAnchor): void {
+  setState({ columnEditor: { anchor } });
+}
+
+export function closeColumnEditor(): void {
+  setState({ columnEditor: null });
+}
+
+// The statuses the editor offers: every one Jira reports for the list, plus
+// any a board ticket carries that the metadata missed - in category order,
+// then by name, so To Do statuses come first as they do on the board.
+function editorStatuses(s: JiraState): { name: string; category: string | null }[] {
+  const known = new Map<string, string | null>();
+  for (const status of s.facets?.statuses ?? []) known.set(status.name, status.category ?? null);
+  for (const issue of s.board?.issues ?? []) if (!known.has(issue.status)) known.set(issue.status, issue.statusCategory);
+  const rank = (category: string | null) => {
+    const i = CATEGORY_ORDER.indexOf(category as (typeof CATEGORY_ORDER)[number]);
+    return i === -1 ? CATEGORY_ORDER.length : i;
+  };
+  return [...known]
+    .map(([name, category]) => ({ name, category }))
+    .sort((a, b) => rank(a.category) - rank(b.category) || a.name.localeCompare(b.name));
+}
 
 interface ExtensionContext {
   registerSidebarPanel(panel: {
@@ -1928,6 +2307,15 @@ interface ExtensionContext {
     component: (props: ViewerHostProps) => ReturnType<typeof JiraTab>;
   }): void;
   registerCommand(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
+  // Optional: an older core has no status bar API at all.
+  registerStatusBarItem?(item: {
+    id: string;
+    title?: string;
+    placement?: "left" | "right";
+    order?: number;
+    visibilitySetting?: string;
+    component: () => ReturnType<typeof JiraStatusItem>;
+  }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   settings: SettingsApi;
@@ -1968,7 +2356,13 @@ export function activate(ctx: ExtensionContext): void {
   // The store is driven from here, not from a component: two panes share it,
   // and either one may be collapsed or absent when the context changes.
   const initialCwd = getActiveContext?.().cwd ?? null;
-  state = { ...state, cwd: initialCwd, ...loadFiltersFor(initialCwd) };
+  state = {
+    ...state,
+    cwd: initialCwd,
+    ...loadFiltersFor(initialCwd),
+    boardConfig: parseBoardConfig(ctx.settings.get("jira.board")),
+  };
+  boardPrint = JSON.stringify(ctx.settings.get("jira.board") ?? null);
   refresh();
   disposeBridge = [
     onDidChangeContext?.((active) => {
@@ -1986,6 +2380,8 @@ export function activate(ctx: ExtensionContext): void {
         projectPicker: null,
         // The ticket open in the tab belonged to the previous repo.
         focused: null,
+        collapsedGroups: new Set<string>(),
+        board: null,
       });
       refresh();
     }) ?? (() => {}),
@@ -1994,6 +2390,13 @@ export function activate(ctx: ExtensionContext): void {
     // change like any other - re-asking /status, /facets, /projects and both
     // lists on top of the reload the filter had already triggered.
     ctx.settings.onDidChange(() => {
+      // The board's columns can be edited from another device (the setting
+      // syncs), so they are re-read on any change - which costs no request.
+      const nextBoard = JSON.stringify(ctx.settings.get("jira.board") ?? null);
+      if (nextBoard !== boardPrint) {
+        boardPrint = nextBoard;
+        setState({ boardConfig: parseBoardConfig(ctx.settings.get("jira.board")) });
+      }
       const nextDetails = fingerprint(DETAIL_KEYS);
       if (nextDetails !== detailsPrint) {
         detailsPrint = nextDetails;
@@ -2054,6 +2457,19 @@ export function activate(ctx: ExtensionContext): void {
     id: "open",
     label: "Jira: Open in Editor Tab",
     run: () => openJiraTab(),
+  });
+
+  // One click to the editor tab from anywhere. The host shows or hides it by
+  // jira.showStatusBarIcon (and lists it under Settings -> UI's status bar
+  // items); JiraStatusItem checks the setting too, for a core that predates
+  // visibilitySetting.
+  ctx.registerStatusBarItem?.({
+    id: "open",
+    title: "Jira",
+    placement: "left",
+    order: 2,
+    visibilitySetting: "jira.showStatusBarIcon",
+    component: JiraStatusItem,
   });
 }
 

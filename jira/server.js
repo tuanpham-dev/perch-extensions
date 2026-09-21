@@ -34,7 +34,22 @@ const TOKEN_NAME = "apiToken";
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const PROJECT_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 
-const DEFAULT_JQL = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+// The built-in lists leave Done out. The board lets recently finished tickets
+// back in, so a Done column shows real movement instead of always standing
+// empty - see openClause. The table and sidebar never pass `board`, so their
+// query is byte-identical to what it has always been.
+export function openClause(board, days) {
+  if (!board || !Number.isInteger(days) || days <= 0) return "statusCategory != Done";
+  return `(statusCategory != Done OR statusCategoryChangedDate >= -${days}d)`;
+}
+
+function mineJql(board, days) {
+  return `assignee = currentUser() AND ${openClause(board, days)} ORDER BY updated DESC`;
+}
+
+function projectJql(key, board, days) {
+  return `project = "${key}" AND ${openClause(board, days)} ORDER BY updated DESC`;
+}
 
 // ---- Filters -> JQL ----
 //
@@ -109,12 +124,42 @@ function splitOrderBy(jql) {
 // `b` alone and quietly widen the result instead of narrowing it. With no
 // filters the base is returned untouched, so an unfiltered pane issues
 // byte-identical JQL to the one it always did.
-export function composeJql(base, filters) {
+//
+// A chosen sort REPLACES the base query's ORDER BY rather than being added to
+// it: the point of sorting by key is to get the lowest keys in the backlog,
+// which means the order Jira applies before it cuts the result to
+// maxResults. `key` breaks ties, so tickets that share a status or priority
+// come back in the same order every time instead of shuffling between loads.
+export function composeJql(base, filters, sort = null) {
   const clauses = filterClauses(filters);
-  if (clauses.length === 0) return base;
+  if (clauses.length === 0 && !sort) return base;
   const { where, order } = splitOrderBy(base);
-  const conditions = where ? [`(${where})`, ...clauses] : clauses;
-  return [conditions.join(" AND "), order].filter(Boolean).join(" ");
+  const conditions = where ? [clauses.length > 0 ? `(${where})` : where, ...clauses] : clauses;
+  const orderBy = sort
+    ? `ORDER BY ${SORT_FIELDS[sort.field]} ${sort.dir.toUpperCase()}${sort.field === "key" ? "" : ", key ASC"}`
+    : order;
+  return [conditions.join(" AND "), orderBy].filter(Boolean).join(" ");
+}
+
+// The panel's sort keys, and the JQL field each orders by.
+const SORT_FIELDS = {
+  key: "key",
+  summary: "summary",
+  status: "status",
+  priority: "priority",
+  assignee: "assignee",
+  type: "issuetype",
+  created: "created",
+  updated: "updated",
+};
+
+// Null when absent or not one of the known fields - an unknown field would
+// otherwise be pasted straight into the JQL.
+export function readSortParams(query) {
+  const field = typeof query.sort === "string" ? query.sort : "";
+  const dir = typeof query.dir === "string" ? query.dir.toLowerCase() : "";
+  if (!Object.hasOwn(SORT_FIELDS, field) || (dir !== "asc" && dir !== "desc")) return null;
+  return { field, dir };
 }
 
 // Repeated params (?status=A&status=B) rather than one comma-joined value: a
@@ -530,8 +575,9 @@ export function activate({ router, getSettings, secrets }) {
       body: JSON.stringify({
         jql,
         maxResults,
-        // priority feeds the editor tab's table; the sidebar rows don't show it.
-        fields: ["summary", "status", "issuetype", "assignee", "priority", "updated"],
+        // priority feeds the editor tab's table; project, the group-by-project
+        // headings, which want the project's name as well as its key.
+        fields: ["summary", "status", "issuetype", "assignee", "priority", "project", "updated"],
       }),
     });
     const issues = Array.isArray(body?.issues) ? body.issues : [];
@@ -546,6 +592,8 @@ export function activate({ router, getSettings, secrets }) {
       type: issue.fields?.issuetype?.name ?? "",
       assignee: issue.fields?.assignee?.displayName ?? null,
       priority: issue.fields?.priority?.name ?? null,
+      projectKey: issue.fields?.project?.key ?? null,
+      projectName: issue.fields?.project?.name ?? null,
       updated: issue.fields?.updated ?? null,
       url: `${cfg.siteUrl}/browse/${issue.key}`,
     }));
@@ -559,6 +607,18 @@ export function activate({ router, getSettings, secrets }) {
   function maxResultsOf(settings) {
     const raw = settings["jira.maxResults"];
     return Number.isInteger(raw) && raw >= 1 && raw <= 100 ? raw : 30;
+  }
+
+  // The board's own cap: a board of 30 cards over five columns is thin. 100 is
+  // also the most one /search/jql request returns.
+  function boardMaxResultsOf(settings) {
+    const raw = settings["jira.boardMaxResults"];
+    return Number.isInteger(raw) && raw >= 1 && raw <= 100 ? raw : 100;
+  }
+
+  function boardDoneDaysOf(settings) {
+    const raw = settings["jira.boardDoneDays"];
+    return Number.isInteger(raw) && raw >= 0 && raw <= 90 ? raw : 14;
   }
 
   // ---- Worktree helpers (see this file's header) ----
@@ -759,23 +819,35 @@ export function activate({ router, getSettings, secrets }) {
       res.status(400).json({ error: "jira is not configured" });
       return;
     }
-    const limit = maxResultsOf(cfg.settings);
+    // `board=1` is the editor tab's board: a larger cap, and the built-in
+    // queries let recently finished tickets back in. A user's own jira.jql /
+    // jira.projectJql is used exactly as written - this can't safely rewrite
+    // someone's query to relax its Done exclusion.
+    const board = req.query.board === "1";
+    const limit = board ? boardMaxResultsOf(cfg.settings) : maxResultsOf(cfg.settings);
+    const days = boardDoneDaysOf(cfg.settings);
     const override = (name) => (typeof cfg.settings[name] === "string" ? cfg.settings[name].trim() : "");
     // Applied to every one of the three query paths below, including both
     // user overrides - a filter the panel is showing as active must narrow
     // whatever query the pane is actually running, not just the built-in one.
+    // The sort likewise replaces whichever ORDER BY that query had.
     const filters = readFilterParams(req.query);
+    const sort = readSortParams(req.query);
 
     try {
       if (scope === "mine") {
-        const jql = override("jira.jql") || DEFAULT_JQL;
-        res.json({ issues: await search(cfg, composeJql(jql, filters), limit), projectKey: null, projectSource: null });
+        const jql = override("jira.jql") || mineJql(board, days);
+        res.json({
+          issues: await search(cfg, composeJql(jql, filters, sort), limit),
+          projectKey: null,
+          projectSource: null,
+        });
         return;
       }
-      const projectJql = override("jira.projectJql");
-      if (projectJql) {
+      const customProjectJql = override("jira.projectJql");
+      if (customProjectJql) {
         res.json({
-          issues: await search(cfg, composeJql(projectJql, filters), limit),
+          issues: await search(cfg, composeJql(customProjectJql, filters, sort), limit),
           projectKey: null,
           projectSource: "projectJql",
         });
@@ -786,8 +858,12 @@ export function activate({ router, getSettings, secrets }) {
         res.json({ issues: [], projectKey: null, projectSource: null });
         return;
       }
-      const jql = `project = "${key}" AND statusCategory != Done ORDER BY updated DESC`;
-      res.json({ issues: await search(cfg, composeJql(jql, filters), limit), projectKey: key, projectSource: source });
+      const jql = projectJql(key, board, days);
+      res.json({
+        issues: await search(cfg, composeJql(jql, filters, sort), limit),
+        projectKey: key,
+        projectSource: source,
+      });
     } catch (err) {
       fail(res, err, cfg.apiToken);
     }
