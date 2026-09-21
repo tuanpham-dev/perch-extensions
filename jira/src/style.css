@@ -179,26 +179,64 @@
   text-decoration: none;
 }
 
-.jira-pop-title {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-  margin-bottom: 6px;
+/* ---- A ticket's details (popover and editor-tab pane alike) ---- */
+
+.jira-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
 }
 
-.jira-pop-facts {
+.jira-detail-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg-bright, #eee);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+/* The facts as a label/value grid rather than a run of chips: the old chips
+   made "High" and "Bug" indistinguishable at a glance, and a label per value
+   costs one narrow column. */
+.jira-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.jira-facts dt {
+  color: var(--fg-inactive, #999);
+}
+
+.jira-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg, #ccc);
+}
+
+.jira-labels {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-bottom: 8px;
 }
 
 .jira-chip-label {
   font-family: var(--font-mono, monospace);
 }
 
+.jira-detail-section {
+  padding-top: 10px;
+  border-top: 1px solid var(--border, #333);
+}
+
 .jira-pop-section {
-  margin: 10px 0 4px;
+  margin: 0 0 6px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -206,24 +244,198 @@
   color: var(--fg-inactive, #999);
 }
 
-/* Jira descriptions and comments arrive as flattened plain text with real
-   newlines, so they need pre-wrap to keep their shape without a markdown
-   renderer. */
-.jira-pop-text {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
+.jira-count {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  opacity: 0.8;
+}
+
+.jira-muted {
+  font-style: italic;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .jira-comment {
-  padding: 6px 0;
-  border-top: 1px solid var(--border, #333);
+  padding: 8px 10px 4px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg, #ccc) 3%, transparent);
 }
 
 .jira-comment-head {
-  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
   font-size: 11px;
+}
+
+.jira-avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 30%, transparent);
+  color: var(--fg-bright, #eee);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.jira-comment-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-bright, #eee);
+}
+
+.jira-comment-time {
+  margin-left: auto;
+  flex: none;
   color: var(--fg-inactive, #999);
+}
+
+/* ---- Rendered Markdown (ticket bodies) ---- */
+
+.jira-md {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg, #ccc);
+  overflow-wrap: anywhere;
+}
+
+.jira-md > :first-child {
+  margin-top: 0;
+}
+
+.jira-md > :last-child {
+  margin-bottom: 0;
+}
+
+.jira-md p,
+.jira-md ul,
+.jira-md ol,
+.jira-md blockquote,
+.jira-md pre,
+.jira-md .jira-md-table {
+  margin: 0 0 8px;
+}
+
+.jira-md h1,
+.jira-md h2,
+.jira-md h3,
+.jira-md h4,
+.jira-md h5,
+.jira-md h6 {
+  margin: 12px 0 6px;
+  line-height: 1.3;
+  color: var(--fg-bright, #eee);
+}
+
+.jira-md h1 { font-size: 15px; }
+.jira-md h2 { font-size: 14px; }
+.jira-md h3 { font-size: 13px; }
+.jira-md h4,
+.jira-md h5,
+.jira-md h6 { font-size: 12.5px; }
+
+.jira-md ul,
+.jira-md ol {
+  padding-left: 20px;
+}
+
+.jira-md li + li {
+  margin-top: 2px;
+}
+
+/* GFM task lists: the checkbox replaces the bullet. */
+.jira-md li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.jira-md li > input[type="checkbox"] {
+  margin: 0 6px 0 0;
+  vertical-align: -1px;
+}
+
+.jira-md strong {
+  color: var(--fg-bright, #eee);
+}
+
+.jira-md code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg, #ccc) 10%, transparent);
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+}
+
+.jira-md pre {
+  padding: 8px 10px;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg, #ccc) 5%, transparent);
+  overflow-x: auto;
+}
+
+.jira-md pre code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.jira-md blockquote {
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--focus-border, #4a9eff);
+  color: var(--fg-inactive, #999);
+}
+
+.jira-md hr {
+  border: none;
+  border-top: 1px solid var(--border, #333);
+  margin: 10px 0;
+}
+
+.jira-md img {
+  max-width: 100%;
+}
+
+/* A wide table scrolls in its own box rather than widening the pane. */
+.jira-md-table {
+  overflow-x: auto;
+}
+
+.jira-md table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.jira-md th,
+.jira-md td {
+  padding: 4px 8px;
+  border: 1px solid var(--border, #333);
+  text-align: left;
+  vertical-align: top;
+}
+
+.jira-md th {
+  background: color-mix(in srgb, var(--fg, #ccc) 6%, transparent);
+  color: var(--fg-bright, #eee);
 }
 
 /* The settings token field carries no styles of its own — it reuses the
@@ -282,4 +494,829 @@
 
 .jira-link:hover {
   text-decoration: underline;
+}
+
+/* ---- Filter bar ---- */
+
+/* Sticky rather than fixed: it rides at the top of the panel's own scroll
+   box, so it can't collide with anything outside the pane. A fixed bar at the
+   bottom of the sidebar would sit under the one-hand extension's strip on
+   touch and have its taps swallowed. */
+.jira-filterbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 4px 6px 2px;
+  background: var(--bg, #1e1e1e);
+}
+
+.jira-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.jira-search {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 11px;
+}
+
+.jira-search:focus {
+  outline: none;
+  border-color: var(--focus-border, #4a9eff);
+}
+
+/* The funnel and the select toggle stay visible at all times - unlike the
+   per-row play button, they are how you discover the features exist. */
+.jira-funnel,
+.jira-selecttoggle {
+  flex: none;
+  position: relative;
+}
+
+.jira-funnel.active,
+.jira-selecttoggle.active {
+  color: var(--focus-border, #4a9eff);
+}
+
+.jira-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 12px;
+  padding: 0 2px;
+  border-radius: 6px;
+  /* The theme's own badge pair, so the count reads on every theme. Text in
+     the page-background colour looked fine on dark themes and went dark
+     gray on a light theme's accent. */
+  background: var(--badge-bg, var(--button-bg, #0e639c));
+  color: var(--badge-fg, var(--button-fg, #fff));
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.jira-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 0 2px;
+}
+
+.jira-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0 5px;
+  border: none;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 22%, transparent);
+  color: var(--fg-bright, #eee);
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-filter-chip:hover {
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 34%, transparent);
+}
+
+/* A text-weight button for the secondary actions beside a chip row or a
+   heading - Clear, Clear all, Remove. */
+.jira-linkish {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: var(--link, var(--focus-border, #4a9eff));
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.jira-linkish:hover {
+  text-decoration: underline;
+}
+
+/* ---- Facet popover ---- */
+
+.jira-facets {
+  width: min(280px, calc(100vw - 24px));
+}
+
+.jira-facets-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--fg-bright, #eee);
+}
+
+.jira-facet-group {
+  margin-bottom: 6px;
+}
+
+.jira-facet-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.jira-facet-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-facet-row:hover {
+  color: var(--fg-bright, #eee);
+}
+
+/* ---- Selection ---- */
+
+/* The checkbox is revealed on the pointed-at row only, so a list at rest is
+   as quiet as it was before selection existed. Once anything is ticked - or
+   select mode is on - .picking shows every box, which is also what makes the
+   feature reachable on touch, where there is no hover. */
+.jira-check {
+  flex: none;
+  margin: 0 2px 0 4px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.jira-list.picking .jira-check,
+.jira-row:hover .jira-check,
+.jira-check:focus-visible,
+.jira-check:checked {
+  opacity: 1;
+}
+
+.jira-row.picked {
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 16%, transparent);
+}
+
+/* Drawn in the wrapper's own content space, so the band stays put over the
+   rows it started on. The wrapper also catches the press, so a drag can begin
+   in the empty space below the last row. */
+.jira-listwrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.jira-marquee {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  border: 1px solid var(--focus-border, #4a9eff);
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 14%, transparent);
+}
+
+/* ---- Selection action bar ---- */
+
+/* Two rows: count and Clear, then the two actions splitting the width.
+   Sharing one row let the buttons paint over the count at sidebar width. */
+.jira-selectionbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 6px 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  font-size: 11px;
+}
+
+.jira-selhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.jira-selcount {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-bright, #eee);
+  font-weight: 600;
+}
+
+.jira-selactions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.jira-selactions .jira-selaction {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-selaction {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  background: var(--bg, #1e1e1e);
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.jira-selaction:hover:not(:disabled) {
+  border-color: var(--focus-border, #4a9eff);
+  color: var(--fg-bright, #eee);
+}
+
+.jira-selaction:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The theme's own primary-button pair - the same tokens core's
+   .dialog-button.primary uses - so it matches every other primary button in
+   the app. The focus colour with the page background as text went dark gray
+   on a light theme's green. */
+.jira-selaction.primary {
+  border-color: var(--button-bg, #0e639c);
+  background: var(--button-bg, #0e639c);
+  color: var(--button-fg, #fff);
+  font-weight: 600;
+}
+
+.jira-selaction.primary:hover:not(:disabled) {
+  border-color: var(--button-bg, #0e639c);
+  color: var(--button-fg, #fff);
+  filter: brightness(1.1);
+}
+
+/* ---- Start work form, project picker ---- */
+
+.jira-startform,
+.jira-projectpicker {
+  width: min(320px, calc(100vw - 24px));
+}
+
+.jira-field {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.jira-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 11px;
+}
+
+.jira-input:focus {
+  outline: none;
+  border-color: var(--focus-border, #4a9eff);
+}
+
+/* The resolved path, so the branch field is not the only thing saying where
+   this lands. One line, clipped from the left where it matters least. */
+.jira-location {
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 2px 0 8px;
+  font-size: 10px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-startkeys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 8px 0;
+}
+
+.jira-formactions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.jira-projectlist {
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.jira-projectrow {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jira-projectrow:hover {
+  background: var(--list-hover-bg, rgba(255, 255, 255, 0.06));
+}
+
+.jira-projectrow.current {
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 18%, transparent);
+}
+
+.jira-projectname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-inactive, #999);
+}
+
+/* ---- Project caption ---- */
+
+/* The caption is the project key AND the control that changes it, so it is a
+   button - but it keeps the caption's quiet weight rather than looking like
+   one of the action buttons above. */
+.jira-caption-button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jira-caption-button:hover .jira-caption-key {
+  color: var(--fg-bright, #eee);
+  text-decoration: underline;
+}
+
+.jira-caption-key {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-caption-source {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0;
+  color: var(--fg-inactive, #999);
+  opacity: 0.75;
+}
+
+/* ---- Project mapping table (Settings) ---- */
+
+/* Tucked up under the jira.projectMap field it edits, and set off from the
+   token field below it. */
+.jira-settings-block {
+  margin: -4px 0 18px;
+}
+
+.jira-settings-hint {
+  margin: 2px 0 8px;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-maprow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.jira-mappath {
+  flex: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg, #ccc);
+}
+
+.jira-maprow .jira-input {
+  flex: none;
+  width: 42%;
+  max-width: 220px;
+}
+
+@media (max-width: 520px) {
+  .jira-maprow {
+    flex-wrap: wrap;
+  }
+
+  .jira-maprow .jira-input {
+    width: auto;
+    flex: 1;
+  }
+}
+
+/* ---- Editor tab ---- */
+
+/* Fills the viewer and scrolls only the list and the detail pane, so the
+   scope switch and the filter row stay put. A size container, so the
+   columns and the split below adapt to the TAB's width rather than the
+   window's - the tab can sit in a narrow split pane on a wide screen. */
+.jira-tab {
+  container: jira-tab / inline-size;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg, #1e1e1e);
+  color: var(--fg, #ccc);
+  font-size: 12px;
+}
+
+.jira-tab .jira-filterbar {
+  position: static;
+  padding: 6px 12px 4px;
+}
+
+.jira-tab .jira-selectionbar {
+  margin: 2px 12px 6px;
+}
+
+.jira-tab-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 10px 12px 4px;
+}
+
+.jira-tab-head .jira-caption-button {
+  flex: 0 1 auto;
+  width: auto;
+  padding: 0;
+}
+
+/* The two lists as a segmented control, the tab's answer to the sidebar's
+   two panes. */
+.jira-scope {
+  display: inline-flex;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.jira-scope-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: none;
+  background: none;
+  color: var(--fg-inactive, #999);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.jira-scope-button + .jira-scope-button {
+  border-left: 1px solid var(--border, #333);
+}
+
+/* The theme's selected-item pair, as the app's own lists use. */
+.jira-scope-button.active {
+  background: var(--list-active-bg, color-mix(in srgb, var(--focus-border, #4a9eff) 20%, transparent));
+  color: var(--list-active-fg, var(--fg-bright, #eee));
+}
+
+.jira-scope-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.jira-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--border, #333);
+}
+
+.jira-split-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 60%;
+  min-width: 0;
+  overflow: auto;
+}
+
+.jira-split-detail {
+  flex: 0 0 min(440px, 42%);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px 16px;
+}
+
+.jira-split-detail > .jira-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+
+
+/* ---- The table rows ----
+
+   One grid per row, the header included, so every column lines up without a
+   real <table> - which could not carry the list's drag-selection wiring. The
+   row's cells live inside its click-target button; display: contents lets
+   them take their own grid columns while the button still gets the click. */
+.jira-list-table .jira-row {
+  display: grid;
+  grid-template-columns: 26px 92px minmax(160px, 1fr) 128px 140px 88px 80px 56px 30px;
+  align-items: center;
+  gap: 0 10px;
+  padding: 0 8px 0 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #333) 55%, transparent);
+  min-height: 30px;
+}
+
+.jira-list-table .jira-cells {
+  display: contents;
+}
+
+.jira-list-table .jira-cells > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.jira-list-table .jira-title {
+  font-size: 12px;
+  color: var(--fg-bright, #eee);
+}
+
+.jira-list-table .jira-age {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.jira-cell-muted {
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 26px;
+  background: var(--bg, #1e1e1e);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-thead:hover {
+  background: var(--bg, #1e1e1e);
+}
+
+.jira-list-table .jira-row.open {
+  box-shadow: inset 2px 0 0 var(--focus-border, #4a9eff);
+}
+
+/* Columns follow the LIST's width, not the tab's. With the details beside
+   it, the list is far narrower than the tab, and sizing the columns to the
+   tab let a row's columns run past the list's edge: they scrolled into view
+   with no row border or hover band under them, because those only span the
+   row's visible box. Each breakpoint is where the next grid still fits
+   (tracks + gaps + padding), so the grid never overflows the list. */
+.jira-split-list {
+  container: jira-list / inline-size;
+}
+
+/* The fields you scan least go first. Full grid: 26+92+160+128+140+88+80+56+30
+   plus 8 gaps of 10 and 12 of padding = 892px. */
+@container jira-list (max-width: 900px) {
+  .jira-list-table .jira-row {
+    grid-template-columns: 26px 88px minmax(140px, 1fr) 120px 56px 30px;
+  }
+
+  .jira-col-optional {
+    display: none;
+  }
+}
+
+/* 26+88+140+120+56+30 plus 5 gaps and padding = 522px. Below it, key and
+   summary only, on tighter gaps so even the list's 240px minimum fits. */
+@container jira-list (max-width: 530px) {
+  .jira-list-table .jira-row {
+    grid-template-columns: 26px 72px minmax(80px, 1fr) 30px;
+    gap: 0 6px;
+  }
+
+  .jira-list-table .jira-cells > span:nth-child(3),
+  .jira-list-table .jira-age,
+  .jira-thead > span:nth-child(4),
+  .jira-thead > span:nth-child(8) {
+    display: none;
+  }
+}
+
+/* A narrow tab stacks the details below the list - unless the user picked a
+   layout, below. */
+@container jira-tab (max-width: 720px) {
+  .jira-split {
+    flex-direction: column;
+  }
+
+  .jira-split-list {
+    flex: 1 1 55%;
+  }
+
+  .jira-split-detail {
+    flex: 0 0 45%;
+  }
+}
+
+/* A layout the user picked wins over the width-based default above (two
+   classes beat one), in both directions. A dragged size still wins over
+   these defaults, as an inline style. */
+.jira-split.layout-row {
+  flex-direction: row;
+}
+
+.jira-split.layout-row .jira-split-list {
+  flex: 1 1 60%;
+}
+
+.jira-split.layout-row .jira-split-detail {
+  flex: 0 0 min(440px, 42%);
+}
+
+.jira-split.layout-column {
+  flex-direction: column;
+}
+
+.jira-split.layout-column .jira-split-list {
+  flex: 1 1 55%;
+}
+
+.jira-split.layout-column .jira-split-detail {
+  flex: 0 0 45%;
+}
+
+/* The open-in-tab button sits with the other always-visible controls. */
+.jira-opentab {
+  flex: none;
+}
+
+/* ---- Tab: header actions and the resizable split ---- */
+
+/* The actions for the open ticket - or, once rows are ticked, for the
+   selection - on the right of the scope bar. */
+.jira-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.jira-head-target {
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+  white-space: nowrap;
+}
+
+.jira-head-actions .jira-selaction {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+/* The divider. It carries the line between the panes, and a wider invisible
+   hit area than the 1px it draws, so it is easy to grab. */
+.jira-splitter {
+  position: relative;
+  flex: 0 0 1px;
+  background: var(--border, #333);
+  touch-action: none;
+  z-index: 1;
+}
+
+.jira-splitter::before {
+  content: "";
+  position: absolute;
+}
+
+.jira-splitter.row {
+  cursor: col-resize;
+}
+
+.jira-splitter.row::before {
+  inset: 0 -4px;
+}
+
+.jira-splitter.column {
+  cursor: row-resize;
+}
+
+.jira-splitter.column::before {
+  inset: -4px 0;
+}
+
+.jira-splitter:hover,
+.jira-splitter:focus-visible,
+.jira-tab.resizing .jira-splitter {
+  background: var(--focus-border, #4a9eff);
+  outline: none;
+}
+
+.jira-splitter.row:hover,
+.jira-splitter.row:focus-visible,
+.jira-tab.resizing .jira-splitter.row {
+  box-shadow: 0 0 0 1px var(--focus-border, #4a9eff);
+}
+
+/* While dragging, nothing else takes the pointer or selects text. */
+.jira-tab.resizing {
+  user-select: none;
+}
+
+.jira-tab.resizing .jira-split-list,
+.jira-tab.resizing .jira-split-detail {
+  pointer-events: none;
+}
+
+/* The Markdown source as plain text, for the moment before the renderer's
+   chunk has loaded (or if it cannot). */
+.jira-md-plain {
+  white-space: pre-wrap;
+}
+
+/* Side by side / top and bottom. */
+/* Always the last thing in the bar: pushed right on its own, or sitting just
+   after the actions, which have already taken the free space. */
+.jira-layout-toggle {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+}
+
+.jira-head-actions + .jira-layout-toggle {
+  margin-left: 4px;
+}
+
+.jira-layout-toggle .icon-button.active {
+  color: var(--list-active-fg, var(--fg-bright, #eee));
+  background: var(--list-active-bg, color-mix(in srgb, var(--focus-border, #4a9eff) 20%, transparent));
 }

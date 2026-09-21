@@ -24,6 +24,7 @@
 // github extension carries the same copy.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const API_TIMEOUT = 15000;
@@ -34,6 +35,169 @@ const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const PROJECT_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 const DEFAULT_JQL = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+
+// ---- Filters -> JQL ----
+//
+// The panel's filters are applied by narrowing the QUERY, not by sifting the
+// rows that came back: a pane holds at most jira.maxResults (30) issues out
+// of a backlog of hundreds, so filtering those would report "no In Review
+// tickets" for a project that plainly has some. Everything below turns the
+// panel's facet selections into JQL fragments that are AND-ed onto whatever
+// base query the scope already uses - including a user's own jira.jql.
+
+// A facet value goes into a quoted JQL string literal, so the two characters
+// that could end or escape that literal are escaped first. Everything else -
+// spaces, parentheses, non-ASCII - is legal inside quotes and left alone.
+function escapeJql(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function inClause(field, values) {
+  return `${field} in (${values.map((v) => `"${escapeJql(v)}"`).join(", ")})`;
+}
+
+// The sentinel the assignee facet uses for "nobody". Jira has no accountId
+// for it, so it becomes `assignee is EMPTY` rather than a member of the
+// `in (...)` list - and it can be ticked alongside real people, which is why
+// the two halves are OR-ed rather than one replacing the other.
+const UNASSIGNED = "unassigned";
+
+function assigneeClause(values) {
+  const parts = [];
+  const ids = values.filter((v) => v !== UNASSIGNED);
+  if (ids.length > 0) parts.push(inClause("assignee", ids));
+  if (values.includes(UNASSIGNED)) parts.push("assignee is EMPTY");
+  return parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0];
+}
+
+// The search box. `~` is Jira's text-match operator and here only reaches the
+// summary; someone typing an issue key means "this ticket", which no summary
+// match would find, so a key-shaped term matches the key as well. The key
+// half needs no quoting: ISSUE_KEY admits only letters, digits, _ and -.
+function textClause(text) {
+  const term = `summary ~ "${escapeJql(text)}"`;
+  return ISSUE_KEY.test(text) ? `(key = ${text.toUpperCase()} OR ${term})` : term;
+}
+
+function filterClauses(filters) {
+  const clauses = [];
+  if (filters.status.length > 0) clauses.push(inClause("status", filters.status));
+  if (filters.assignee.length > 0) clauses.push(assigneeClause(filters.assignee));
+  if (filters.type.length > 0) clauses.push(inClause("issuetype", filters.type));
+  if (filters.priority.length > 0) clauses.push(inClause("priority", filters.priority));
+  if (filters.text) clauses.push(textClause(filters.text));
+  return clauses;
+}
+
+// ORDER BY is not a condition and cannot be AND-ed onto, so it is split off,
+// the conditions are combined, and it is appended again untouched. Split on
+// the LAST match: a quoted value can contain the words "order by", and only
+// the trailing clause is the real one.
+const ORDER_BY = /\border\s+by\b/gi;
+
+function splitOrderBy(jql) {
+  let last = -1;
+  let match;
+  ORDER_BY.lastIndex = 0;
+  while ((match = ORDER_BY.exec(jql)) !== null) last = match.index;
+  if (last === -1) return { where: jql.trim(), order: "" };
+  return { where: jql.slice(0, last).trim(), order: jql.slice(last).trim() };
+}
+
+// The base condition is parenthesised because a user's jira.jql may be a bare
+// OR: without the parens, `a OR b AND status in (...)` would bind the AND to
+// `b` alone and quietly widen the result instead of narrowing it. With no
+// filters the base is returned untouched, so an unfiltered pane issues
+// byte-identical JQL to the one it always did.
+export function composeJql(base, filters) {
+  const clauses = filterClauses(filters);
+  if (clauses.length === 0) return base;
+  const { where, order } = splitOrderBy(base);
+  const conditions = where ? [`(${where})`, ...clauses] : clauses;
+  return [conditions.join(" AND "), order].filter(Boolean).join(" ");
+}
+
+// Repeated params (?status=A&status=B) rather than one comma-joined value: a
+// Jira status name can itself contain a comma, so splitting on one would
+// invent facet values that never existed.
+function readFilterParams(query) {
+  const list = (name) => {
+    const raw = query[name];
+    return [
+      ...new Set(
+        (Array.isArray(raw) ? raw : [raw])
+          .filter((v) => typeof v === "string")
+          .map((v) => v.trim())
+          .filter(Boolean),
+      ),
+    ];
+  };
+  return {
+    status: list("status"),
+    assignee: list("assignee"),
+    type: list("type"),
+    priority: list("priority"),
+    text: typeof query.text === "string" ? query.text.trim() : "",
+  };
+}
+
+// ---- Facet and worktree helpers ----
+//
+// composeJql, parseWorktreeList and shortenHome are exported for
+// src/serverModel.test.ts. They are the parts of this file that decide what
+// gets queried, which worktrees are offered, and whether a session is found -
+// each wrong in a way no type check catches. Nothing imports them at runtime.
+
+// Statuses and issue types repeat heavily across workflows, so the site-wide
+// lists are deduplicated by name and capped: the picker wants the distinct
+// names a user would recognise, not one row per workflow that defines them.
+const FACET_CAP = 100;
+
+function uniqueByName(items) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    if (!item.name || seen.has(item.name)) continue;
+    seen.add(item.name);
+    out.push(item);
+    if (out.length >= FACET_CAP) break;
+  }
+  return out;
+}
+
+// Core reports session and worktree paths with the home directory shortened
+// to "~" (its shortenHome), while this extension's own routes take and return
+// absolute paths - openSessionWindow's createCwd is handed one today. A
+// caller matching a worktree to its session needs both conventions, so every
+// row below carries both rather than making the client guess $HOME.
+export function shortenHome(abs) {
+  const home = os.homedir();
+  if (!home) return abs;
+  if (abs === home) return "~";
+  return abs.startsWith(`${home}/`) ? `~${abs.slice(home.length)}` : abs;
+}
+
+export function parseWorktreeList(out) {
+  const rows = [];
+  let current = null;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      current = { path: line.slice("worktree ".length).trim(), branch: null, head: null, detached: false };
+      rows.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("HEAD ")) current.head = line.slice("HEAD ".length).trim();
+    else if (line.startsWith("branch ")) current.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    else if (line.trim() === "detached") current.detached = true;
+  }
+  return rows;
+}
+
+// A large site has more than one page of projects; capped so a pathological
+// one can neither hang the request nor fill the picker with thousands of rows.
+const PROJECT_PAGE = 100;
+const PROJECT_CAP = 500;
 
 function run(cmd, args, cwd, timeout) {
   return new Promise((resolve, reject) => {
@@ -46,74 +210,228 @@ function run(cmd, args, cwd, timeout) {
 
 const git = (args, cwd, timeout = GIT_TIMEOUT) => run("git", args, cwd, timeout);
 
-// ---- Atlassian Document Format ----
+// ---- Atlassian Document Format -> Markdown ----
+//
+// v3 returns `description` and comment bodies as ADF trees rather than text.
+// They are rendered to Markdown (GFM) instead of being flattened: the panel
+// renders Markdown, so headings, lists, code, tables and emphasis survive
+// into the ticket view, and the agent's brief is Markdown too - which is what
+// an agent reads best. Calling /rest/api/2/ purely to get a plain-text
+// description would mean keeping a deprecated API surface alive for one field.
+//
+// Exported for src/serverModel.test.ts; nothing imports it at runtime.
 
-// v3 returns `description` as an ADF tree rather than text. Flattened here so
-// the agent gets something readable; calling /rest/api/2/ purely to get a
-// plain-text description would mean keeping a deprecated API surface alive
-// for one field.
-function adfToText(node) {
+// Characters that would otherwise turn a user's plain text into markup. `_`
+// is left alone on purpose: GFM never emphasises inside a word, so
+// snake_case identifiers - common in tickets - stay readable in the brief.
+const MD_SPECIAL = /([\\`*[\]<>])/g;
+
+function escapeMd(text) {
+  return text.replace(MD_SPECIAL, "\\$1");
+}
+
+// Emphasis markers must hug the text: `** bold**` is not bold in Markdown, so
+// leading and trailing whitespace is moved outside the markers.
+function wrap(text, marker) {
+  const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(text);
+  if (!match || !match[2]) return text;
+  return `${match[1]}${marker}${match[2]}${marker}${match[3]}`;
+}
+
+// Inline code whose content itself holds backticks needs a longer fence.
+function inlineCode(value) {
+  const longest = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = value.startsWith("`") || value.endsWith("`") ? " " : "";
+  return `${fence}${pad}${value}${pad}${fence}`;
+}
+
+function plainText(node) {
   if (!node || typeof node !== "object") return "";
-
-  // A text node's URL lives in its `marks`, not in the text — so collecting
-  // only `node.text` silently drops every hyperlink. That cost real context:
-  // a comment reading "Preview: <link>  MR: <link>" flattened to
-  // "Preview:  MR:" and the agent never saw either URL. Emitted as markdown
-  // so the label and the target both survive.
-  if (node.type === "text") {
-    const text = typeof node.text === "string" ? node.text : "";
-    const href = Array.isArray(node.marks)
-      ? node.marks.find((m) => m?.type === "link")?.attrs?.href
-      : undefined;
-    if (!href) return text;
-    if (!text || text === href) return href;
-    return `[${text}](${href})`;
-  }
-
+  if (node.type === "text") return typeof node.text === "string" ? node.text : "";
   if (node.type === "hardBreak") return "\n";
+  return Array.isArray(node.content) ? node.content.map(plainText).join("") : "";
+}
 
-  // Nodes that carry their whole meaning in attrs and have no `content` at
-  // all, so the recursion below would render them as nothing:
-  //   inlineCard/blockCard/embedCard  a "smart link" — a bare pasted URL
-  //   mention                         "@Someone", the cc: in a comment
-  //   emoji / status / date           inline chips
-  //   media                           an attached file or screenshot
-  if (node.type === "inlineCard" || node.type === "blockCard" || node.type === "embedCard") {
-    const url = node.attrs?.url ?? node.attrs?.data?.url ?? "";
-    return url ? `${url}\n` : "";
+function textNode(node) {
+  const value = typeof node.text === "string" ? node.text : "";
+  const marks = Array.isArray(node.marks) ? node.marks : [];
+  const has = (type) => marks.some((mark) => mark?.type === type);
+  // A text node's URL lives in its `marks`, not in the text - so collecting
+  // only `node.text` silently drops every hyperlink. That cost real context
+  // once: "Preview: <link>  MR: <link>" flattened to "Preview:  MR:" and the
+  // agent never saw either URL.
+  const href = marks.find((mark) => mark?.type === "link")?.attrs?.href;
+
+  if (has("code")) {
+    const code = inlineCode(value);
+    return href ? `[${code}](${href})` : code;
   }
-  if (node.type === "mention") return node.attrs?.text ?? "";
-  if (node.type === "emoji") return node.attrs?.text ?? node.attrs?.shortName ?? "";
-  if (node.type === "status") return node.attrs?.text ? `[${node.attrs.text}]` : "";
-  if (node.type === "date") return node.attrs?.timestamp ? new Date(Number(node.attrs.timestamp)).toISOString().slice(0, 10) : "";
-  if (node.type === "media") {
-    const name = node.attrs?.alt || node.attrs?.id || "file";
-    return `(attachment: ${name})\n`;
+  let out = escapeMd(value);
+  if (has("strong")) out = wrap(out, "**");
+  if (has("em")) out = wrap(out, "*");
+  if (has("strike")) out = wrap(out, "~~");
+  if (href) out = !value || value === href ? `<${href}>` : `[${out}](${href})`;
+  return out;
+}
+
+function inlineNodes(nodes) {
+  return (Array.isArray(nodes) ? nodes : []).map(inlineNode).join("");
+}
+
+// Nodes that carry their whole meaning in attrs and have no `content`, so a
+// plain recursion would render them as nothing:
+//   inlineCard/blockCard/embedCard  a "smart link" - a bare pasted URL
+//   mention                         "@Someone", the cc: in a comment
+//   emoji / status / date           inline chips
+//   media                           an attached file or screenshot
+function inlineNode(node) {
+  if (!node || typeof node !== "object") return "";
+  switch (node.type) {
+    case "text":
+      return textNode(node);
+    case "hardBreak":
+      return "\n";
+    case "mention": {
+      const name = String(node.attrs?.text ?? "").replace(/^@/, "");
+      return name ? `@${escapeMd(name)}` : "";
+    }
+    case "emoji":
+      return node.attrs?.text ?? node.attrs?.shortName ?? "";
+    case "status":
+      return node.attrs?.text ? inlineCode(String(node.attrs.text).toUpperCase()) : "";
+    case "date":
+      return node.attrs?.timestamp ? new Date(Number(node.attrs.timestamp)).toISOString().slice(0, 10) : "";
+    case "inlineCard": {
+      const url = node.attrs?.url ?? node.attrs?.data?.url ?? "";
+      return url ? `<${url}>` : "";
+    }
+    case "media": {
+      const name = node.attrs?.alt || node.attrs?.id || "file";
+      return `*(attachment: ${escapeMd(String(name))})*`;
+    }
+    default:
+      return inlineNodes(node.content);
   }
+}
 
-  const joiner = node.type === "tableRow" ? " | " : "";
-  const children = Array.isArray(node.content) ? node.content.map(adfToText).join(joiner) : "";
+// Every line after the first is indented to sit under the first line's text,
+// which is how a list item's continuation and its nested lists stay inside
+// it. Depth comes from the recursion: each nested list adds its own marker's
+// width of indent.
+function hang(marker, body) {
+  const lines = body.split("\n");
+  const pad = " ".repeat(marker.length);
+  return [marker + lines[0], ...lines.slice(1).map((line) => (line ? pad + line : line))].join("\n");
+}
 
+function listItem(item, marker) {
+  const body = (Array.isArray(item?.content) ? item.content : [])
+    .map(blockNode)
+    .filter(Boolean)
+    .join("\n");
+  return hang(marker, body || "");
+}
+
+function quote(body) {
+  return body
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"))
+    .join("\n");
+}
+
+// A GFM cell holds one line, so a cell's paragraphs are joined with <br> and
+// a literal pipe is escaped. GFM also requires a header row: when Jira's
+// first row is ordinary cells, it is used as the header all the same rather
+// than inventing column names.
+function tableNode(node) {
+  const rows = (Array.isArray(node.content) ? node.content : []).map((row) =>
+    (Array.isArray(row?.content) ? row.content : []).map((cell) =>
+      (Array.isArray(cell?.content) ? cell.content : [])
+        .map(blockNode)
+        .filter(Boolean)
+        .join("<br>")
+        .replace(/\n/g, "<br>")
+        .replace(/\|/g, "\\|"),
+    ),
+  );
+  if (rows.length === 0) return "";
+  const width = Math.max(...rows.map((row) => row.length), 1);
+  const pad = (row) => [...row, ...Array(width - row.length).fill("")];
+  const line = (row) => `| ${pad(row).join(" | ")} |`;
+  return [line(rows[0]), `| ${Array(width).fill("---").join(" | ")} |`, ...rows.slice(1).map(line)].join("\n");
+}
+
+const PANEL_LABEL = { info: "Info", note: "Note", warning: "Warning", error: "Error", success: "Success", tip: "Tip" };
+
+function blocks(nodes, joiner = "\n\n") {
+  return (Array.isArray(nodes) ? nodes : []).map(blockNode).filter(Boolean).join(joiner);
+}
+
+function blockNode(node) {
+  if (!node || typeof node !== "object") return "";
   switch (node.type) {
     case "paragraph":
-    case "heading":
+      return inlineNodes(node.content);
+    case "heading": {
+      const level = Math.min(6, Math.max(1, Number(node.attrs?.level) || 1));
+      return `${"#".repeat(level)} ${inlineNodes(node.content)}`;
+    }
+    case "bulletList":
+      return (node.content ?? []).map((item) => listItem(item, "- ")).join("\n");
+    case "orderedList": {
+      const start = Number(node.attrs?.order) || 1;
+      return (node.content ?? []).map((item, i) => listItem(item, `${start + i}. `)).join("\n");
+    }
+    case "taskList":
+      return (node.content ?? [])
+        .map((item) =>
+          item?.type === "taskItem"
+            ? hang(item.attrs?.state === "DONE" ? "- [x] " : "- [ ] ", inlineNodes(item.content))
+            : blockNode(item),
+        )
+        .join("\n");
+    case "decisionList":
+      return (node.content ?? []).map((item) => hang("- ", inlineNodes(item?.content))).join("\n");
+    case "codeBlock": {
+      const code = plainText(node).replace(/\n+$/, "");
+      const longest = Math.max(2, ...(code.match(/`+/g) ?? []).map((run) => run.length));
+      const fence = "`".repeat(longest + 1);
+      return `${fence}${node.attrs?.language ?? ""}\n${code}\n${fence}`;
+    }
     case "blockquote":
-      return `${children}\n`;
-    case "codeBlock":
-      // Fenced, so the agent can tell code from prose.
-      return `\`\`\`\n${children.replace(/\n+$/, "")}\n\`\`\`\n`;
-    case "listItem":
-      return `- ${children.replace(/\n+$/, "")}\n`;
-    case "tableRow":
-      return `${children.replace(/\n+$/g, "")}\n`;
-    case "tableCell":
-    case "tableHeader":
-      return children.replace(/\n+$/, "");
+      return quote(blocks(node.content));
+    case "panel": {
+      const label = PANEL_LABEL[node.attrs?.panelType] ?? "Note";
+      return quote(`**${label}:** ${blocks(node.content)}`);
+    }
     case "rule":
-      return "---\n";
+      return "---";
+    case "table":
+      return tableNode(node);
+    case "expand":
+    case "nestedExpand": {
+      const title = node.attrs?.title ? `**${escapeMd(String(node.attrs.title))}**\n\n` : "";
+      return `${title}${blocks(node.content)}`;
+    }
+    case "blockCard":
+    case "embedCard": {
+      const url = node.attrs?.url ?? node.attrs?.data?.url ?? "";
+      return url ? `<${url}>` : "";
+    }
+    case "mediaSingle":
+    case "mediaGroup":
+      return (node.content ?? []).map(inlineNode).filter(Boolean).join("\n");
     default:
-      return children;
+      // An unknown block still yields whatever text it holds rather than
+      // vanishing - Atlassian adds node types faster than this file does.
+      return Array.isArray(node.content) ? blocks(node.content) : inlineNode(node);
   }
+}
+
+export function adfToMarkdown(doc) {
+  if (!doc || typeof doc !== "object") return "";
+  return (doc.type === "doc" ? blocks(doc.content) : blockNode(doc)).replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function activate({ router, getSettings, secrets }) {
@@ -212,7 +530,8 @@ export function activate({ router, getSettings, secrets }) {
       body: JSON.stringify({
         jql,
         maxResults,
-        fields: ["summary", "status", "issuetype", "assignee", "updated"],
+        // priority feeds the editor tab's table; the sidebar rows don't show it.
+        fields: ["summary", "status", "issuetype", "assignee", "priority", "updated"],
       }),
     });
     const issues = Array.isArray(body?.issues) ? body.issues : [];
@@ -226,6 +545,7 @@ export function activate({ router, getSettings, secrets }) {
       statusCategory: issue.fields?.status?.statusCategory?.key ?? null,
       type: issue.fields?.issuetype?.name ?? "",
       assignee: issue.fields?.assignee?.displayName ?? null,
+      priority: issue.fields?.priority?.name ?? null,
       updated: issue.fields?.updated ?? null,
       url: `${cfg.siteUrl}/browse/${issue.key}`,
     }));
@@ -384,8 +704,14 @@ export function activate({ router, getSettings, secrets }) {
     const hasToken = !!cfg.apiToken;
     const configured = !!(cfg.siteUrl && cfg.email && hasToken);
     const { key, source } = await resolveProjectKey(cfg.settings, cwd);
+    // The repository this folder belongs to, which the panel needs for two
+    // things it can't work out for itself: the key to write a project mapping
+    // under, and resolving jira.worktreeLocation's {repo} for the start
+    // form's preview. It is the MAIN worktree, so both are stable however
+    // deep in a worktree the active session happens to sit.
+    const repo = await repoRoot(cwd);
     if (!configured) {
-      res.json({ configured, hasToken, authed: false, user: null, projectKey: key, projectSource: source, error: null });
+      res.json({ configured, hasToken, authed: false, user: null, repo, projectKey: key, projectSource: source, error: null });
       return;
     }
     try {
@@ -395,6 +721,7 @@ export function activate({ router, getSettings, secrets }) {
         hasToken,
         authed: true,
         user: { accountId: me?.accountId ?? null, displayName: me?.displayName ?? null },
+        repo,
         projectKey: key,
         projectSource: source,
         error: null,
@@ -411,6 +738,7 @@ export function activate({ router, getSettings, secrets }) {
         hasToken,
         authed: false,
         user: null,
+        repo,
         projectKey: key,
         projectSource: source,
         error: message,
@@ -433,16 +761,24 @@ export function activate({ router, getSettings, secrets }) {
     }
     const limit = maxResultsOf(cfg.settings);
     const override = (name) => (typeof cfg.settings[name] === "string" ? cfg.settings[name].trim() : "");
+    // Applied to every one of the three query paths below, including both
+    // user overrides - a filter the panel is showing as active must narrow
+    // whatever query the pane is actually running, not just the built-in one.
+    const filters = readFilterParams(req.query);
 
     try {
       if (scope === "mine") {
         const jql = override("jira.jql") || DEFAULT_JQL;
-        res.json({ issues: await search(cfg, jql, limit), projectKey: null, projectSource: null });
+        res.json({ issues: await search(cfg, composeJql(jql, filters), limit), projectKey: null, projectSource: null });
         return;
       }
       const projectJql = override("jira.projectJql");
       if (projectJql) {
-        res.json({ issues: await search(cfg, projectJql, limit), projectKey: null, projectSource: "projectJql" });
+        res.json({
+          issues: await search(cfg, composeJql(projectJql, filters), limit),
+          projectKey: null,
+          projectSource: "projectJql",
+        });
         return;
       }
       const { key, source } = await resolveProjectKey(cfg.settings, cwd);
@@ -451,7 +787,155 @@ export function activate({ router, getSettings, secrets }) {
         return;
       }
       const jql = `project = "${key}" AND statusCategory != Done ORDER BY updated DESC`;
-      res.json({ issues: await search(cfg, jql, limit), projectKey: key, projectSource: source });
+      res.json({ issues: await search(cfg, composeJql(jql, filters), limit), projectKey: key, projectSource: source });
+    } catch (err) {
+      fail(res, err, cfg.apiToken);
+    }
+  });
+
+  // The values the filter popover offers. Taken from Jira's own metadata
+  // rather than from the issues currently on screen: a pane holds at most
+  // jira.maxResults of them, so deriving the list from those would hide every
+  // status that happens to sit further down the backlog - and then filtering
+  // by it would be impossible rather than merely empty.
+  //
+  // Each of the four is fetched independently and swallows its own failure. A
+  // site that restricts /priority should still get a working status filter,
+  // and the panel simply leaves out a facet that came back empty.
+  router.get("/facets", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const cfg = await readConfig();
+    if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) {
+      res.status(400).json({ error: "jira is not configured" });
+      return;
+    }
+    const { key } = await resolveProjectKey(cfg.settings, cwd);
+
+    // One call answers both statuses and types, and answers them for the
+    // project's actual workflow. The site-wide lists further down are the
+    // fallback for the "assigned to me" pane, which spans every project and
+    // so has no single workflow to ask.
+    let statuses = [];
+    let types = [];
+    if (key) {
+      try {
+        const body = await jiraFetch(cfg, `/rest/api/3/project/${encodeURIComponent(key)}/statuses`);
+        const entries = Array.isArray(body) ? body : [];
+        types = uniqueByName(entries.map((t) => ({ name: typeof t?.name === "string" ? t.name : "" })));
+        statuses = uniqueByName(
+          entries.flatMap((t) =>
+            (Array.isArray(t?.statuses) ? t.statuses : []).map((s) => ({
+              name: typeof s?.name === "string" ? s.name : "",
+              category: s?.statusCategory?.key ?? null,
+            })),
+          ),
+        );
+      } catch {
+        // Left empty so the site-wide lists below answer instead.
+      }
+    }
+    if (statuses.length === 0) {
+      try {
+        const body = await jiraFetch(cfg, "/rest/api/3/status");
+        statuses = uniqueByName(
+          (Array.isArray(body) ? body : []).map((s) => ({
+            name: typeof s?.name === "string" ? s.name : "",
+            category: s?.statusCategory?.key ?? null,
+          })),
+        );
+      } catch {
+        statuses = [];
+      }
+    }
+    if (types.length === 0) {
+      try {
+        const body = await jiraFetch(cfg, "/rest/api/3/issuetype");
+        types = uniqueByName((Array.isArray(body) ? body : []).map((t) => ({ name: typeof t?.name === "string" ? t.name : "" })));
+      } catch {
+        types = [];
+      }
+    }
+
+    // Only a project can answer "who could this be assigned to". The
+    // "assigned to me" pane is one person by definition and hides this facet.
+    let assignees = [];
+    if (key) {
+      try {
+        const body = await jiraFetch(
+          cfg,
+          `/rest/api/3/user/assignable/search?project=${encodeURIComponent(key)}&maxResults=50`,
+        );
+        assignees = (Array.isArray(body) ? body : [])
+          .filter((u) => typeof u?.accountId === "string")
+          .map((u) => ({ accountId: u.accountId, displayName: u.displayName ?? u.accountId }));
+      } catch {
+        assignees = [];
+      }
+    }
+
+    let priorities = [];
+    try {
+      const body = await jiraFetch(cfg, "/rest/api/3/priority");
+      priorities = uniqueByName((Array.isArray(body) ? body : []).map((p) => ({ name: typeof p?.name === "string" ? p.name : "" })));
+    } catch {
+      priorities = [];
+    }
+
+    res.json({ statuses, assignees, types, priorities });
+  });
+
+  // Every checkout of the active repo, for "Add to worktree". Served here
+  // rather than read from core's /api/git/worktrees so both path conventions
+  // come back together - see shortenHome's comment.
+  router.get("/worktrees", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const repo = await repoRoot(cwd);
+    if (!repo) {
+      res.status(400).json({ error: `${cwd} is not inside a git repository` });
+      return;
+    }
+    try {
+      const out = await git(["worktree", "list", "--porcelain"], repo);
+      // `git worktree list` always emits the main worktree first - the same
+      // ordering repoRoot() above relies on.
+      res.json({
+        worktrees: parseWorktreeList(out).map((wt, i) => ({
+          ...wt,
+          displayPath: shortenHome(wt.path),
+          main: i === 0,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // The site's projects, for the project picker. No cwd: the list is the same
+  // whichever repo you are looking at - it is the mapping that is per-repo.
+  router.get("/projects", async (_req, res) => {
+    const cfg = await readConfig();
+    if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) {
+      res.status(400).json({ error: "jira is not configured" });
+      return;
+    }
+    try {
+      const projects = [];
+      for (let startAt = 0; startAt < PROJECT_CAP; startAt += PROJECT_PAGE) {
+        const body = await jiraFetch(
+          cfg,
+          `/rest/api/3/project/search?maxResults=${PROJECT_PAGE}&startAt=${startAt}&orderBy=key`,
+        );
+        const values = Array.isArray(body?.values) ? body.values : [];
+        for (const p of values) {
+          if (typeof p?.key === "string") projects.push({ key: p.key, name: typeof p.name === "string" ? p.name : p.key });
+        }
+        // `isLast` is the documented end marker; the length check is the
+        // backstop for a site that omits it, so this can't spin.
+        if (body?.isLast !== false || values.length === 0) break;
+      }
+      res.json({ projects });
     } catch (err) {
       fail(res, err, cfg.apiToken);
     }
@@ -471,7 +955,7 @@ export function activate({ router, getSettings, secrets }) {
     try {
       const issue = await jiraFetch(
         cfg,
-        `/rest/api/3/issue/${key}?fields=summary,description,status,issuetype,priority,labels`,
+        `/rest/api/3/issue/${key}?fields=summary,description,status,issuetype,priority,labels,assignee,reporter,created,updated`,
       );
 
       // Comments are where the actual decisions usually live - the
@@ -492,7 +976,7 @@ export function activate({ router, getSettings, secrets }) {
             .map((c) => ({
               author: c.author?.displayName ?? "Unknown",
               created: c.created ?? null,
-              body: adfToText(c.body).trim(),
+              body: adfToMarkdown(c.body),
             }))
             .filter((c) => c.body)
             // orderBy=-created gives newest first; reverse so the agent reads
@@ -506,11 +990,18 @@ export function activate({ router, getSettings, secrets }) {
       res.json({
         key: issue.key,
         summary: issue.fields?.summary ?? "",
-        description: adfToText(issue.fields?.description).trim(),
+        description: adfToMarkdown(issue.fields?.description),
         status: issue.fields?.status?.name ?? "",
+        // The status chip is coloured by category - the only part of a status
+        // that means the same thing across workflows.
+        statusCategory: issue.fields?.status?.statusCategory?.key ?? null,
         type: issue.fields?.issuetype?.name ?? "",
         priority: issue.fields?.priority?.name ?? null,
         labels: Array.isArray(issue.fields?.labels) ? issue.fields.labels : [],
+        assignee: issue.fields?.assignee?.displayName ?? null,
+        reporter: issue.fields?.reporter?.displayName ?? null,
+        created: issue.fields?.created ?? null,
+        updated: issue.fields?.updated ?? null,
         comments,
         url: `${cfg.siteUrl}/browse/${issue.key}`,
       });

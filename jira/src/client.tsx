@@ -12,12 +12,56 @@
 // between tabs, and remembers all of it per user. Because they are separate
 // React trees that need the same data, the fetching lives in one module-level
 // store below instead of in either component.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
 import Icon from "./Icon";
-import { resolveAgentPresets, sendToAgent, type AgentLaunchPreset } from "./agentTarget";
-import SettingsPanel, { onTokenChange, setFetcher } from "./SettingsPanel";
+import {
+  agentWindows,
+  fetchAgents,
+  fetchSessions,
+  resolveAgentPresets,
+  sendToAgent,
+  type AgentLaunchPreset,
+} from "./agentTarget";
+import SettingsPanel, { ProjectMapSettings, onTokenChange, setFetcher, setSettingsBridge } from "./SettingsPanel";
+import FilterBar from "./FilterBar";
+import Markdown, { setMarkdownAssetUrl } from "./Markdown";
+import SelectionBar from "./SelectionBar";
+import StartWorkForm from "./StartWorkForm";
+import ProjectPicker from "./ProjectPicker";
+import { buildCombinedBrief } from "./brief";
+import { buildBranch, sessionNameFor } from "./naming";
+import { parseProjectMap, serializeProjectMap, upsertProjectMap } from "./projectMap";
+import { anchorOf, usePopoverPosition, type PopoverAnchor } from "./usePopoverPosition";
+import { useMarqueeSelection } from "./useMarqueeSelection";
+import { useLongPressMenu } from "./useLongPressMenu";
+import { useLayoutChoice, useSplitResize } from "./useSplitResize";
+import {
+  EMPTY_FILTERS,
+  filterParams,
+  isEmpty as filtersAreEmpty,
+  parseFilterStore,
+  readFilters,
+  serializeFilterStore,
+  writeFilters,
+  type FilterStore,
+  type IssueFilters,
+  type ListId,
+} from "./filterModel";
+import { applyMarquee, orderedSelection, prune, selectRange, toggle } from "./selectionModel";
+import { TtlCache } from "./ttlCache";
+import type {
+  Facets,
+  IssueDetail,
+  IssueRow,
+  IssuesResponse,
+  ProgressResponse,
+  ProjectRow,
+  StatusResponse,
+  WorktreeResponse,
+  WorktreeRow,
+} from "./types";
 
 // ---- Module-level host bridge ----
 
@@ -29,6 +73,10 @@ interface ActiveContext {
 
 interface SettingsApi {
   get(key: string): unknown;
+  // The host has offered this all along (docs/EXTENSION_API.md's ctx.settings);
+  // this structural copy just never declared it, because nothing here wrote a
+  // setting. The filter memory and both project-mapping surfaces do.
+  set(key: string, value: unknown): void;
   onDidChange(cb: () => void): () => void;
 }
 
@@ -57,65 +105,8 @@ let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 let disposeBridge: (() => void)[] = [];
 
-// ---- Types (mirror server.js's responses) ----
-
-interface StatusResponse {
-  configured: boolean;
-  hasToken: boolean;
-  authed: boolean;
-  user: { accountId: string | null; displayName: string | null } | null;
-  projectKey: string | null;
-  projectSource: string | null;
-  error: string | null;
-}
-
-interface IssueRow {
-  key: string;
-  summary: string;
-  status: string;
-  statusCategory: string | null;
-  type: string;
-  assignee: string | null;
-  updated: string | null;
-  url: string;
-}
-
-interface IssuesResponse {
-  issues: IssueRow[];
-  projectKey: string | null;
-  projectSource: string | null;
-}
-
-interface IssueComment {
-  author: string;
-  created: string | null;
-  body: string;
-}
-
-interface IssueDetail {
-  key: string;
-  summary: string;
-  description: string;
-  status: string;
-  type: string;
-  priority: string | null;
-  labels: string[];
-  comments: IssueComment[];
-  url: string;
-}
-
-interface WorktreeResponse {
-  path: string;
-  branch: string;
-  base: string;
-  note: string | null;
-}
-
-interface ProgressResponse {
-  transitioned: boolean;
-  assigned: boolean;
-  note: string | null;
-}
+// The response shapes live in types.ts, so the tested models beside it can
+// share them without importing this React tree.
 
 // ---- Fetch helpers ----
 
@@ -149,21 +140,10 @@ function apiPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 // ---- Helpers ----
-
-// Byte-identical to the bundled worktrees extension's own sessionNameFor -
-// Session names can't contain "." or ":".
-function sessionNameFor(branch: string): string {
-  return branch.replace(/[.:/\s]+/g, "-").replace(/^-+|-+$/g, "");
-}
-
-function shortSlug(title: string): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  return slug || "untitled";
-}
+//
+// Branch and session naming live in naming.ts, and the agent's brief in
+// brief.ts - the start-work form prefills a branch from the same function
+// that creates one, so both have to be reachable from outside this file.
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "";
@@ -176,18 +156,6 @@ function relativeTime(iso: string | null): string {
   const days = Math.round(hours / 24);
   if (days < 365) return `${days}d`;
   return `${Math.round(days / 365)}y`;
-}
-
-// {key}/{slug}/{type} - so both "CAP-123-fix-header" and "feature/CAP-123"
-// conventions are reachable from one setting. github hardcodes its equivalent;
-// Jira branch conventions vary too much between teams for that.
-function buildBranch(template: string, issue: IssueRow): string {
-  const type = issue.type.toLowerCase() === "bug" ? "bugfix" : "feature";
-  const filled = (template.trim() || "{key}-{slug}")
-    .replaceAll("{key}", issue.key)
-    .replaceAll("{slug}", shortSlug(issue.summary))
-    .replaceAll("{type}", type);
-  return filled.replace(/^-+|-+$/g, "") || issue.key;
 }
 
 // ---- Agent launch presets ----
@@ -250,37 +218,7 @@ function useAgentPresets(): AgentLaunchPreset[] {
   return presets;
 }
 
-// Everything the agent needs to start without going back to Jira itself.
-// The description alone was not enough in practice: on a real ticket the
-// decisions tend to live in the comment thread, so those go in too (oldest
-// first, capped by jira.commentLimit). The URL is included so the agent can
-// cite it or ask the user to open it.
-function buildAgentBrief(detail: IssueDetail): string {
-  const lines: string[] = [`${detail.key}: ${detail.summary}`, ""];
-
-  const facts = [
-    detail.type && `Type: ${detail.type}`,
-    detail.status && `Status: ${detail.status}`,
-    detail.priority && `Priority: ${detail.priority}`,
-    detail.labels.length > 0 && `Labels: ${detail.labels.join(", ")}`,
-    `Link: ${detail.url}`,
-  ].filter((line): line is string => typeof line === "string" && line.length > 0);
-  lines.push(...facts, "");
-
-  lines.push("## Description", detail.description || "(none)");
-
-  if (detail.comments.length > 0) {
-    lines.push("", `## Comments (${detail.comments.length}, oldest first)`);
-    for (const comment of detail.comments) {
-      const when = comment.created ? ` on ${comment.created.slice(0, 10)}` : "";
-      lines.push("", `### ${comment.author}${when}`, comment.body);
-    }
-  }
-
-  return lines.join("\n").trimEnd();
-}
-
-function readSetting(key: string): string {
+export function readSetting(key: string): string {
   const value = extSettings?.get(key);
   return typeof value === "string" ? value : "";
 }
@@ -302,44 +240,6 @@ function asPaste(text: string): string {
   return text.includes("\n") ? `[200~${text}[201~` : text;
 }
 
-// Description and comment bodies arrive as flattened text in which links are
-// markdown ("[label](url)", from a text node's link mark) or bare URLs (from
-// a smart-link card) — see adfToText in server.js. Rendered into real anchors
-// here so they can actually be clicked, built as React nodes rather than
-// injected HTML: this is other people's comment text, so it must never reach
-// dangerouslySetInnerHTML.
-const LINK_PATTERN = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"'\])]+)/g;
-
-function RichText({ text }: { text: string }) {
-  const nodes: (string | JSX.Element)[] = [];
-  let last = 0;
-  let match: RegExpExecArray | null;
-  LINK_PATTERN.lastIndex = 0;
-  while ((match = LINK_PATTERN.exec(text)) !== null) {
-    if (match.index > last) nodes.push(text.slice(last, match.index));
-    // Sentence punctuation that happens to sit after a bare URL isn't part
-    // of it; markdown links are already delimited so they keep theirs.
-    let href = match[2] ?? match[3] ?? "";
-    let label = match[1] ?? href;
-    let trailing = "";
-    if (!match[2]) {
-      const trimmed = href.replace(/[.,;:!?]+$/, "");
-      trailing = href.slice(trimmed.length);
-      href = trimmed;
-      label = trimmed;
-    }
-    nodes.push(
-      <a key={`${match.index}-${href}`} className="jira-link" href={href} target="_blank" rel="noopener noreferrer">
-        {label}
-      </a>,
-    );
-    if (trailing) nodes.push(trailing);
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) nodes.push(text.slice(last));
-  return <>{nodes}</>;
-}
-
 // ---- Shared store ----
 //
 // Both panes need the same status and the same in-flight/error state, and the
@@ -348,7 +248,7 @@ function RichText({ text }: { text: string }) {
 // work" error shows wherever you are looking, and only one details popover
 // can be open at a time.
 
-type ListId = "mine" | "project";
+// ListId lives in filterModel.ts, which keys the saved filters by it.
 
 interface PopoverState {
   key: string;
@@ -356,7 +256,43 @@ interface PopoverState {
   // of the identity - otherwise opening it in one pane would also render it
   // in the other.
   list: ListId;
-  anchor: { top: number; bottom: number; left: number; right: number };
+  anchor: PopoverAnchor;
+  detail: IssueDetail | null;
+  error: string | null;
+}
+
+// Where a floating form was opened from: one of the two sidebar panes, or
+// the editor tab. Each form renders only in the host it was opened from - the
+// panes and the tab all read one store, and a form drawn in a pane the user
+// is not looking at (collapsed, or on another sidebar tab) is a form they
+// never see.
+export type Host = ListId | "tab";
+
+// The start-work form, open only for a selection of more than one ticket -
+// naming a three-ticket branch after one of them is wrong often enough to be
+// worth a field. One ticket keeps the one-click path it always had.
+interface StartFormState {
+  origin: Host;
+  issues: IssueRow[];
+  anchor: PopoverAnchor;
+  branch: string;
+  presets: AgentLaunchPreset[];
+  // An index into `presets`, or -1 for "no agent".
+  presetIndex: number;
+  busy: boolean;
+  error: string | null;
+}
+
+interface PickerState {
+  origin: Host;
+  anchor: PopoverAnchor;
+  error: string | null;
+}
+
+// The editor tab's detail pane: the ticket last clicked, and its full detail
+// once /issue answers. The tab's counterpart to the sidebar's popover.
+interface FocusedState {
+  key: string;
   detail: IssueDetail | null;
   error: string | null;
 }
@@ -372,7 +308,29 @@ interface JiraState {
   startError: string | null;
   note: string | null;
   popover: PopoverState | null;
+  // Per pane, because the two ask different questions of the same backlog.
+  // Persisted per repo in jira.filters - see filterModel.ts.
+  filters: Record<ListId, IssueFilters>;
+  filterStore: FilterStore;
+  facets: Facets | null;
+  // One set of issue keys for both panes: the same ticket listed twice is one
+  // ticket, and selecting it in either place means the same thing.
+  selection: Set<string>;
+  selectMode: boolean;
+  // The shift-click anchor is per pane, since each has its own row order.
+  anchor: Record<ListId, string | null>;
+  startForm: StartFormState | null;
+  // The site's projects, fetched once per cwd for the project picker.
+  projects: ProjectRow[];
+  projectPicker: PickerState | null;
+  // The editor tab: which list it is showing, and which ticket is open in its
+  // detail pane. Kept in the store rather than the tab component so closing
+  // and reopening the tab lands where it was.
+  tabList: ListId;
+  focused: FocusedState | null;
 }
+
+const NO_FILTERS: Record<ListId, IssueFilters> = { mine: EMPTY_FILTERS, project: EMPTY_FILTERS };
 
 let state: JiraState = {
   cwd: null,
@@ -385,6 +343,17 @@ let state: JiraState = {
   startError: null,
   note: null,
   popover: null,
+  filters: NO_FILTERS,
+  filterStore: {},
+  facets: null,
+  selection: new Set(),
+  selectMode: false,
+  anchor: { mine: null, project: null },
+  startForm: null,
+  projects: [],
+  projectPicker: null,
+  tabList: "mine",
+  focused: null,
 };
 
 const listeners = new Set<() => void>();
@@ -411,10 +380,19 @@ function useJira(): JiraState {
 // and can easily outlive a fast tab switch.
 let refreshToken = 0;
 
+// The pane's own filters ride along as repeated query params, so the server
+// narrows the JQL rather than the client sifting the rows that came back -
+// see server.js's "Filters -> JQL". `text` is already debounced by FilterBar
+// before it reaches the store, so this fires once per settled search.
+function issuesUrl(cwd: string, list: ListId): string {
+  const params = new URLSearchParams([["cwd", cwd], ["scope", list], ...filterParams(state.filters[list])]);
+  return `/issues?${params.toString()}`;
+}
+
 function refresh(): void {
   const cwd = state.cwd;
   if (!cwd) {
-    setState({ status: null, mine: [], project: null, error: null, loading: false });
+    setState({ status: null, mine: [], project: null, error: null, loading: false, facets: null, projects: [] });
     return;
   }
   const token = ++refreshToken;
@@ -425,16 +403,15 @@ function refresh(): void {
       if (token !== refreshToken) return;
       setState({ status, error: null });
       if (!status.configured || !status.authed) {
-        setState({ mine: [], project: null, loading: false });
+        setState({ mine: [], project: null, loading: false, facets: null, projects: [] });
         return;
       }
-      return Promise.all([
-        apiGet<IssuesResponse>(`/issues?cwd=${q}&scope=mine`),
-        apiGet<IssuesResponse>(`/issues?cwd=${q}&scope=project`),
-      ]).then(([mine, project]) => {
-        if (token !== refreshToken) return;
-        setState({ mine: mine.issues, project, loading: false });
-      });
+      // Facets and projects are metadata, not issues: a failure there must
+      // leave the lists working, so they settle on their own rather than
+      // joining the lists' request, whose failure becomes the pane's error.
+      loadFacets(token, q);
+      loadProjects(token);
+      loadIssues(cwd);
     })
     .catch((err: Error) => {
       if (token !== refreshToken) return;
@@ -442,41 +419,444 @@ function refresh(): void {
     });
 }
 
+// The two lists on their own, for a filter change. A filter narrows the
+// lists and nothing else, so it has no business re-asking /status (a round
+// trip to Atlassian's /myself), /facets (four more) or /projects - which is
+// what every tick of the funnel used to cost, twice over.
+function refreshIssues(): void {
+  if (!state.cwd || !state.status?.configured || !state.status.authed) {
+    refresh();
+    return;
+  }
+  loadIssues(state.cwd);
+}
+
+// Its own counter rather than refreshToken's: a list-only reload must not
+// strand the facets or projects a full refresh still has in flight, which
+// check refreshToken to know they are current.
+let issuesToken = 0;
+
+function loadIssues(cwd: string): void {
+  const token = ++issuesToken;
+  setState({ loading: true });
+  Promise.all([apiGet<IssuesResponse>(issuesUrl(cwd, "mine")), apiGet<IssuesResponse>(issuesUrl(cwd, "project"))])
+    .then(([mine, project]) => {
+      if (token !== issuesToken || state.cwd !== cwd) return;
+      // A selected issue the new lists no longer carry drops out of the
+      // selection too, so the count can never name tickets nothing shows.
+      const known = [...mine.issues, ...project.issues].map((issue) => issue.key);
+      setState({
+        mine: mine.issues,
+        project,
+        loading: false,
+        error: null,
+        selection: prune(state.selection, known),
+      });
+    })
+    .catch((err: Error) => {
+      if (token !== issuesToken) return;
+      setState({ error: err.message, loading: false });
+    });
+}
+
+// ---- Ticket details, cached ----
+//
+// Opening a ticket - in the popover, in the tab, or to build its brief for an
+// agent - reuses details fetched within jira.detailCacheSeconds rather than
+// asking Atlassian again (two requests each: the issue and its comments).
+// Expired entries are dropped on read and swept on a timer, so the cache does
+// not hold on to tickets nobody opens again. The refresh button on a ticket
+// bypasses it, and anything that changes a ticket or which site is being
+// asked invalidates it.
+const DETAIL_CACHE_MAX = 200;
+const DETAIL_SWEEP_MS = 60_000;
+
+function detailTtlMs(): number {
+  const raw = extSettings?.get("jira.detailCacheSeconds");
+  const seconds = typeof raw === "number" && Number.isFinite(raw) ? raw : 300;
+  return Math.min(3600, Math.max(0, seconds)) * 1000;
+}
+
+const detailCache = new TtlCache<IssueDetail>({ ttlMs: detailTtlMs, max: DETAIL_CACHE_MAX });
+// Two callers asking for the same ticket at once - the popover and a brief,
+// say - share one request rather than racing two.
+const detailInFlight = new Map<string, Promise<IssueDetail>>();
+
+function fetchIssueDetail(key: string, { fresh = false }: { fresh?: boolean } = {}): Promise<IssueDetail> {
+  if (!fresh) {
+    const cached = detailCache.get(key);
+    if (cached) return Promise.resolve(cached);
+    const pending = detailInFlight.get(key);
+    if (pending) return pending;
+  }
+  const request = apiGet<IssueDetail>(`/issue?key=${encodeURIComponent(key)}`)
+    .then((detail) => {
+      detailCache.set(key, detail);
+      return detail;
+    })
+    .finally(() => {
+      if (detailInFlight.get(key) === request) detailInFlight.delete(key);
+    });
+  detailInFlight.set(key, request);
+  return request;
+}
+
+function loadFacets(token: number, q: string): void {
+  apiGet<Facets>(`/facets?cwd=${q}`)
+    .then((facets) => {
+      if (token === refreshToken) setState({ facets });
+    })
+    .catch(() => {
+      // The funnel renders only the facets it has; an unreachable metadata
+      // call simply leaves that section out.
+      if (token === refreshToken) setState({ facets: null });
+    });
+}
+
+function loadProjects(token: number): void {
+  apiGet<{ projects: ProjectRow[] }>("/projects")
+    .then((body) => {
+      if (token === refreshToken) setState({ projects: body.projects });
+    })
+    .catch(() => {
+      if (token === refreshToken) setState({ projects: [] });
+    });
+}
+
+// ---- Filters ----
+
+// Every filter change lands here: the pane refetches, and the choice is
+// remembered against this repo so it is still there after a reload and on
+// whichever device opens the project next (Perch syncs the settings
+// document). jira.filters is written but NOT declared in the manifest - it is
+// panel state rewritten on every tick, and a text field for it in Settings
+// would only invite hand-editing. filterModel.writeFilters prunes an emptied
+// pane, so the setting can't grow one dead repo path at a time.
+export function applyFilters(list: ListId, filters: IssueFilters): void {
+  const filterStore = state.cwd ? writeFilters(state.filterStore, state.cwd, list, filters) : state.filterStore;
+  setState({ filters: { ...state.filters, [list]: filters }, filterStore });
+  if (state.cwd) extSettings?.set("jira.filters", serializeFilterStore(filterStore));
+  refreshIssues();
+}
+
+export function filtersFor(list: ListId): IssueFilters {
+  return state.filters[list];
+}
+
+// Loaded whenever the active repo changes, so each project reopens with the
+// filters it was left under rather than with the last repo's. Pure, and
+// returns the whole store as well as this repo's slice: applyFilters writes
+// back into that store, so losing it would clobber every other repo's saved
+// filters on the next tick.
+function loadFiltersFor(cwd: string | null): Pick<JiraState, "filters" | "filterStore"> {
+  const filterStore = parseFilterStore(extSettings?.get("jira.filters"));
+  return {
+    filterStore,
+    filters: { mine: readFilters(filterStore, cwd, "mine"), project: readFilters(filterStore, cwd, "project") },
+  };
+}
+
+// ---- Selection ----
+
+export function toggleSelected(list: ListId, key: string): void {
+  setState({ selection: toggle(state.selection, key), anchor: { ...state.anchor, [list]: key } });
+}
+
+export function selectRangeTo(list: ListId, keys: string[], key: string): void {
+  setState({
+    selection: selectRange(state.selection, keys, state.anchor[list], key),
+    anchor: { ...state.anchor, [list]: key },
+  });
+}
+
+export function setMarquee(base: ReadonlySet<string>, ids: string[], additive: boolean): void {
+  setState({ selection: applyMarquee(base, ids, additive) });
+}
+
+// Turning select mode off clears the selection: leaving rows ticked behind a
+// hidden checkbox would keep the action bar up with no way to see what it is
+// about to act on.
+export function setSelectMode(on: boolean): void {
+  setState(on ? { selectMode: true } : { selectMode: false, selection: new Set<string>() });
+}
+
+export function clearSelection(): void {
+  setState({ selection: new Set<string>(), anchor: { mine: null, project: null } });
+}
+
+// In the order the panes list them, which is the order the brief and the Jira
+// transitions follow. A ticket listed in both panes is returned once.
+function selectedIssues(): IssueRow[] {
+  return orderedSelection([state.mine, state.project?.issues ?? []], state.selection);
+}
+
 // ---- Start work ----
 
-async function startWork(issue: IssueRow, preset: AgentLaunchPreset | null): Promise<void> {
+function addNote(text: string | null): void {
+  if (!text) return;
+  setState({ note: state.note ? `${state.note} ${text}` : text });
+}
+
+// Never fatal: by the time this runs the worktree exists and the agent has
+// its tickets, so a Jira-side failure must not read as "Start work failed".
+// One call per ticket, since /progress transitions a single issue - and one
+// ticket failing leaves the rest moved rather than abandoning the batch.
+async function runProgress(issues: IssueRow[]): Promise<void> {
+  if (extSettings?.get("jira.updateIssueOnStartWork") !== true) return;
+  for (const issue of issues) {
+    try {
+      const progress = await apiPost<ProgressResponse>("/progress", { key: issue.key });
+      // Its status (and maybe its assignee) just changed in Jira, so the
+      // cached copy is wrong now whatever its age.
+      detailCache.delete(issue.key);
+      if (progress.note) addNote(`${issue.key}: ${progress.note}`);
+    } catch (err) {
+      addNote(`${issue.key}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+interface HandOverTarget {
+  sessionName: string;
+  // Set when an agent was found already running: a repo session can have
+  // several windows and only one of them is the agent. Omitted for a session
+  // just created, which has no window to aim at yet.
+  windowIndex?: number;
+  // Null when the agent is already running and only needs the tickets.
+  launch: AgentLaunchPreset | null;
+}
+
+// The tickets reach the agent as ONE paste, whether there is one of them or
+// five. Each send is a separate message into the composer, so five sends
+// would be five prompts and the agent would start on the first before it had
+// seen the rest.
+async function handOver(target: HandOverTarget, issues: IssueRow[]): Promise<void> {
+  const { sessionName, windowIndex, launch } = target;
+  if (launch) {
+    // Already carries the app's Yolo/Manual choice - see resolveAgentPresets.
+    await sendToAgent(sessionName, launch.command, true, { retries: 12, retryDelayMs: 400, windowIndex });
+  }
+  const details = await Promise.all(issues.map((issue) => fetchIssueDetail(issue.key)));
+  await sendToAgent(
+    sessionName,
+    asPaste(buildCombinedBrief(details)),
+    extSettings?.get("jira.sendAutoSubmit") === true,
+    { retries: 6, retryDelayMs: 400, windowIndex },
+  );
+}
+
+// Returns null on success, or the message to show. The caller decides where
+// that belongs: the panel's error line for the one-click path, the form's own
+// line for the several-ticket one, which stays open so the branch can be
+// edited after a 409.
+async function createWorktreeAndHandOver(
+  issues: IssueRow[],
+  branch: string,
+  preset: AgentLaunchPreset | null,
+): Promise<string | null> {
   const cwd = state.cwd;
-  if (!cwd) return;
-  const branch = buildBranch(readSetting("jira.branchTemplate"), issue);
-  setState({ busyKey: issue.key, startError: null, note: null });
+  if (!cwd || issues.length === 0) return null;
   try {
     const result = await apiPost<WorktreeResponse>("/worktree", { cwd, branch });
     const sessionName = sessionNameFor(branch);
     openSessionWindow?.(sessionName, { createCwd: result.path });
     // A fallback base is worth saying out loud - the worktree is real either
     // way, but it didn't start where the user expected.
-    if (result.note) setState({ note: result.note });
+    addNote(result.note);
+    await runProgress(issues);
+    if (preset) await handOver({ sessionName, launch: preset }, issues);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
 
-    if (extSettings?.get("jira.updateIssueOnStartWork") === true) {
-      // Never fatal: the worktree already exists, so a Jira-side failure must
-      // not read as "Start work failed".
-      try {
-        const progress = await apiPost<ProgressResponse>("/progress", { key: issue.key });
-        if (progress.note) setState({ note: state.note ? `${state.note} ${progress.note}` : progress.note });
-      } catch (err) {
-        setState({ note: err instanceof Error ? err.message : String(err) });
-      }
-    }
+// One ticket, one click - the row's play button, unchanged.
+async function startWork(issue: IssueRow, preset: AgentLaunchPreset | null): Promise<void> {
+  setState({ busyKey: issue.key, startError: null, note: null });
+  const branch = buildBranch(readSetting("jira.branchTemplate"), issue);
+  const error = await createWorktreeAndHandOver([issue], branch, preset);
+  setState({ busyKey: null, startError: error });
+}
 
-    if (preset) {
-      // Already carries the app's Yolo/Manual choice - see resolveAgentPresets.
-      await sendToAgent(sessionName, preset.command, true, { retries: 12, retryDelayMs: 400 });
-      const detail = await apiGet<IssueDetail>(`/issue?key=${encodeURIComponent(issue.key)}`);
-      await sendToAgent(sessionName, asPaste(buildAgentBrief(detail)), extSettings?.get("jira.sendAutoSubmit") === true, {
-        retries: 6,
-        retryDelayMs: 400,
-      });
-    }
+// The one-ticket start as a row's play button and the tab's detail pane both
+// offer it. With more than one agent in the registry it asks which to use
+// instead of silently taking the first: offering only entry [0] made every
+// agent after the first unreachable. One agent (or no showMenu from the host)
+// keeps the direct, no-click-extra path.
+//
+// Whether to skip permission prompts is NOT asked here. It is one global
+// choice - Settings → AI Providers' Yolo/Manual - and the app applies it to
+// the command this extension is handed. Asking again per issue meant the same
+// question in three places, and a local answer could silently contradict the
+// global one.
+export async function startWorkWithPicker(
+  issue: IssueRow,
+  showMenu: SidebarPanelHostProps["showMenu"],
+  x: number,
+  y: number,
+): Promise<void> {
+  let presets: AgentLaunchPreset[];
+  try {
+    presets = await agentPresets();
+  } catch {
+    // No agent list (an older core): the worktree is still worth making.
+    void startWork(issue, null);
+    return;
+  }
+  if (presets.length <= 1 || !showMenu) {
+    void startWork(issue, presets[0] ?? null);
+    return;
+  }
+  showMenu(x, y, [
+    ...presets.map((preset) => ({
+      label: preset.name,
+      onClick: () => void startWork(issue, preset),
+    })),
+    { label: "No agent (worktree only)", onClick: () => void startWork(issue, null) },
+  ]);
+}
+
+// ---- The editor tab ----
+
+export function setTabList(list: ListId): void {
+  if (state.tabList !== list) setState({ tabList: list });
+}
+
+// Opens a ticket in the tab's detail pane. A response that lands after the
+// user has moved on to another ticket is dropped rather than painted over it.
+export function focusIssue(issue: IssueRow, { fresh = false }: { fresh?: boolean } = {}): void {
+  if (!fresh && state.focused?.key === issue.key && state.focused.detail) return;
+  // A cached ticket shows at once, with no "Loading…" flash in between; a
+  // forced refresh keeps the old details on screen until the new ones land.
+  const cached = fresh ? null : detailCache.get(issue.key);
+  const shown = fresh && state.focused?.key === issue.key ? state.focused.detail : null;
+  setState({ focused: { key: issue.key, detail: cached ?? shown, error: null } });
+  if (cached) return;
+  fetchIssueDetail(issue.key, { fresh })
+    .then((detail) => {
+      if (state.focused?.key !== issue.key) return;
+      setState({ focused: { key: issue.key, detail, error: null } });
+    })
+    .catch((err: Error) => {
+      if (state.focused?.key !== issue.key) return;
+      setState({ focused: { key: issue.key, detail: null, error: err.message } });
+    });
+}
+
+// ---- The several-ticket start form ----
+
+export async function openStartForm(anchor: PopoverAnchor, origin: Host): Promise<void> {
+  const issues = selectedIssues();
+  if (issues.length === 0) return;
+  let presets: AgentLaunchPreset[] = [];
+  try {
+    presets = await agentPresets();
+  } catch {
+    // No agent registry (an older core): the worktree is still worth making,
+    // so the form opens with "No agent" as its only choice.
+  }
+  setState({
+    startForm: {
+      origin,
+      issues,
+      anchor,
+      // Prefilled from the FIRST selected ticket and editable - naming a
+      // three-ticket branch after one of them is wrong often enough to be
+      // worth a field.
+      branch: buildBranch(readSetting("jira.branchTemplate"), issues[0]),
+      presets,
+      presetIndex: presets.length > 0 ? 0 : -1,
+      busy: false,
+      error: null,
+    },
+  });
+}
+
+export function updateStartForm(patch: Partial<StartFormState>): void {
+  if (state.startForm) setState({ startForm: { ...state.startForm, ...patch } });
+}
+
+export function closeStartForm(): void {
+  setState({ startForm: null });
+}
+
+export async function submitStartForm(): Promise<void> {
+  const form = state.startForm;
+  if (!form) return;
+  const branch = form.branch.trim();
+  if (!branch) {
+    setState({ startForm: { ...form, error: "Enter a branch name." } });
+    return;
+  }
+  setState({ startForm: { ...form, busy: true, error: null }, note: null });
+  const preset = form.presetIndex >= 0 ? (form.presets[form.presetIndex] ?? null) : null;
+  const error = await createWorktreeAndHandOver(form.issues, branch, preset);
+  if (!state.startForm) return;
+  if (error) {
+    setState({ startForm: { ...state.startForm, busy: false, error } });
+    return;
+  }
+  setState({ startForm: null, selection: new Set<string>(), selectMode: false });
+}
+
+// ---- Adding tickets to a worktree that already exists ----
+
+// A worktree's name: its branch, else a short detached head, else the
+// checkout's folder name. Matches how core labels a worktree row.
+function worktreeLabel(worktree: WorktreeRow): string {
+  if (worktree.branch) return worktree.branch;
+  if (worktree.detached) return `(detached ${worktree.head?.slice(0, 7) ?? "?"})`;
+  return worktree.path.split("/").filter(Boolean).pop() ?? worktree.path;
+}
+
+interface WorktreeChoice {
+  worktree: WorktreeRow;
+  label: string;
+  sessionName: string | null;
+  agent: { sessionName: string; windowIndex: number } | null;
+}
+
+// Every checkout of the repo, each marked with what is already running in it:
+// one with a live agent takes the tickets straight away, one with a session
+// but no agent needs an agent started, one with neither needs both.
+async function worktreeChoices(cwd: string): Promise<WorktreeChoice[]> {
+  const [listing, sessions, registry] = await Promise.all([
+    apiGet<{ worktrees: WorktreeRow[] }>(`/worktrees?cwd=${encodeURIComponent(cwd)}`),
+    fetchSessions(),
+    // An older core without the agent registry still gets the worktree list;
+    // it just can't report which of them is running an agent.
+    fetchAgents().catch(() => ({ agents: [], skipPermissions: false })),
+  ]);
+
+  // Synthetic window-tab sessions mirror a real session's windows and carry
+  // the same path, so they would shadow the session actually rooted in the
+  // worktree - and opening one by name is not a thing to do. Same prefix
+  // agentWindows skips for the same reason (see agentTarget.ts).
+  const real = sessions.filter((session) => !session.name.startsWith("perch-view-"));
+
+  return listing.worktrees.map((worktree) => {
+    // Core reports a session's path with $HOME shortened to "~", which is the
+    // half to match on; the absolute path is what creates a session.
+    const session =
+      real.find((s) => s.path === worktree.displayPath || s.path === worktree.path) ?? null;
+    const found = session ? (agentWindows([session], session.path, registry.agents)[0] ?? null) : null;
+    const running = found ? "agent running" : session ? "session, no agent" : "no session";
+    return {
+      worktree,
+      label: `${worktreeLabel(worktree)}  ${running}`,
+      sessionName: session?.name ?? null,
+      agent: found ? { sessionName: found.sessionName, windowIndex: found.windowIndex } : null,
+    };
+  });
+}
+
+async function runAdd(issues: IssueRow[], target: HandOverTarget | null): Promise<void> {
+  setState({ busyKey: issues[0]?.key ?? null, startError: null, note: null });
+  try {
+    await runProgress(issues);
+    if (target) await handOver(target, issues);
+    setState({ selection: new Set<string>(), selectMode: false });
   } catch (err) {
     setState({ startError: err instanceof Error ? err.message : String(err) });
   } finally {
@@ -484,20 +864,121 @@ async function startWork(issue: IssueRow, preset: AgentLaunchPreset | null): Pro
   }
 }
 
+type ShowMenu = NonNullable<SidebarPanelHostProps["showMenu"]>;
+
+function sendToWorktree(
+  choice: WorktreeChoice,
+  issues: IssueRow[],
+  showMenu: ShowMenu,
+  x: number,
+  y: number,
+): void {
+  // Already running: the tickets go straight into that window, and nothing
+  // is created.
+  if (choice.agent) {
+    void runAdd(issues, { sessionName: choice.agent.sessionName, windowIndex: choice.agent.windowIndex, launch: null });
+    return;
+  }
+
+  const start = (preset: AgentLaunchPreset | null) => {
+    const sessionName = choice.sessionName ?? sessionNameFor(worktreeLabel(choice.worktree));
+    // Creates the session when the worktree has none; an existing name is
+    // focused rather than recreated (core's openSessionWindow).
+    openSessionWindow?.(sessionName, { createCwd: choice.worktree.path });
+    // With no agent there is nothing to hand the tickets to, so the worktree
+    // is simply opened - the same as "No agent" on Start work.
+    void runAdd(issues, preset ? { sessionName, launch: preset } : null);
+  };
+
+  agentPresets().then(
+    (presets) => {
+      if (presets.length <= 1) {
+        start(presets[0] ?? null);
+        return;
+      }
+      showMenu(x, y, [
+        ...presets.map((preset) => ({ label: preset.name, onClick: () => start(preset) })),
+        { label: "No agent (open the worktree only)", onClick: () => start(null) },
+      ]);
+    },
+    () => start(null),
+  );
+}
+
+export async function addToWorktree(
+  issues: IssueRow[],
+  showMenu: SidebarPanelHostProps["showMenu"],
+  x: number,
+  y: number,
+): Promise<void> {
+  const cwd = state.cwd;
+  if (!cwd || issues.length === 0 || !showMenu) return;
+  setState({ startError: null, note: null });
+  let choices: WorktreeChoice[];
+  try {
+    choices = await worktreeChoices(cwd);
+  } catch (err) {
+    setState({ startError: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  if (choices.length === 0) {
+    setState({ startError: "This repository has no worktrees to add to." });
+    return;
+  }
+  showMenu(
+    x,
+    y,
+    choices.map((choice) => ({
+      label: choice.label,
+      onClick: () => sendToWorktree(choice, issues, showMenu, x, y),
+    })),
+  );
+}
+
+export function addSelectionToWorktree(showMenu: SidebarPanelHostProps["showMenu"], x: number, y: number): void {
+  void addToWorktree(selectedIssues(), showMenu, x, y);
+}
+
+// ---- Project mapping ----
+
+export function openProjectPicker(anchor: PopoverAnchor, origin: Host): void {
+  setState({ projectPicker: { origin, anchor, error: null } });
+}
+
+export function closeProjectPicker(): void {
+  setState({ projectPicker: null });
+}
+
+// Writes a jira.projectMap entry for the repo root. The higher-priority
+// sources (a .jira-project file, the environment variable) still win - the
+// picker says so rather than refusing, so a mapping can be prepared before
+// the file is removed.
+export function chooseProject(key: string): void {
+  const cwd = state.cwd;
+  if (!cwd) return;
+  const parsed = parseProjectMap(extSettings?.get("jira.projectMap"));
+  if (parsed.malformed) {
+    setState({
+      projectPicker: state.projectPicker
+        ? { ...state.projectPicker, error: "Could not read jira.projectMap - fix it in Settings first." }
+        : null,
+    });
+    return;
+  }
+  extSettings?.set("jira.projectMap", serializeProjectMap(upsertProjectMap(parsed.entries, cwd, key)));
+  setState({ projectPicker: null });
+  refresh();
+}
+
 // ---- Details popover ----
 
 function openPopover(issue: IssueRow, list: ListId, anchorEl: HTMLElement): void {
-  const r = anchorEl.getBoundingClientRect();
+  const cached = detailCache.get(issue.key) ?? null;
   setState({
-    popover: {
-      key: issue.key,
-      list,
-      anchor: { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
-      detail: null,
-      error: null,
-    },
+    popover: { key: issue.key, list, anchor: anchorOf(anchorEl), detail: cached, error: null },
   });
-  apiGet<IssueDetail>(`/issue?key=${encodeURIComponent(issue.key)}`)
+  if (cached) return;
+  fetchIssueDetail(issue.key)
     .then((detail) => {
       // Ignore a response that lands after the popover was closed or moved on.
       if (state.popover?.key !== issue.key || state.popover.list !== list) return;
@@ -513,22 +994,30 @@ function closePopover(): void {
   if (state.popover) setState({ popover: null });
 }
 
-function DetailPopover({ popover }: { popover: PopoverState }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+// The refresh button on an open ticket: past the cache, straight to Jira. The
+// details already on screen stay there until the new ones arrive.
+function reloadPopover(): void {
+  const open = state.popover;
+  if (!open) return;
+  const same = () => state.popover?.key === open.key && state.popover.list === open.list;
+  fetchIssueDetail(open.key, { fresh: true })
+    .then((detail) => {
+      if (same()) setState({ popover: { ...state.popover!, detail, error: null } });
+    })
+    .catch((err: Error) => {
+      if (same()) setState({ popover: { ...state.popover!, error: err.message } });
+    });
+}
 
+function reloadFocused(): void {
+  if (state.focused) focusIssue({ key: state.focused.key } as IssueRow, { fresh: true });
+}
+
+function DetailPopover({ popover }: { popover: PopoverState }) {
   // Positioned after measuring, so a card taller than the space below the row
-  // flips above it instead of running off the bottom of the sidebar.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const card = el.getBoundingClientRect();
-    const margin = 8;
-    const left = Math.min(Math.max(margin, popover.anchor.left), window.innerWidth - card.width - margin);
-    const below = popover.anchor.bottom + 4;
-    const top = below + card.height + margin > window.innerHeight ? Math.max(margin, popover.anchor.top - card.height - 4) : below;
-    setPos({ top, left });
-  }, [popover.anchor, popover.detail, popover.error]);
+  // flips above it instead of running off the bottom of the sidebar. Shared
+  // with the funnel, the start-work form and the project picker.
+  const { ref, style } = usePopoverPosition<HTMLDivElement>(popover.anchor, [popover.detail, popover.error]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -554,10 +1043,15 @@ function DetailPopover({ popover }: { popover: PopoverState }) {
       className="jira-popover"
       role="dialog"
       // Hidden until measured, so it never paints at the wrong spot first.
-      style={pos ? { top: pos.top, left: pos.left } : { top: 0, left: 0, visibility: "hidden" }}
+      style={style}
     >
       <div className="jira-pop-head">
         <span className="jira-key">{popover.key}</span>
+        {detail && (
+          <button className="icon-button" title="Refresh from Jira" onClick={reloadPopover}>
+            <Icon name="refresh" />
+          </button>
+        )}
         {detail && (
           <a
             className="icon-button"
@@ -574,45 +1068,129 @@ function DetailPopover({ popover }: { popover: PopoverState }) {
         </button>
       </div>
 
-      {popover.error && <div className="jira-error">{popover.error}</div>}
-      {!detail && !popover.error && <div className="jira-empty">Loading…</div>}
+      <DetailBody detail={detail} error={popover.error} />
+    </div>
+  );
+}
 
-      {detail && (
-        <>
-          <div className="jira-pop-title">{detail.summary}</div>
-          <div className="jira-pop-facts">
-            {detail.type && <span className="jira-chip">{detail.type}</span>}
-            {detail.status && <span className="jira-chip">{detail.status}</span>}
-            {detail.priority && <span className="jira-chip">{detail.priority}</span>}
-            {detail.labels.map((label) => (
-              <span key={label} className="jira-chip jira-chip-label">
-                {label}
-              </span>
+// A ticket's summary, facts, description and comment thread. Shared by the
+// sidebar's popover and the editor tab's detail pane, so a ticket reads the
+// same wherever it is opened.
+//
+// The description and comments are Markdown - server.js renders Jira's rich
+// text to it - so headings, lists, code, tables and links show as such rather
+// than as the punctuation that used to stand in for them.
+function formatDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function ago(iso: string | null): string {
+  const age = relativeTime(iso);
+  return !age || age === "just now" ? age : `${age} ago`;
+}
+
+function initials(name: string): string {
+  return (
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((word) => word[0])
+      .join("")
+      .toUpperCase() || "?"
+  );
+}
+
+function DetailBody({ detail, error }: { detail: IssueDetail | null; error: string | null }) {
+  if (error) return <div className="jira-error">{error}</div>;
+  if (!detail) return <div className="jira-empty">Loading…</div>;
+
+  // A fact the server did not send (an older server, or a field Jira left
+  // empty) is left out rather than shown as a blank row - except the
+  // assignee, where "nobody" is itself worth saying.
+  const candidates: [string, ReactNode][] = [
+    [
+      "Status",
+      detail.status ? (
+        <span className="jira-chip" data-cat={detail.statusCategory ?? "unknown"}>
+          {detail.status}
+        </span>
+      ) : null,
+    ],
+    ["Type", detail.type || null],
+    ["Priority", detail.priority],
+    ["Assignee", detail.assignee === undefined ? null : (detail.assignee ?? "Unassigned")],
+    ["Reporter", detail.reporter ?? null],
+    ["Created", formatDate(detail.created)],
+    ["Updated", formatDate(detail.updated)],
+  ];
+  const facts = candidates.filter(([, value]) => value !== null && value !== undefined);
+
+  return (
+    <div className="jira-detail">
+      <h2 className="jira-detail-title">{detail.summary}</h2>
+
+      <dl className="jira-facts">
+        {facts.map(([name, value]) => (
+          <Fragment key={name}>
+            <dt>{name}</dt>
+            <dd>{value}</dd>
+          </Fragment>
+        ))}
+        {detail.labels.length > 0 && (
+          <>
+            <dt>Labels</dt>
+            <dd className="jira-labels">
+              {detail.labels.map((label) => (
+                <span key={label} className="jira-chip jira-chip-label">
+                  {label}
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+      </dl>
+
+      <section className="jira-detail-section">
+        <h3 className="jira-pop-section">Description</h3>
+        {detail.description ? (
+          <Markdown text={detail.description} />
+        ) : (
+          <div className="jira-muted">No description.</div>
+        )}
+      </section>
+
+      {detail.comments.length > 0 && (
+        <section className="jira-detail-section">
+          <h3 className="jira-pop-section">
+            Comments <span className="jira-count">{detail.comments.length}</span>
+          </h3>
+          <ol className="jira-comments">
+            {detail.comments.map((comment, i) => (
+              <li key={i} className="jira-comment">
+                <div className="jira-comment-head">
+                  <span className="jira-avatar" aria-hidden="true">
+                    {initials(comment.author)}
+                  </span>
+                  <span className="jira-comment-author">{comment.author}</span>
+                  {comment.created && (
+                    <time
+                      className="jira-comment-time"
+                      dateTime={comment.created}
+                      title={new Date(comment.created).toLocaleString()}
+                    >
+                      {ago(comment.created)}
+                    </time>
+                  )}
+                </div>
+                <Markdown text={comment.body} />
+              </li>
             ))}
-          </div>
-          <div className="jira-pop-body">
-            <div className="jira-pop-section">Description</div>
-            <div className="jira-pop-text">
-              {detail.description ? <RichText text={detail.description} /> : "(none)"}
-            </div>
-            {detail.comments.length > 0 && (
-              <>
-                <div className="jira-pop-section">Comments ({detail.comments.length})</div>
-                {detail.comments.map((comment, i) => (
-                  <div key={i} className="jira-comment">
-                    <div className="jira-comment-head">
-                      {comment.author}
-                      {comment.created ? ` · ${comment.created.slice(0, 10)}` : ""}
-                    </div>
-                    <div className="jira-pop-text">
-                      <RichText text={comment.body} />
-                    </div>
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-        </>
+          </ol>
+        </section>
       )}
     </div>
   );
@@ -620,44 +1198,84 @@ function DetailPopover({ popover }: { popover: PopoverState }) {
 
 // ---- Issue list (shared by both panes) ----
 
-function IssueList({ issues, list, showMenu }: { issues: IssueRow[]; list: ListId; showMenu?: SidebarPanelHostProps["showMenu"] }) {
-  const { busyKey, popover } = useJira();
+// "list" is the sidebar's compact two-line row; "table" is the editor tab's,
+// with a column per field and a click that opens the ticket in the tab's
+// detail pane instead of a popover. Selection and every gesture behave the
+// same in both.
+type IssueListVariant = "list" | "table";
 
-  // With more than one agent in the registry, Start work asks which to use
-  // instead of silently taking the first: offering only entry [0] made every
-  // agent after the first unreachable. One agent (or no showMenu from the
-  // host) keeps the direct, no-click-extra path.
-  const handleStartClick = useCallback(
-    async (issue: IssueRow, event: { clientX: number; clientY: number }) => {
-      // Read before awaiting: the menu is placed at the click, and the
-      // event must not be touched after an await.
-      const { clientX, clientY } = event;
-      let presets: AgentLaunchPreset[];
-      try {
-        presets = await agentPresets();
-      } catch {
-        // No agent list (an older core): the worktree is still worth making.
-        void startWork(issue, null);
-        return;
-      }
-      // Whether to skip permission prompts is NOT asked here. It is one
-      // global choice - Settings → AI Providers' Yolo/Manual - and the app
-      // applies it to the command this extension is handed. Asking again per
-      // issue meant the same question in three places, and a local answer
-      // could silently contradict the global one.
-      if (presets.length <= 1 || !showMenu) {
-        void startWork(issue, presets[0] ?? null);
-        return;
-      }
-      showMenu(clientX, clientY, [
-        ...presets.map((preset) => ({
-          label: preset.name,
-          onClick: () => void startWork(issue, preset),
-        })),
-        { label: "No agent (worktree only)", onClick: () => void startWork(issue, null) },
-      ]);
+function IssueList({
+  issues,
+  list,
+  showMenu,
+  variant = "list",
+}: {
+  issues: IssueRow[];
+  list: ListId;
+  showMenu?: SidebarPanelHostProps["showMenu"];
+  variant?: IssueListVariant;
+}) {
+  const { busyKey, popover, selection, selectMode, focused } = useJira();
+  // The drag is anchored to the wrapper rather than the <ul>, so a press in
+  // the empty space below the last row starts a marquee too, and so the
+  // overlay is a sibling of the list rather than a stray <div> inside it.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLLIElement>());
+  // The selection as it stood when a drag armed. A marquee recomputes every
+  // frame against this snapshot rather than against live state, which is what
+  // lets the band release rows it has already passed back over.
+  const dragBase = useRef<ReadonlySet<string>>(new Set());
+  const keys = issues.map((issue) => issue.key);
+
+  const { marqueeRect, onMarqueeMouseDown } = useMarqueeSelection({
+    containerRef: listRef,
+    getRows: () =>
+      issues
+        .map((issue) => ({ id: issue.key, el: rowRefs.current.get(issue.key) }))
+        .filter((row): row is { id: string; el: HTMLLIElement } => row.el !== undefined),
+    onStart: () => {
+      dragBase.current = new Set(state.selection);
     },
-    [showMenu, list],
+    onMarquee: (ids, additive) => setMarquee(dragBase.current, ids, additive),
+    onEnd: (canceled) => {
+      // Escape puts back exactly what was selected before the drag.
+      if (canceled) setMarquee(dragBase.current, [], true);
+    },
+  });
+
+  // Touch has no drag to spare - the list has to stay scrollable - so a hold
+  // is what begins a selection there.
+  const bindLongPress = useLongPressMenu();
+
+  // Ctrl/Cmd toggles one row, Shift takes the run from this pane's anchor,
+  // and once anything is selected a plain click selects rather than opening
+  // the details popover. With nothing selected and no modifier held, the row
+  // opens its details exactly as it always did.
+  const onRowClick = (issue: IssueRow, e: React.MouseEvent<HTMLButtonElement>) => {
+    if (e.ctrlKey || e.metaKey) {
+      toggleSelected(list, issue.key);
+      return;
+    }
+    if (e.shiftKey) {
+      selectRangeTo(list, keys, issue.key);
+      return;
+    }
+    if (selection.size > 0 || selectMode) {
+      toggleSelected(list, issue.key);
+      return;
+    }
+    if (variant === "table") focusIssue(issue);
+    else openPopover(issue, list, e.currentTarget);
+  };
+
+  // With more than one agent in the registry, Start work asks which to use -
+  // see startWorkWithPicker, which the tab's detail pane shares.
+  const handleStartClick = useCallback(
+    (issue: IssueRow, event: { clientX: number; clientY: number }) =>
+      // Coordinates read here, synchronously: the menu is placed at the click,
+      // and the event must not be touched after the picker's await.
+      startWorkWithPicker(issue, showMenu, event.clientX, event.clientY),
+    [showMenu],
   );
 
   // Tooltip only - the menu-or-direct decision above awaits the real answer,
@@ -665,31 +1283,89 @@ function IssueList({ issues, list, showMenu }: { issues: IssueRow[]; list: ListI
   // than the singular wording for a moment.
   const multiplePresets = useAgentPresets().length > 1;
 
+  // A checkbox is shown once anything is selected or select mode is on; the
+  // rest of the time CSS reveals it on the pointed-at row only, so a list at
+  // rest stays as quiet as it was.
+  const showBoxes = selectMode || selection.size > 0;
+
   return (
-    <ul className="jira-list">
+    <div className="jira-listwrap" ref={listRef} onMouseDown={onMarqueeMouseDown}>
+    <ul className={`jira-list jira-list-${variant}${showBoxes ? " picking" : ""}`}>
+      {variant === "table" && (
+        // Column headings, as a row laid out on the same grid as the rows
+        // below - a real <table> can't carry the <li> drag-selection wiring.
+        <li className="jira-row jira-thead" aria-hidden="true">
+          <span />
+          <span>Key</span>
+          <span>Summary</span>
+          <span>Status</span>
+          <span className="jira-col-optional">Assignee</span>
+          <span className="jira-col-optional">Type</span>
+          <span className="jira-col-optional">Priority</span>
+          <span>Updated</span>
+          <span />
+        </li>
+      )}
       {issues.map((issue) => {
-        const open = popover?.key === issue.key && popover.list === list;
+        const open =
+          variant === "table"
+            ? focused?.key === issue.key
+            : popover?.key === issue.key && popover.list === list;
+        const picked = selection.has(issue.key);
         return (
-          <li key={issue.key} className={`jira-row${open ? " open" : ""}`}>
+          <li
+            key={issue.key}
+            className={`jira-row${open ? " open" : ""}${picked ? " picked" : ""}`}
+            ref={(el) => {
+              if (el) rowRefs.current.set(issue.key, el);
+              else rowRefs.current.delete(issue.key);
+            }}
+            {...bindLongPress(() => toggleSelected(list, issue.key))}
+          >
+            <input
+              type="checkbox"
+              className="jira-check"
+              checked={picked}
+              // The row's own click handler covers ctrl and shift; this is
+              // the plain tick, and it must not also reach the row.
+              onClick={(e) => e.stopPropagation()}
+              onChange={() => toggleSelected(list, issue.key)}
+              aria-label={`Select ${issue.key}`}
+            />
             {/* The row opens the details popover rather than linking straight
                 out to Jira: reading the ticket is the common case, and the
                 popover carries its own "Open in Jira" link for the other one.
                 Summary on its own line, because a key plus a status chip plus
                 an age leaves nothing readable beside it at sidebar width. */}
-            <button
-              className="jira-row-main"
-              title={issue.summary}
-              onClick={(e) => openPopover(issue, list, e.currentTarget)}
-            >
-              <span className="jira-title">{issue.summary}</span>
-              <span className="jira-sub">
+            {variant === "table" ? (
+              // The row's cells sit inside one button so the whole row is a
+              // single click target, as in the sidebar; display: contents
+              // lets them take their own columns on the row's grid.
+              <button className="jira-row-main jira-cells" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
                 <span className="jira-key">{issue.key}</span>
-                <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
-                  {issue.status}
+                <span className="jira-title">{issue.summary}</span>
+                <span>
+                  <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
+                    {issue.status}
+                  </span>
                 </span>
+                <span className="jira-cell-muted jira-col-optional">{issue.assignee ?? "Unassigned"}</span>
+                <span className="jira-cell-muted jira-col-optional">{issue.type}</span>
+                <span className="jira-cell-muted jira-col-optional">{issue.priority ?? ""}</span>
                 <span className="jira-age">{relativeTime(issue.updated)}</span>
-              </span>
-            </button>
+              </button>
+            ) : (
+              <button className="jira-row-main" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
+                <span className="jira-title">{issue.summary}</span>
+                <span className="jira-sub">
+                  <span className="jira-key">{issue.key}</span>
+                  <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
+                    {issue.status}
+                  </span>
+                  <span className="jira-age">{relativeTime(issue.updated)}</span>
+                </span>
+              </button>
+            )}
             <button
               className="icon-button jira-start"
               title={
@@ -699,6 +1375,21 @@ function IssueList({ issues, list, showMenu }: { issues: IssueRow[]; list: ListI
               }
               disabled={busyKey === issue.key}
               onClick={(e) => void handleStartClick(issue, e)}
+              // Right-click reaches the other destination for one ticket:
+              // a worktree that already exists.
+              onContextMenu={(e) => {
+                if (!showMenu) return;
+                e.preventDefault();
+                // Read before the menu's callback runs - the event must not
+                // be touched from inside it.
+                const { clientX, clientY } = e;
+                showMenu(clientX, clientY, [
+                  {
+                    label: "Add to worktree...",
+                    onClick: () => void addToWorktree([issue], showMenu, clientX, clientY),
+                  },
+                ]);
+              }}
             >
               <Icon name={busyKey === issue.key ? "loading" : "play"} />
             </button>
@@ -706,6 +1397,18 @@ function IssueList({ issues, list, showMenu }: { issues: IssueRow[]; list: ListI
         );
       })}
     </ul>
+    {marqueeRect && (
+      <div
+        className="jira-marquee"
+        style={{
+          left: marqueeRect.left,
+          top: marqueeRect.top,
+          width: marqueeRect.width,
+          height: marqueeRect.height,
+        }}
+      />
+    )}
+    </div>
   );
 }
 
@@ -733,21 +1436,168 @@ function Gate({ message }: { message: { kind: "error" | "empty"; text: string } 
 
 // ---- The two panes ----
 
+// A filtered pane that found nothing is not the same as a pane with nothing
+// in it: the way out is to clear the filter, so the message says so and
+// carries the button.
+function EmptyList({ list, filtered, text }: { list: ListId; filtered: boolean; text: string }) {
+  if (!filtered) return <div className="jira-empty">{text}</div>;
+  return (
+    <div className="jira-empty">
+      No issues match these filters.{" "}
+      <button className="jira-linkish" onClick={() => applyFilters(list, EMPTY_FILTERS)}>
+        Clear
+      </button>
+    </div>
+  );
+}
+
+// Where the branch typed into the start form will land, so the field is not
+// the only thing saying where this goes. Mirrors resolveLocation in
+// server.js, against the repo root /status reports - the active folder may be
+// inside a worktree, and a worktree of a worktree is exactly what the server
+// takes care to avoid.
+function worktreeLocationFor(branch: string): string {
+  const repo = state.status?.repo ?? "";
+  const template = readSetting("jira.worktreeLocation") || "{repo}/.worktrees/{branch}";
+  return template.replaceAll("{repo}", repo).replaceAll("{branch}", branch.replace(/[/\\]/g, "-"));
+}
+
+// Thin hosts that hand the store's state and actions to the presentational
+// components. Those take props only: client.tsx imports them, so importing
+// the store back out of them would close a cycle.
+function SelectionBarFor({ showMenu, origin }: SidebarPanelHostProps & { origin: Host }) {
+  const s = useJira();
+  return (
+    <SelectionBar
+      count={s.selection.size}
+      busy={s.busyKey !== null}
+      onStart={(anchor) => void openStartForm(anchor, origin)}
+      onAdd={(x, y) => addSelectionToWorktree(showMenu, x, y)}
+      onClear={clearSelection}
+    />
+  );
+}
+
+function StartWorkFormFor({ form }: { form: StartFormState }) {
+  return (
+    <StartWorkForm
+      issues={form.issues}
+      anchor={form.anchor}
+      branch={form.branch}
+      presets={form.presets}
+      presetIndex={form.presetIndex}
+      busy={form.busy}
+      error={form.error}
+      location={worktreeLocationFor(form.branch)}
+      onChange={updateStartForm}
+      onSubmit={() => void submitStartForm()}
+      onCancel={closeStartForm}
+    />
+  );
+}
+
+function ProjectPickerFor({ picker }: { picker: PickerState }) {
+  const s = useJira();
+  return (
+    <ProjectPicker
+      anchor={picker.anchor}
+      projects={s.projects}
+      repo={s.status?.repo ?? s.cwd}
+      source={s.status?.projectSource ?? null}
+      currentKey={s.status?.projectKey ?? null}
+      error={picker.error}
+      onChoose={chooseProject}
+      onClose={closeProjectPicker}
+    />
+  );
+}
+
+// The floating forms, drawn only by the host that opened them. The two panes
+// and the tab all read one store, so without the origin check a form would
+// render in every one of them - or, worse, only in a pane that is collapsed
+// or on another sidebar tab, where it can't be seen.
+function Floating({ host }: { host: Host }) {
+  const s = useJira();
+  return (
+    <>
+      {s.startForm?.origin === host && <StartWorkFormFor form={s.startForm} />}
+      {s.projectPicker?.origin === host && <ProjectPickerFor picker={s.projectPicker} />}
+    </>
+  );
+}
+
+// Which of the four sources supplied the key, in the words the settings use.
+// The two above jira.projectMap win over it, so the picker says so rather
+// than writing a mapping that would quietly do nothing.
+const SOURCE_LABEL: Record<string, string> = {
+  file: "from .jira-project",
+  projectMap: "from the project mapping",
+  env: "from the environment",
+  setting: "from jira.projectKey",
+};
+
+// The project key and the control that changes it, as one button. Shared by
+// the Project pane and the tab, which each open the picker in themselves.
+function ProjectCaption({ host }: { host: Host }) {
+  const s = useJira();
+  // projectSource "projectJql" means the query replaced the key entirely, so
+  // the caption says so rather than naming a key that no longer applies, and
+  // there is no mapping to offer.
+  if (s.project?.projectSource === "projectJql") return <div className="jira-caption">Custom query</div>;
+  const key = s.status?.projectKey ?? null;
+  const source = s.status?.projectSource ?? null;
+  return (
+    <button
+      className="jira-caption jira-caption-button"
+      title="Choose the Jira project for this repository"
+      onClick={(e) => openProjectPicker(anchorOf(e.currentTarget), host)}
+    >
+      {key ? (
+        <>
+          <span className="jira-caption-key">{key}</span>
+          {source && <span className="jira-caption-source">{SOURCE_LABEL[source] ?? source}</span>}
+        </>
+      ) : (
+        <span className="jira-caption-key">Choose a project...</span>
+      )}
+    </button>
+  );
+}
+
+function hasProject(s: JiraState): boolean {
+  return Boolean(s.status?.projectKey) || s.project?.projectSource === "projectJql";
+}
+
 function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
   const s = useJira();
   const gate = gateMessage(s);
+  const filtered = !filtersAreEmpty(s.filters.mine);
+  const picked = s.mine.some((issue) => s.selection.has(issue.key));
   return (
     <div className="jira-panel">
+      {!gate && (
+        <FilterBar
+          filters={s.filters.mine}
+          facets={s.facets}
+          selectMode={s.selectMode}
+          showAssignee={false}
+          onApply={(filters) => applyFilters("mine", filters)}
+          onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+          onOpenTab={() => openJiraTab("mine")}
+        />
+      )}
+      {picked && <SelectionBarFor showMenu={showMenu} origin="mine" />}
       {s.startError && <div className="jira-error">{s.startError}</div>}
       {s.note && <div className="jira-note">{s.note}</div>}
       {gate ? (
         <Gate message={gate} />
       ) : s.mine.length === 0 ? (
-        <div className="jira-empty">No issues assigned to you.</div>
+        <EmptyList list="mine" filtered={filtered} text="No issues assigned to you." />
       ) : (
         <IssueList issues={s.mine} list="mine" showMenu={showMenu} />
       )}
       {s.popover?.list === "mine" && <DetailPopover popover={s.popover} />}
+      <Floating host="mine" />
     </div>
   );
 }
@@ -755,35 +1605,303 @@ function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
 function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
   const s = useJira();
   const gate = gateMessage(s);
-  // projectSource "projectJql" means the query replaced the key entirely, so
-  // the caption says so rather than naming a key that no longer applies.
-  const caption =
-    s.project?.projectSource === "projectJql" ? "Custom query" : (s.project?.projectKey ?? null);
+  const filtered = !filtersAreEmpty(s.filters.project);
+  const picked = (s.project?.issues ?? []).some((issue) => s.selection.has(issue.key));
 
   return (
     <div className="jira-panel">
+      {!gate && <ProjectCaption host="project" />}
+      {!gate && hasProject(s) && (
+        <FilterBar
+          filters={s.filters.project}
+          facets={s.facets}
+          selectMode={s.selectMode}
+          showAssignee
+          onApply={(filters) => applyFilters("project", filters)}
+          onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+          onOpenTab={() => openJiraTab("project")}
+        />
+      )}
+      {picked && <SelectionBarFor showMenu={showMenu} origin="project" />}
       {gate ? (
         <Gate message={gate} />
-      ) : caption === null ? (
+      ) : !hasProject(s) ? (
         <div className="jira-empty">
-          No project key - add a .jira-project file, map this repo in jira.projectMap, or set jira.projectKey.
+          No project key for this repository. Choose one above, or add a .jira-project file.
         </div>
+      ) : (s.project?.issues ?? []).length === 0 ? (
+        <EmptyList list="project" filtered={filtered} text="No open issues." />
       ) : (
-        <>
-          <div className="jira-caption">{caption}</div>
-          {s.project!.issues.length === 0 ? (
-            <div className="jira-empty">No open issues.</div>
-          ) : (
-            <IssueList issues={s.project!.issues} list="project" showMenu={showMenu} />
-          )}
-        </>
+        <IssueList issues={s.project!.issues} list="project" showMenu={showMenu} />
       )}
       {s.popover?.list === "project" && <DetailPopover popover={s.popover} />}
+      <Floating host="project" />
+    </div>
+  );
+}
+
+// ---- The editor tab ----
+//
+// The same two lists with room to read them: a table with a column per field,
+// and the ticket you click open in a pane beside it rather than in a popover.
+// It reads the same store as the sidebar panes - so a filter or a selection
+// made in one is already there in the other - and like them it shows the
+// active repository.
+//
+// One tab PER REPOSITORY, keyed by the repo root, rather than one tab for the
+// whole app. Core pins a viewer tab to the session it was opened from, and the
+// tab bar shows one project at a time; a single global tab would stay pinned
+// to the first project, so reopening it from a second one would activate the
+// first project's tab and flip the tab bar back to it, while its contents
+// showed the second. Keyed per repo, a Jira tab is only ever visible while its
+// own project is active - which is exactly when the store is showing that
+// project - and reopening it inside a project still focuses the one there.
+const TAB_VIEWER = "board";
+
+function tabPathFor(s: JiraState): string {
+  return s.status?.repo ?? s.cwd ?? "jira";
+}
+
+let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) => void) | null = null;
+
+function repoName(s: JiraState): string {
+  const path = s.status?.repo ?? s.cwd ?? "";
+  return path.split("/").filter(Boolean).pop() ?? "";
+}
+
+function tabTitle(s: JiraState): string {
+  const name = repoName(s);
+  return name ? `Jira · ${name}` : "Jira";
+}
+
+export function openJiraTab(list?: ListId): void {
+  if (list) setTabList(list);
+  openViewerTab?.(TAB_VIEWER, tabPathFor(state), { title: tabTitle(state) });
+}
+
+// The subset of the host's FileViewerHostProps the tab uses.
+interface ViewerHostProps {
+  filePath: string;
+  active: boolean;
+  showMenu?: SidebarPanelHostProps["showMenu"];
+  setTitle?: (title: string) => void;
+}
+
+function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
+  const s = useJira();
+  const gate = gateMessage(s);
+  const list = s.tabList;
+  const issues = list === "mine" ? s.mine : (s.project?.issues ?? []);
+  const filtered = !filtersAreEmpty(s.filters[list]);
+  const title = tabTitle(s);
+
+  // Renamed in place as the active repository changes, without re-activating
+  // the tab - it follows the repo, it doesn't steal focus when you switch.
+  useEffect(() => {
+    setTitle?.(title);
+  }, [title, setTitle]);
+
+  const focusedIssue = s.focused ? (issues.find((issue) => issue.key === s.focused!.key) ?? null) : null;
+  const [layout, chooseLayout] = useLayoutChoice();
+  const split = useSplitResize(layout);
+  const busy = s.busyKey !== null;
+
+  // The actions live on the right of the scope bar, always in the same place:
+  // for the selection when anything is ticked, otherwise for the one ticket
+  // open in the detail pane. Ticking rows turns this same slot into the
+  // selection's actions, rather than stacking a second bar above the list.
+  let actions: ReactNode = null;
+  if (s.selection.size > 0) {
+    actions = (
+      <>
+        <span className="jira-head-target">{s.selection.size} selected</span>
+        <button className="jira-linkish" onClick={clearSelection}>
+          Clear
+        </button>
+        <button
+          className="jira-selaction"
+          disabled={busy}
+          title="Hand these tickets to a worktree that already exists"
+          onClick={(e) => addSelectionToWorktree(showMenu, e.clientX, e.clientY)}
+        >
+          Add to worktree
+        </button>
+        <button
+          className="jira-selaction primary"
+          disabled={busy}
+          title="Create one worktree for these tickets"
+          onClick={(e) => void openStartForm(anchorOf(e.currentTarget), "tab")}
+        >
+          Start work
+        </button>
+      </>
+    );
+  } else if (focusedIssue) {
+    actions = (
+      <>
+        <span className="jira-head-target jira-key">{focusedIssue.key}</span>
+        <button
+          className="jira-selaction"
+          disabled={busy}
+          title="Hand this ticket to a worktree that already exists"
+          onClick={(e) => void addToWorktree([focusedIssue], showMenu, e.clientX, e.clientY)}
+        >
+          Add to worktree
+        </button>
+        <button
+          className="jira-selaction primary"
+          disabled={busy}
+          title="Create a worktree session for this ticket"
+          onClick={(e) => void startWorkWithPicker(focusedIssue, showMenu, e.clientX, e.clientY)}
+        >
+          {s.busyKey === focusedIssue.key ? "Starting..." : "Start work"}
+        </button>
+      </>
+    );
+  }
+
+  return (
+    <div className={`jira-tab${split.dragging ? " resizing" : ""}`}>
+      <div className="jira-tab-head">
+        <div className="jira-scope" role="tablist" aria-label="Which issues">
+          <button
+            role="tab"
+            aria-selected={list === "mine"}
+            className={`jira-scope-button${list === "mine" ? " active" : ""}`}
+            onClick={() => setTabList("mine")}
+          >
+            Assigned to me
+            <span className="jira-scope-count">{s.mine.length}</span>
+          </button>
+          <button
+            role="tab"
+            aria-selected={list === "project"}
+            className={`jira-scope-button${list === "project" ? " active" : ""}`}
+            onClick={() => setTabList("project")}
+          >
+            Project
+            {s.project && <span className="jira-scope-count">{s.project.issues.length}</span>}
+          </button>
+        </div>
+        {!gate && list === "project" && <ProjectCaption host="tab" />}
+        {!gate && actions && <div className="jira-head-actions">{actions}</div>}
+        {!gate && (
+          // Side by side or top and bottom. Until one is picked the tab
+          // decides by its width; the highlighted button is whichever layout
+          // is showing now, chosen or not.
+          <div className="jira-layout-toggle" role="group" aria-label="Layout">
+            <button
+              className={`icon-button${split.direction === "row" ? " active" : ""}`}
+              aria-pressed={split.direction === "row"}
+              title="Details beside the list"
+              onClick={() => chooseLayout("row")}
+            >
+              <Icon name="layout-sidebar-right" />
+            </button>
+            <button
+              className={`icon-button${split.direction === "column" ? " active" : ""}`}
+              aria-pressed={split.direction === "column"}
+              title="Details below the list"
+              onClick={() => chooseLayout("column")}
+            >
+              <Icon name="layout-panel" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {!gate && (list === "mine" || hasProject(s)) && (
+        <FilterBar
+          filters={s.filters[list]}
+          facets={s.facets}
+          selectMode={s.selectMode}
+          showAssignee={list === "project"}
+          onApply={(filters) => applyFilters(list, filters)}
+          onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+        />
+      )}
+      {s.startError && <div className="jira-error">{s.startError}</div>}
+      {s.note && <div className="jira-note">{s.note}</div>}
+
+      {gate ? (
+        <Gate message={gate} />
+      ) : list === "project" && !hasProject(s) ? (
+        <div className="jira-empty">
+          No project key for this repository. Choose one above, or add a .jira-project file.
+        </div>
+      ) : (
+        <div className={`jira-split${layout ? ` layout-${layout}` : ""}`} ref={split.splitRef}>
+          <div className="jira-split-list">
+            {issues.length === 0 ? (
+              <EmptyList
+                list={list}
+                filtered={filtered}
+                text={list === "mine" ? "No issues assigned to you." : "No open issues."}
+              />
+            ) : (
+              <IssueList issues={issues} list={list} showMenu={showMenu} variant="table" />
+            )}
+          </div>
+          <div className={`jira-splitter ${split.direction}`} {...split.handleProps} />
+          <aside className="jira-split-detail" aria-label="Ticket details" style={split.detailStyle}>
+            {s.focused ? (
+              <>
+                <div className="jira-pop-head">
+                  <span className="jira-key">{s.focused.key}</span>
+                  {s.focused.detail && (
+                    <button className="icon-button" title="Refresh from Jira" onClick={reloadFocused}>
+                      <Icon name="refresh" />
+                    </button>
+                  )}
+                  {s.focused.detail && (
+                    <a
+                      className="icon-button"
+                      href={s.focused.detail.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open in Jira"
+                    >
+                      <Icon name="link-external" />
+                    </a>
+                  )}
+                </div>
+                <DetailBody detail={s.focused.detail} error={s.focused.error} />
+              </>
+            ) : (
+              <div className="jira-empty">Select a ticket to read it here.</div>
+            )}
+          </aside>
+        </div>
+      )}
+      <Floating host="tab" />
     </div>
   );
 }
 
 // ---- Activation ----
+
+// The settings whose change alters what the panes fetch, and those that
+// alter a ticket's details. Anything else - jira.filters, the branch
+// template, the cache TTL itself - needs no reload.
+const REFRESH_KEYS = [
+  "jira.siteUrl",
+  "jira.email",
+  "jira.projectKey",
+  "jira.projectKeyFile",
+  "jira.projectKeyEnv",
+  "jira.projectMap",
+  "jira.jql",
+  "jira.projectJql",
+  "jira.maxResults",
+];
+const DETAIL_KEYS = ["jira.siteUrl", "jira.email", "jira.commentLimit"];
+
+function fingerprint(keys: readonly string[]): string {
+  return JSON.stringify(keys.map((key) => extSettings?.get(key) ?? null));
+}
+
+let refreshPrint = "";
+let detailsPrint = "";
 
 interface ExtensionContext {
   registerSidebarPanel(panel: {
@@ -795,7 +1913,21 @@ interface ExtensionContext {
     focusBinding?: string;
     component: (props: SidebarPanelHostProps) => ReturnType<typeof AssignedPanel>;
   }): void;
-  registerSettingsComponent(entry: { id: string; component: () => ReturnType<typeof SettingsPanel> }): void;
+  // `after` places the component directly under that setting; a core older
+  // than the option ignores it and renders the component at the bottom.
+  registerSettingsComponent(entry: {
+    id: string;
+    component: () => ReturnType<typeof SettingsPanel> | null;
+    after?: string;
+  }): void;
+  registerFileViewer(viewer: {
+    id: string;
+    extensions: string[];
+    mode?: "default" | "preview";
+    editorFallback?: boolean;
+    component: (props: ViewerHostProps) => ReturnType<typeof JiraTab>;
+  }): void;
+  registerCommand(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   settings: SettingsApi;
@@ -803,6 +1935,7 @@ interface ExtensionContext {
     getActiveContext(): ActiveContext;
     onDidChangeContext(cb: (ctx: ActiveContext) => void): () => void;
     openSessionWindow(sessionName: string, opts?: { createCwd?: string }): void;
+    openViewerTab(viewerId: string, path: string, opts?: { title?: string }): void;
   };
 }
 
@@ -811,24 +1944,77 @@ export function activate(ctx: ExtensionContext): void {
   getActiveContext = ctx.app.getActiveContext;
   onDidChangeContext = ctx.app.onDidChangeContext;
   openSessionWindow = ctx.app.openSessionWindow;
+  openViewerTab = ctx.app.openViewerTab.bind(ctx.app);
   extSettings = ctx.settings;
+  refreshPrint = fingerprint(REFRESH_KEYS);
+  detailsPrint = fingerprint(DETAIL_KEYS);
   setFetcher(ctx.serverFetch);
+  // The settings component is registered on its own and gets no context from
+  // the panes, so the project-mapping table is handed what it needs here.
+  setSettingsBridge({
+    getSetting: (key) => ctx.settings.get(key),
+    setSetting: (key, value) => ctx.settings.set(key, value),
+    getActiveRepo: () => state.status?.repo ?? null,
+    subscribe: (cb) => {
+      listeners.add(cb);
+      return () => {
+        listeners.delete(cb);
+      };
+    },
+  });
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
+  setMarkdownAssetUrl(ctx.assetUrl);
 
   // The store is driven from here, not from a component: two panes share it,
   // and either one may be collapsed or absent when the context changes.
-  state = { ...state, cwd: getActiveContext?.().cwd ?? null };
+  const initialCwd = getActiveContext?.().cwd ?? null;
+  state = { ...state, cwd: initialCwd, ...loadFiltersFor(initialCwd) };
   refresh();
   disposeBridge = [
     onDidChangeContext?.((active) => {
       if (active.cwd === state.cwd) return;
-      setState({ cwd: active.cwd, popover: null });
+      // Each repo reopens under the filters it was left with, and a selection
+      // made in one project has no meaning in the next.
+      setState({
+        cwd: active.cwd,
+        popover: null,
+        ...loadFiltersFor(active.cwd),
+        facets: null,
+        selection: new Set<string>(),
+        anchor: { mine: null, project: null },
+        startForm: null,
+        projectPicker: null,
+        // The ticket open in the tab belonged to the previous repo.
+        focused: null,
+      });
       refresh();
     }) ?? (() => {}),
-    // Editing jira.siteUrl/jira.email, or saving a token, both change what
-    // /status would answer.
-    ctx.settings.onDidChange(() => refresh()),
-    onTokenChange(() => refresh()),
+    // A settings change reloads only when it changes what would be fetched.
+    // Every filter tick writes jira.filters, and that used to count as a
+    // change like any other - re-asking /status, /facets, /projects and both
+    // lists on top of the reload the filter had already triggered.
+    ctx.settings.onDidChange(() => {
+      const nextDetails = fingerprint(DETAIL_KEYS);
+      if (nextDetails !== detailsPrint) {
+        detailsPrint = nextDetails;
+        // A different site or account, or a different comment count, makes
+        // every cached ticket wrong.
+        detailCache.clear();
+      }
+      const nextRefresh = fingerprint(REFRESH_KEYS);
+      if (nextRefresh !== refreshPrint) {
+        refreshPrint = nextRefresh;
+        refresh();
+      }
+    }),
+    onTokenChange(() => {
+      detailCache.clear();
+      refresh();
+    }),
+    (() => {
+      const timer = setInterval(() => detailCache.sweep(), DETAIL_SWEEP_MS);
+      return () => clearInterval(timer);
+    })(),
   ];
 
   // "project" is the codicon name; style.css replaces the glyph with the Jira
@@ -852,12 +2038,33 @@ export function activate(ctx: ExtensionContext): void {
     component: ProjectPanel,
   });
 
-  ctx.registerSettingsComponent({ id: "jira-token", component: SettingsPanel });
+  // Each beside the field it belongs with: the token with the site URL and
+  // email it authenticates, the mapping table under the JSON setting it
+  // edits. Registered token first, so on a core without `after` - where both
+  // land at the bottom - the credential still comes before the table.
+  ctx.registerSettingsComponent({ id: "jira-token", component: SettingsPanel, after: "jira.email" });
+  ctx.registerSettingsComponent({ id: "jira-project-map", component: ProjectMapSettings, after: "jira.projectMap" });
+
+  // extensions: [] - the tab is never matched to a file; it is reached only
+  // through openViewerTab, from the panes' open-in-tab button or the command
+  // below. editorFallback: false, since there is no file to fall back to.
+  ctx.registerFileViewer({ id: TAB_VIEWER, extensions: [], editorFallback: false, component: JiraTab });
+
+  ctx.registerCommand({
+    id: "open",
+    label: "Jira: Open in Editor Tab",
+    run: () => openJiraTab(),
+  });
 }
 
 export function deactivate(): void {
   removeStylesheet?.();
   removeStylesheet = null;
+  setSettingsBridge(null);
+  setMarkdownAssetUrl(null);
+  detailCache.clear();
+  detailInFlight.clear();
+  openViewerTab = null;
   for (const dispose of disposeBridge) dispose();
   disposeBridge = [];
   listeners.clear();

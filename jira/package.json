@@ -64,6 +64,13 @@
           "maximum": 100,
           "description": "Comments handed to the agent with the ticket. 0 sends none."
         },
+        "jira.detailCacheSeconds": {
+          "type": "integer",
+          "default": 300,
+          "minimum": 0,
+          "maximum": 3600,
+          "description": "Seconds an opened ticket's details are reused before fetching again. 0 turns caching off."
+        },
         "jira.branchTemplate": {
           "type": "string",
           "default": "{key}-{slug}",

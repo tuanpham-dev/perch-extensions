@@ -1,8 +1,9 @@
 # Jira
 
-A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with a
-"Start work" action per row that creates a worktree session for it - optionally priming an
-agent on it and moving the issue to In Progress. Backed by the Jira Cloud REST API v3.
+A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with
+filters on each list, a "Start work" action that creates a worktree session - for one ticket
+or for several at once - and a way to hand more tickets to a worktree that already exists.
+Backed by the Jira Cloud REST API v3.
 
 ## Requirements
 
@@ -40,9 +41,133 @@ project key wins:
 The in-repo file wins the way `.editorconfig` and `.nvmrc` beat user-level config. A malformed
 `jira.projectMap` is skipped rather than treated as an error.
 
+### Picking one
+
+`jira.projectMap` is source 2, and it has a UI - you do not have to write the JSON.
+
+The Project pane's caption is a button. With no key resolved it reads "Choose a project..."; with
+one it names the key and which of the four sources supplied it. Clicking it lists the projects on
+your Jira site, and picking one writes the mapping for this repository.
+
+Sources 1 and 3 are read *before* the mapping, so when a `.jira-project` file or the environment
+variable already answered, the picker says so: your choice is still saved, it just takes effect
+once that source is gone. That way a mapping can be prepared before the file is deleted.
+
+In **Settings → Jira** the same mapping is shown as a table directly under the `jira.projectMap`
+field - one row per repository, for reviewing and removing them all in one place. Editing the JSON
+or the table updates the other. (On a Perch older than settings-component placement, the table and
+the API token field both sit at the bottom of the section instead.) If `jira.projectMap` cannot be read, the table says so and
+refuses to write rather than replacing text you typed by hand.
+
 Setting **`jira.projectJql` bypasses this entirely** - the query replaces the project section
 outright and no key is resolved. The Project pane is captioned `Custom query` instead of the key
 when that happens, so the bypass is visible.
+
+## Filters
+
+Each list has a search box, a funnel, and a toggle for picking several tickets at once.
+
+The funnel offers **Status**, **Assignee**, **Type** and **Priority**. Assignee is offered on the
+Project list only - the other list is one person by definition. The values come from Jira's own
+metadata for the repo's project, not from the tickets currently on screen, so a status with no
+loaded ticket is still there to pick. A facet Jira cannot answer for is left out rather than
+shown empty.
+
+**Filters narrow the query, not the rows on screen.** They become JQL clauses on top of whatever
+query the list already runs - including your own `jira.jql` or `jira.projectJql` - so they search
+the whole backlog rather than the `jira.maxResults` tickets that happen to be loaded. The search
+box matches the summary, and matches the issue key as well when you type something shaped like
+one, so `CAP-12` finds that ticket whatever its summary says.
+
+What is active shows as chips under the row; a chip's x removes that one value and **Clear**
+removes them all.
+
+Filters are remembered per repository and per list, so a project reopens under the filters you
+left it with. They live in a `jira.filters` key in the settings document, which Perch syncs - so
+the same filter is there on your phone. It has no row in the settings table below on purpose: it
+is rewritten every time you tick a box, and **Clear** is how you reset it.
+
+## Several tickets, one worktree
+
+Tickets can be picked in bulk and sent to a single worktree.
+
+| Gesture | Does |
+|---|---|
+| Point at a row | Shows its checkbox |
+| The toggle in the filter row | Shows every checkbox, on desktop and touch alike |
+| Ctrl-click or Cmd-click a row | Adds or removes that one |
+| Shift-click a row | Takes the run from the last row you touched |
+| Drag across rows | Rubber-band selection. Ctrl or Cmd adds to what was already picked; Escape puts it back |
+| Press and hold a row | Starts a selection on touch |
+
+The selection is shared by both lists, so a ticket listed in each is one ticket and counted once.
+With nothing picked, clicking a row still opens its details as it always did.
+
+Once anything is picked, a bar appears with **Start work**, **Add to worktree** and **Clear**.
+
+**Start work** on several tickets opens a small form: the branch, prefilled by applying
+`jira.branchTemplate` to the first ticket and editable, the resolved worktree path, and which
+agent to start. It creates **one** worktree and hands the agent **one** message carrying every
+ticket in full, in the order they were picked. A branch that already exists is reported in the
+form, which stays open so you can rename it. One ticket on its own never shows this form - that
+is still a single click.
+
+## Adding tickets to a worktree that already exists
+
+**Add to worktree** lists every checkout of the repository with what is running in it:
+
+```
+CAP-99-nav-overflow          agent running
+feature/billing-backfill     session, no agent
+main                         no session
+```
+
+A worktree whose agent is already running takes the tickets straight away and nothing is
+created. One with a session but no agent, or with neither, gets what it is missing first, asking
+which agent the same way "Start work" does. The tickets arrive as one message, the same brief
+described below.
+
+For a single ticket without picking anything, right-click its play button.
+
+## Fewer requests
+
+A ticket you have opened is kept for `jira.detailCacheSeconds` (five minutes by default), so opening
+it again - in the popover, the editor tab, or when its brief is built for an agent - shows it at
+once without asking Jira again. After that it is fetched fresh, and expired entries are cleared
+every minute. The refresh button on an open ticket skips the cache, and moving a ticket to In
+Progress, or switching Jira site, account or `jira.commentLimit`, forgets the cached copies.
+
+Changing a filter reloads the two ticket lists and nothing else. Settings that don't change what is
+fetched - the saved filters, the branch template, the cache time itself - don't reload anything.
+
+## Editor tab
+
+The sidebar is narrow, so the same lists also open as an editor tab: the **Open in an editor tab**
+button at the end of either pane's filter row, or **Jira: Open in Editor Tab** from the command
+palette.
+
+The tab switches between **Assigned to me** and **Project**, lays each ticket out as a table row
+with a column per field (key, summary, status, assignee, type, priority, updated), and opens the
+ticket you click in a pane beside the list rather than in a popover. **Add to worktree** and **Start
+work** for that ticket sit on the right of the Assigned to me / Project bar; once you tick rows, the
+same spot acts on the selection instead.
+
+The two buttons at the right end of that bar put the details **beside** the list or **below** it.
+Until you pick one, the tab decides by its width, stacking them when it gets narrow. Drag the
+divider between the list and the details to resize them (arrow keys work on it too, and a
+double-click resets it). The layout and the size are remembered in this browser. As the list itself
+narrows, assignee, type and priority are hidden first, then status and the date.
+
+A ticket's description and comments are shown formatted - headings, lists, code blocks, tables,
+links, mentions and checklists - because the extension converts Jira's rich text to Markdown. The
+agent receives the same Markdown in its brief.
+
+It reads the same state as the sidebar, so filters, the selection and every gesture above work
+the same in both, and a filter set in one is already set in the other.
+
+There is one Jira tab per project. Perch's tab bar shows one project at a time and keeps each
+viewer tab with the project it was opened from, so each project gets its own Jira tab, and it always
+shows that project.
 
 ## "Start work"
 
@@ -65,14 +190,16 @@ So `{key}-{slug}` gives `CAP-123-fix-header-alignment`, and `{type}/{key}` gives
 The worktree is then opened as a session, and an agent from **Settings → AI Providers** is started
 in it and handed a brief as a second message: the issue key, summary, type, status, priority,
 labels, link, description and the most recent comments (up to `jira.commentLimit`, oldest
-first). With more than one agent configured, Start work opens a menu to pick which, and "No
+first). Several tickets arrive as one message: a heading naming every key, then each ticket's
+brief in full. With more than one agent configured, Start work opens a menu to pick which, and "No
 agent (worktree only)" skips starting one. Whether the agent runs without permission prompts
 is not asked here: the app's one Yolo/Manual switch in **Settings → AI Providers** decides it.
 The agent's launch command is always submitted; the issue context follows
 `jira.sendAutoSubmit` (default off - you review before pressing Enter).
 
 With `jira.updateIssueOnStartWork` on, it also moves the issue to `jira.inProgressStatus` and
-assigns it to you if it is unassigned. Neither is fatal: the worktree exists either way, so a
+assigns it to you if it is unassigned - every ticket, when there is more than one, and one that
+fails leaves the rest moved. Neither is fatal: the worktree exists either way, so a
 Jira-side failure is reported as a note in the panel rather than as a failed "Start work".
 
 ## Settings
@@ -89,6 +216,7 @@ Jira-side failure is reported as a note in the panel rather than as a failed "St
 | `jira.projectJql` | `""` | Replaces the project query, bypassing the project-key chain |
 | `jira.maxResults` | `30` | How many issues each section fetches |
 | `jira.commentLimit` | `20` | How many of the issue's most recent comments "Start work" hands the agent. `0` sends none |
+| `jira.detailCacheSeconds` | `300` | How long an opened ticket's details are reused before being fetched again. `0` turns caching off |
 | `jira.branchTemplate` | `{key}-{slug}` | Branch name for "Start work" - `{key}`, `{slug}`, `{type}` |
 | `jira.worktreeLocation` | `{repo}/.worktrees/{branch}` | Where "Start work" creates its worktree - same convention as the app's own worktree location (Settings → Behavior) |
 | `jira.sendAutoSubmit` | `false` | Submit the issue context to the agent immediately, instead of typing it for review |
