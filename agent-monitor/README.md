@@ -21,11 +21,46 @@ complete, still ring.
 "Which of my agents needs me?" at a glance, without opening every tab — built assuming
 one window per tab, so a window's mark always reflects a single pane.
 
+## The AGENTS board
+
+The same states, for every agent at once, in the editor area: **Agent Board: Open**
+(`Ctrl+Shift+Alt+A`, rebindable in Keyboard Shortcuts) opens an **Agents** tab that lays
+every agent window out as a kanban board. Running it again focuses the tab already open.
+
+- **Columns.** *Group by: Status* draws Working, Waiting on you, Done and Idle, always all
+  four so the board keeps its shape; an interrupted turn is a red card in Done.
+  *Group by: Project* draws one column per project instead, each card carrying its own mark.
+- **Scope.** *This project* shows only the project of the tab you came from, and names it.
+  *All projects* shows everything. *Selected* shows the projects you tick in its list,
+  which always includes a ticked project that has no agent right now, so a selection is
+  never dropped behind your back.
+- **A project is the repository.** A window in a linked worktree belongs to its
+  repository's project and shows its branch on the card, highlighted; a folder outside
+  any repository is its own project.
+- **Cards.** Each shows the agent, its project and branch, what it is on (why it is
+  waiting, else the tool in flight and the prompt that started the turn), how long ago it
+  last did anything, and which session and window it is. Click a card, or press Enter on
+  it, to open that agent's terminal. Right-click (or the menu key, or a long press on a
+  phone) for Open Terminal, Copy Folder Path, Copy Prompt and Kill Session, which asks
+  first because it closes every window in the session.
+- **Your own order.** Drag a card up or down its column to put it where you want it - with
+  a mouse from anywhere on the card, with a finger from its grip. A card never moves
+  between columns: its column is what the agent is doing, not something a drop can change.
+  New agents slot in below the ones you placed, and **Reset Order** forgets the placement.
+- **Only while you look.** The board refreshes only while its tab is on screen, and stops
+  completely in the background.
+
+Scope, the ticked projects, the grouping and the card order are remembered per browser,
+not synced: they are how you like to look at the board, not settings.
+
 ## How it works
 
-A server-side poll reads the app's own session list and classifies every window whose foreground command matches one of the
+A server-side poll reads the app's own session list and classifies every window running one of the
 agents in **Settings → AI Providers** (the app's own list, shared by every extension that
-needs to know what an agent is), in priority order:
+needs to know what an agent is). A window counts when its foreground command is the agent's
+program or a process under it is, so a CLI that is really a script is found too: an
+npm-installed `codex` runs as `node .../bin/codex`, and its window only ever reports `node`.
+Each one is classified in priority order:
 
 1. **An agent hook event** (see below) for that pane - the authoritative signal
    while it is fresh, and the rules are Orca's, read from its source. A turn
@@ -55,7 +90,9 @@ needs to know what an agent is), in priority order:
    — written within `agentMonitor.waitingThresholdSeconds` (default 45) means working,
    otherwise done, and idle once it has been quiet for 30 minutes. Not waiting: without
    a hook a permission prompt and a finished turn look the same, and the `?` would sit on
-   every quiet agent. No transcript at all (a non-Claude agent with no hooks) means idle. The mtime is read fresh on every poll; only the choice of
+   every quiet agent. Only a Claude Code window reads a transcript: a Codex window in the same
+   folder would otherwise borrow a Claude session's timing. No transcript at all (a non-Claude
+   agent with no hooks) means idle. The mtime is read fresh on every poll; only the choice of
    *which* file to watch is cached, since a stale mtime here is a wrong state, not a
    slightly old one. The threshold is a timeout standing in for knowledge: one tool
    call routinely runs longer than a few seconds writing nothing, which is what the
@@ -70,6 +107,8 @@ runs `tmux` itself.
 | Key | Default | Description |
 |---|---|---|
 | `agentMonitor.waitingThresholdSeconds` | `45` | How long a transcript can go unwritten before a pane with no hooks stops showing as working |
+| `agentMonitor.board.defaultScope` | `all` | The scope the AGENTS board opens with in a browser that has never picked one: `current`, `all` or `selected` |
+| `agentMonitor.board.pollInterval` | `5000` | How often (ms) the AGENTS board refreshes while its tab is on screen |
 
 Which programs count as an agent is no longer a setting here. **Settings → AI
 Providers** holds the one list, and this extension reads it. The old

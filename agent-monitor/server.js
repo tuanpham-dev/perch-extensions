@@ -40,6 +40,7 @@
 // Antigravity at all: neither sends a session id.
 import { claudeSessionsByWindow } from "./claudePanes.mjs";
 import { classifyFromHook, classifyQuiet, reduceHookEvent } from "./hookStatus.mjs";
+import { resolveProject } from "./projects.mjs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -51,6 +52,70 @@ const CLAUDE_PROJECTS_DIR = path.join(homedir(), ".claude", "projects");
 // keyed by. `paneId` keeps its name because that is the key the rest of this
 // file and hookStatus.mjs use for "the terminal an event came from". ----
 
+// Which program runs in each window of a session. Matching the window's
+// foreground command alone misses every agent whose CLI is a script: an
+// npm-installed `codex` is `node .../codex`, so its window reports "node" (or
+// "node-MainThread" on an older daemon) and never "codex".
+// host.agents.forSession() also matches a descendant process named after an
+// agent's program - the native binary that script starts - and returns the
+// program it matched, which is what everything below keys on.
+//
+// That answer costs a scan of every process on the host, which on a busy
+// machine is seconds, so it is asked for as little as possible: never for a
+// window whose foreground command already names an agent (the common case,
+// answered the old way for free), and otherwise remembered per window and
+// foreground command. What runs under a window changes when its foreground
+// command does, so a changed command is a new key and gets a fresh answer at
+// once; the TTL only bounds how long an agent started in the background of a
+// shell prompt can go unnoticed.
+//
+// A core without host.agents.forSession gets the foreground match this used
+// to be, so an older install loses nothing.
+const WINDOW_AGENT_TTL_MS = 30_000;
+const windowAgentCache = new Map(); // `${windowId}\n${command}` -> { at, program }
+
+function windowAgentKey(win) {
+  return `${win.id}\n${win.command}`;
+}
+
+function pruneWindowAgentCache(now) {
+  for (const [key, entry] of windowAgentCache) {
+    if (now - entry.at >= WINDOW_AGENT_TTL_MS) windowAgentCache.delete(key);
+  }
+}
+
+async function agentProgramsBySession(host, session, programs, now) {
+  const byIndex = new Map();
+  const unknown = [];
+  for (const win of session.windows ?? []) {
+    if (programs.includes(win.command)) {
+      byIndex.set(win.index, win.command);
+      continue;
+    }
+    const known = windowAgentCache.get(windowAgentKey(win));
+    if (known) {
+      if (known.program && programs.includes(known.program)) byIndex.set(win.index, known.program);
+      continue;
+    }
+    unknown.push(win);
+  }
+  if (unknown.length === 0 || typeof host.agents?.forSession !== "function") return byIndex;
+  let found;
+  try {
+    found = new Map((await host.agents.forSession(session.name)).map((w) => [w.windowIndex, w.program]));
+  } catch {
+    // A session that vanished mid-listing, or a scan that failed: leave its
+    // unknown windows unmatched for this poll and ask again on the next.
+    return byIndex;
+  }
+  for (const win of unknown) {
+    const program = found.get(win.index) ?? null;
+    windowAgentCache.set(windowAgentKey(win), { at: now, program });
+    if (program && programs.includes(program)) byIndex.set(win.index, program);
+  }
+  return byIndex;
+}
+
 async function listAgentPanes(host, programs) {
   let sessions;
   try {
@@ -58,16 +123,25 @@ async function listAgentPanes(host, programs) {
   } catch {
     return [];
   }
+  const now = Date.now();
+  pruneWindowAgentCache(now);
+  const perSession = await Promise.all(
+    sessions.map(async (session) => ({ session, byIndex: await agentProgramsBySession(host, session, programs, now) })),
+  );
   const panes = [];
-  for (const session of sessions) {
+  for (const { session, byIndex } of perSession) {
     for (const win of session.windows ?? []) {
-      if (!programs.includes(win.command)) continue;
+      const program = byIndex.get(win.index);
+      if (!program) continue;
       panes.push({
         paneId: win.id,
         sessionName: session.name,
         windowIndex: win.index,
         windowName: win.name,
-        command: win.command,
+        // The AGENT's program, not the window's foreground command: for a
+        // script CLI those differ, and the agent is what the rest of this
+        // file (and the board's card) is about.
+        command: program,
         cwd: win.cwd || session.path,
         // The host window record carries no title (see the header); an
         // empty one makes parseAgentTitle return null, so the title rule
@@ -181,7 +255,17 @@ function recordHookEvent(event) {
 // The transcript for this pane's own session. Two Claude panes in one
 // directory share a project dir, so "its most recent transcript" is whichever
 // session wrote last - both panes would read that one session's activity.
+// Claude Code's transcripts are the only ones this reads, so only a Claude
+// window may be classified from one. Without this guard a Codex window fell
+// through to the folder's newest CLAUDE transcript and showed as working
+// whenever a Claude session in the same checkout wrote to its own - latent
+// while script CLIs went undetected, and the first thing detecting them
+// would have surfaced. A non-Claude agent with no hooks is idle, as the
+// README says.
+const TRANSCRIPT_PROGRAM = "claude";
+
 async function paneTranscript(pane) {
+  if (pane.command !== TRANSCRIPT_PROGRAM) return null;
   const own = (await claudeSessionsByWindow()).get(pane.paneId);
   if (own) {
     const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(own.cwd ?? pane.cwd));
@@ -248,7 +332,12 @@ async function classifyPaneCached(pane, waitingThresholdMs) {
 // nothing else. This extension had its own agentMonitor.programs setting
 // until the migration; it is gone rather than deprecated, so there is exactly
 // one place an agent is named.
-async function resolveAgentPrograms(host) {
+//
+// Two answers come out of the one call: the programs to match panes against
+// (the status marks' only need), and what to CALL the agent that matched -
+// its label and its own mark - which is what a board card shows instead of
+// the bare foreground command.
+async function resolveAgentIndex(host) {
   // Optional-called: a core without the registry has no host.agents, and
   // throwing here would take the whole route down. It simply has no agents
   // then - there is no older list to fall back to.
@@ -258,11 +347,37 @@ async function resolveAgentPrograms(host) {
   } catch (err) {
     console.warn("agent-monitor: could not read the agent registry:", err.message);
   }
-  if (!agents) return [];
-  // An entry with no foreground command is a launch preset only and can
-  // never match a pane.
-  return agents.map((agent) => agent.program).filter(Boolean);
+  const programs = [];
+  const byProgram = new Map();
+  for (const agent of agents ?? []) {
+    // An entry with no foreground command is a launch preset only and can
+    // never match a pane.
+    if (!agent?.program) continue;
+    programs.push(agent.program);
+    // Two presets can share one CLI; the first in the user's own order wins,
+    // the same way the registry itself resolves a duplicate.
+    if (!byProgram.has(agent.program)) {
+      byProgram.set(agent.program, {
+        id: agent.id ?? "",
+        label: agent.label ?? agent.program,
+        iconUrl: agent.iconUrl ?? "",
+        icon: agent.icon ?? "",
+      });
+    }
+  }
+  return { programs, byProgram };
 }
+
+// One project lookup per distinct folder, not per pane: several windows in
+// one checkout are the common case, and each lookup is a git call behind a
+// cache of its own (projects.mjs).
+async function resolveProjects(host, panes) {
+  const dirs = [...new Set(panes.map((pane) => pane.cwd).filter(Boolean))];
+  const entries = await Promise.all(dirs.map(async (dir) => [dir, await resolveProject(host, dir)]));
+  return new Map(entries);
+}
+
+const NO_PROJECT = { repo: "", project: "", branch: null, linked: false };
 
 export function activate({ router, getSettings, host }) {
   // Core installs the hooks (Settings → AI Providers), receives every event at one
@@ -285,25 +400,57 @@ export function activate({ router, getSettings, host }) {
   router.get("/agents", async (_req, res) => {
     try {
       const settings = await getSettings();
-      const programs = await resolveAgentPrograms(host);
+      const { programs, byProgram } = await resolveAgentIndex(host);
       const thresholdSeconds = Number(settings["agentMonitor.waitingThresholdSeconds"]);
       const waitingThresholdMs = (Number.isFinite(thresholdSeconds) && thresholdSeconds > 0 ? thresholdSeconds : 45) * 1000;
 
       const panes = await listAgentPanes(host, programs);
+      const projects = await resolveProjects(host, panes);
       const rows = await Promise.all(
         panes.map(async (pane) => {
           const classification = await classifyPaneCached(pane, waitingThresholdMs);
+          const agent = byProgram.get(pane.command);
+          const project = projects.get(pane.cwd) ?? NO_PROJECT;
           return {
             sessionName: pane.sessionName,
             windowIndex: pane.windowIndex,
             windowName: pane.windowName,
             command: pane.command,
             cwd: pane.cwd,
+            // The window's own stable id. The board's saved card order is
+            // keyed by it, because a session rename or a window renumber
+            // changes sessionName:windowIndex and this never moves.
+            paneId: pane.paneId,
+            agentId: agent?.id ?? "",
+            agentLabel: agent?.label ?? pane.command,
+            iconUrl: agent?.iconUrl ?? "",
+            icon: agent?.icon ?? "",
+            repo: project.repo,
+            project: project.project,
+            branch: project.branch,
+            linked: project.linked,
             ...classification,
           };
         }),
       );
       res.json({ agents: rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Which project a folder belongs to, for a folder with no agent running in
+  // it: the board's "This project" scope follows the active tab, which is
+  // routinely a plain shell or an editor with no agent anywhere near it, so
+  // it cannot learn the repository from the rows above.
+  router.get("/project", async (req, res) => {
+    const cwd = typeof req.query?.cwd === "string" ? req.query.cwd.trim() : "";
+    if (!cwd) {
+      res.status(400).json({ error: "cwd is required" });
+      return;
+    }
+    try {
+      res.json(await resolveProject(host, cwd));
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

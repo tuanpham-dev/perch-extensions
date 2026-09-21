@@ -72,3 +72,527 @@
   line-height: 1;
   text-align: center;
 }
+
+/* ---- AGENTS board (BoardView.tsx) ----
+
+   Host theme tokens for surfaces and text, so the board follows the color
+   theme; the status hues are the --agent-monitor-* properties above, so a
+   theme that recolors the PROJECTS marks recolors the board with them. */
+
+.agent-board {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* -- Toolbar -- */
+
+.agent-board-toolbar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-board-seg {
+  display: inline-flex;
+  border: 1px solid var(--button-secondary-border, var(--border));
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.agent-board-seg-button {
+  padding: 3px 10px;
+  border: 0;
+  border-right: 1px solid var(--button-secondary-border, var(--border));
+  background: transparent;
+  color: var(--fg-inactive);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-board-seg-button:last-child {
+  border-right: 0;
+}
+
+.agent-board-seg-button:hover {
+  background: var(--list-hover-bg);
+  color: var(--fg);
+}
+
+.agent-board-seg-button[aria-pressed="true"] {
+  background: var(--list-active-bg);
+  color: var(--fg-bright);
+}
+
+.agent-board-seg-button:focus-visible,
+.agent-board-link:focus-visible,
+.agent-board-button:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
+.agent-board-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-board-count-stale {
+  opacity: 0.55;
+}
+
+.agent-board-stale {
+  color: var(--warning);
+}
+
+.agent-board-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-board-link:hover {
+  text-decoration: underline;
+}
+
+/* -- Selected-projects picker -- */
+
+.agent-board-picker {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 12px;
+  z-index: 20;
+  min-width: 240px;
+  max-width: calc(100% - 24px);
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel-bg);
+  border: 1px solid var(--button-secondary-border, var(--border));
+  border-radius: 5px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.agent-board-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.agent-board-picker-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.agent-board-picker-row-gone {
+  opacity: 0.6;
+}
+
+.agent-board-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-board-picker-count {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-board-picker-empty {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--fg-inactive);
+}
+
+/* -- Hint and empty states -- */
+
+.agent-board-hint {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--agent-monitor-waiting, #f59e0b) 10%, transparent);
+}
+
+.agent-board-hint > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-board-empty {
+  max-width: 52ch;
+  margin: 0 auto;
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--fg-inactive);
+}
+
+.agent-board-empty p {
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+
+.agent-board-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.agent-board-button {
+  padding: 4px 12px;
+  border: 1px solid var(--button-secondary-border, var(--border));
+  border-radius: 3px;
+  background: var(--button-secondary-bg, transparent);
+  color: var(--button-secondary-fg, var(--fg));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-board-button:hover {
+  background: var(--button-secondary-hover-bg, var(--list-hover-bg));
+}
+
+/* -- Columns -- */
+
+.agent-board-columns {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  overflow: auto;
+}
+
+.agent-board-columns-status {
+  grid-template-columns: repeat(4, minmax(210px, 1fr));
+}
+
+/* One column per project: as many as there are, scrolling sideways past
+   the width rather than squeezing each below a readable card. */
+.agent-board-columns-project {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 1fr);
+}
+
+.agent-board-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel-bg);
+  border-radius: 6px;
+}
+
+.agent-board-column-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-inactive);
+}
+
+.agent-board-columns-project .agent-board-column-header {
+  /* Project names are names, not labels. */
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  color: var(--fg-bright);
+}
+
+.agent-board-column-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-board-column-count {
+  margin-left: auto;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-board-cards {
+  flex: 1;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+}
+
+.agent-board-column-drop-end .agent-board-cards::after {
+  content: "";
+  flex: none;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--focus-border);
+}
+
+.agent-board-placeholder {
+  margin: 0;
+  padding: 4px 2px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-inactive);
+  opacity: 0.75;
+}
+
+/* The status marks reuse the PROJECTS badge rules above for shape and hue;
+   these only make them sit inline. */
+.agent-board-mark {
+  display: inline-block;
+  flex: none;
+}
+
+/* -- Cards -- */
+
+.agent-board-card {
+  --agent-board-card-accent: var(--agent-monitor-idle, rgba(115, 115, 115, 0.4));
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px 8px 9px;
+  border: 1px solid var(--button-secondary-border, var(--border));
+  border-left: 3px solid var(--agent-board-card-accent);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.agent-board-card:hover {
+  background: color-mix(in srgb, var(--fg) 5%, var(--bg));
+}
+
+.agent-board-card:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: 1px;
+}
+
+.agent-board-card-working { --agent-board-card-accent: var(--agent-monitor-working, #eab308); }
+.agent-board-card-waiting { --agent-board-card-accent: var(--agent-monitor-waiting, #f59e0b); }
+.agent-board-card-done { --agent-board-card-accent: var(--agent-monitor-done, #10b981); }
+.agent-board-card-interrupted { --agent-board-card-accent: var(--agent-monitor-interrupted, #ef4444); }
+
+.agent-board-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-bright);
+}
+
+.agent-board-agent-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+}
+
+.agent-board-agent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-board-time {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-board-where,
+.agent-board-window {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--fg-inactive);
+}
+
+.agent-board-project {
+  color: var(--fg);
+}
+
+/* A linked worktree's branch is the one worth noticing: it is why this
+   card is not the repository's main checkout. */
+.agent-board-branch-linked {
+  color: var(--git-renamed-fg, var(--fg-accent));
+}
+
+.agent-board-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.agent-board-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-board-window {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* -- Drag -- */
+
+/* The finger's drag handle. touch-action: none is the point of it: it keeps
+   a finger that lands here from being handed to the browser's own panning,
+   which is what makes a touch drag possible at all (BoardView.tsx). */
+.agent-board-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: -4px -6px -4px 0;
+  border-radius: 3px;
+  color: var(--fg-inactive);
+  cursor: grab;
+  touch-action: none;
+  opacity: 0;
+}
+
+.agent-board-card:hover .agent-board-grip,
+.agent-board-card:focus-visible .agent-board-grip,
+.agent-board-card-dragging .agent-board-grip {
+  opacity: 1;
+}
+
+/* No hover on a touch screen: the handle is always there to find. */
+@media (hover: none) {
+  .agent-board-grip {
+    opacity: 1;
+    width: 32px;
+    height: 32px;
+    margin: -8px -8px -8px 0;
+  }
+}
+
+.agent-board-card-dragging {
+  z-index: 10;
+  cursor: grabbing;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+}
+
+/* Dragged out of its own column: status is what the agent is doing, not
+   something a drop can change, so the card says it will not land here. */
+.agent-board-card-refused {
+  opacity: 0.55;
+  outline: 1px dashed var(--error);
+  cursor: not-allowed;
+}
+
+.agent-board-card-returning {
+  transition: transform 180ms ease-out;
+}
+
+.agent-board-card-drop-before::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: -5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--focus-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-board-card-returning {
+    transition: none;
+  }
+}
+
+/* -- Narrow screens: one column to a screen, swiped sideways -- */
+
+@media (max-width: 700px) {
+  .agent-board-toolbar {
+    padding: 8px;
+  }
+
+  .agent-board-readout {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .agent-board-picker {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+  }
+
+  .agent-board-columns,
+  .agent-board-columns-status,
+  .agent-board-columns-project {
+    display: flex;
+    gap: 8px;
+    padding: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+  }
+
+  .agent-board-column {
+    flex: 0 0 calc(100% - 28px);
+    scroll-snap-align: start;
+  }
+}

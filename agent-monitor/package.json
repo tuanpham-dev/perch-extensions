@@ -16,6 +16,33 @@
           "minimum": 3,
           "maximum": 120,
           "description": "How long an agent's transcript can go unwritten before it's shown as done rather than working. Only used when no hook event is fresher (see the extension's README): a single tool call routinely runs longer than a few seconds without writing anything, so a short threshold reports a busy agent as waiting. Install the agent hooks from Settings \u2192 AI Providers for the exact answer instead of a timeout."
+        },
+        "agentMonitor.board.defaultScope": {
+          "type": "string",
+          "default": "all",
+          "enum": [
+            "current",
+            "all",
+            "selected"
+          ],
+          "enumItemLabels": [
+            "This project",
+            "All projects",
+            "Selected projects"
+          ],
+          "enumDescriptions": [
+            "Only agents in the project of the tab you opened the board from.",
+            "Every agent in every project.",
+            "Only agents in the projects you tick in the board's Selected list."
+          ],
+          "description": "Which agents the AGENTS board shows the first time it opens in a browser. After that the board remembers the scope you last picked in its toolbar, per browser."
+        },
+        "agentMonitor.board.pollInterval": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1000,
+          "maximum": 60000,
+          "description": "How often (ms) the AGENTS board refreshes. It refreshes only while its tab is the one on screen: in the background it makes no requests."
         }
       }
     }

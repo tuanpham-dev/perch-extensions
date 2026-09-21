@@ -11,7 +11,11 @@
 // Settings → AI Providers now, for every agent at once rather than for Claude
 // Code alone (plans/agent-platform-core.md).
 import "./style.css";
+import type { ComponentType } from "react";
 import { injectStylesheet } from "./injectStylesheet";
+import BoardView from "./BoardView";
+import { labelOf, markOf } from "./boardModel";
+import { host, type AppApi, type SettingsApi } from "./host";
 
 // ---- Module-level host bridge ----
 
@@ -68,40 +72,13 @@ function rowKey(row: AgentRow): string {
 let agentsByWindowKey = new Map<string, AgentRow>();
 let refreshDecorations: (() => void) | null = null;
 
-type Mark = "working" | "waiting" | "done" | "interrupted" | "idle";
-
-function markFor(row: AgentRow): Mark {
-  if (row.state === "done") return row.interrupted ? "interrupted" : "done";
-  return row.state;
-}
-
-function labelFor(row: AgentRow, mark: Mark): string {
-  // The tool is the most useful word in an attention state: "permission:
-  // Bash" says what is being asked, where "permission" alone only says that
-  // something is.
-  const tool = row.toolName ? `: ${row.toolName}` : "";
-  switch (mark) {
-    case "working":
-      return row.toolName ? `Working - ${row.toolName}` : "Working";
-    case "waiting":
-      return row.stateDetail === "permission"
-        ? `Waiting on you - permission${tool}`
-        : row.stateDetail === "question"
-          ? "Waiting on you - question"
-          : "Waiting on you";
-    case "done":
-      return "Done";
-    case "interrupted":
-      return "Interrupted";
-    case "idle":
-      return "Idle";
-  }
-}
+// markOf/labelOf live in boardModel.ts: the PROJECTS mark and the AGENTS
+// board describe a state in the same words, from one place.
 
 function decorationFor(row: AgentRow | undefined): { badge: string; tooltip: string; className: string } | undefined {
   if (!row) return undefined;
-  const mark = markFor(row);
-  const label = labelFor(row, mark);
+  const mark = markOf(row);
+  const label = labelOf(row, mark);
   // The task label from the title, else the prompt from the hook: what the
   // agent is on, in one line.
   const context = row.taskLabel ?? row.prompt;
@@ -132,8 +109,22 @@ interface ExtensionContext {
       ctx: SessionDecorationContext,
     ) => { badge: string; tooltip?: string; className?: string } | undefined;
   }): { refresh(): void };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  registerFileViewer(viewer: { id: string; extensions: string[]; component: ComponentType<any> }): void;
+  registerCommand(command: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
+  app: AppApi;
+  settings: SettingsApi;
+}
+
+// The one board: re-running the command focuses the tab already open rather
+// than opening another, because openViewerTab keys a tab by (viewer, path).
+const BOARD_VIEWER = "board";
+const BOARD_PATH = "agents";
+
+function openBoard(): void {
+  host.app?.openViewerTab(BOARD_VIEWER, BOARD_PATH, { title: "Agents" });
 }
 
 const POLL_MS = 10_000;
@@ -141,7 +132,20 @@ let pollTimer: number | null = null;
 
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
+  host.serverFetch = ctx.serverFetch;
+  host.app = ctx.app;
+  host.settings = ctx.settings;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
+
+  // extensions: [] - the board is never matched to a file; it is reached only
+  // through openViewerTab.
+  ctx.registerFileViewer({ id: BOARD_VIEWER, extensions: [], component: BoardView });
+  ctx.registerCommand({
+    id: "openBoard",
+    label: "Agent Board: Open",
+    defaultBinding: "ctrl+shift+alt+KeyA",
+    run: openBoard,
+  });
 
   refreshDecorations = ctx.registerSessionDecorationProvider({
     id: "agents",
@@ -167,6 +171,9 @@ export function activate(ctx: ExtensionContext): void {
 export function deactivate(): void {
   removeStylesheet?.();
   removeStylesheet = null;
+  host.serverFetch = null;
+  host.app = null;
+  host.settings = null;
   refreshDecorations = null;
   agentsByWindowKey = new Map();
   if (pollTimer !== null) {
