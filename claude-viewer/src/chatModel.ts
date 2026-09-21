@@ -8,7 +8,7 @@
 export type ContentBlock = { type: string; [key: string]: unknown };
 
 export type ChatItem =
-  | { kind: "text"; role: "user" | "assistant"; text: string; key: string }
+  | { kind: "text"; role: "user" | "assistant"; text: string; queued?: boolean; key: string }
   | { kind: "image"; dataUri: string; key: string }
   | { kind: "thinking"; text: string; key: string }
   | { kind: "tool"; toolId: string; key: string }
@@ -35,6 +35,10 @@ export type TranscriptMessage = {
   message?: { role?: string; content?: unknown; id?: string; model?: string; usage?: unknown };
   toolUseResult?: unknown;
   parent_tool_use_id?: string | null;
+  // Set by the server for a message sent while Claude was already working
+  // (transcript.mjs's queuedHumanMessage) - shown with a marker, since it
+  // lands mid-turn rather than between turns.
+  queued?: boolean;
   trigger?: string;
   preTokens?: number | null;
   postTokens?: number | null;
@@ -66,7 +70,7 @@ function stripAnsi(text: string): string {
 
 // A user text block, read the way the terminal presents it. Null means show
 // nothing.
-function userText(list: ChatItem[], raw: string): void {
+function userText(list: ChatItem[], raw: string, queued?: boolean): void {
   if (/^<local-command-caveat>/.test(raw.trim())) return;
   const name = TAG("command-name").exec(raw);
   if (name) {
@@ -102,10 +106,10 @@ function userText(list: ChatItem[], raw: string): void {
     .replace(/<pasted_content id="([0-9a-f]{4})">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g, "$2")
     .replace(/\[Image #\d+\]\s*/g, "")
     .trim();
-  if (text) list.push({ kind: "text", role: "user", text, key: nextKey() });
+  if (text) list.push({ kind: "text", role: "user", text, queued, key: nextKey() });
 }
 
-function pushBlocks(model: ChatModel, role: "user" | "assistant", content: unknown, parent: string | null | undefined, structured: unknown) {
+function pushBlocks(model: ChatModel, role: "user" | "assistant", content: unknown, parent: string | null | undefined, structured: unknown, queued?: boolean) {
   const list = targetList(model, parent);
   const blocks: ContentBlock[] =
     typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? (content as ContentBlock[]) : [];
@@ -114,7 +118,7 @@ function pushBlocks(model: ChatModel, role: "user" | "assistant", content: unkno
       case "text": {
         const text = String(block.text ?? "");
         if (text.trim() === "") break;
-        if (role === "user") userText(list, text);
+        if (role === "user") userText(list, text, queued);
         else list.push({ kind: "text", role, text, key: nextKey() });
         break;
       }
@@ -174,7 +178,7 @@ export function applyMessages(model: ChatModel, messages: TranscriptMessage[]): 
       continue;
     }
     if (m.isMeta && m.type === "user") continue;
-    pushBlocks(model, m.type, m.message.content, m.parent_tool_use_id, m.toolUseResult);
+    pushBlocks(model, m.type, m.message.content, m.parent_tool_use_id, m.toolUseResult, m.queued);
   }
 }
 

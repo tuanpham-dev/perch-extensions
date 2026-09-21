@@ -160,13 +160,48 @@ export async function readAgentMetaToolUseId(metaFile) {
   }
 }
 
-// What the tab renders: user and assistant messages as they are, plus
-// compaction boundaries reduced to what the divider shows.
+// A message the person sent while Claude was already working, as Claude Code
+// records it once it picks the message up. Nothing else in the transcript
+// carries it: a queued message absorbed into the running turn never becomes a
+// "user" entry of its own (the queue-operation pair around it says
+// `reason: "absorbed_mid_turn"`), it is folded into the turn as an attachment
+// alongside the next tool result — so without this the tab simply never
+// showed what you typed mid-run, while the terminal showed it the whole time.
+// Verified against every transcript on this machine: 149 of these, not one of
+// which also appears as a "user" entry, so reading them costs no duplicates.
+// Only the person's own are messages; the same attachment shape also carries
+// task notifications and peer messages, which the terminal doesn't present as
+// something you said either.
+function queuedHumanMessage(entry) {
+  const a = entry.attachment;
+  if (!a || a.type !== "queued_command") return null;
+  if (a.origin?.kind !== "human" || a.isMeta === true) return null;
+  const prompt = typeof a.prompt === "string" ? a.prompt : "";
+  if (!prompt.trim()) return null;
+  return {
+    type: "user",
+    uuid: String(entry.uuid ?? ""),
+    // The attachment is appended when the message is absorbed but stamped
+    // when it was typed, which is the time to show.
+    timestamp: typeof a.timestamp === "string" ? a.timestamp : typeof entry.timestamp === "string" ? entry.timestamp : null,
+    isMeta: false,
+    isCompactSummary: false,
+    message: { role: "user", content: prompt },
+    queued: true,
+  };
+}
+
+// What the tab renders: user and assistant messages as they are, messages
+// queued mid-turn, plus compaction boundaries reduced to what the divider
+// shows.
 export function toTranscriptMessages(entries) {
   const out = [];
   for (const e of entries) {
     if (!e || typeof e !== "object") continue;
-    if (e.type === "user" || e.type === "assistant") {
+    if (e.type === "attachment") {
+      const queued = queuedHumanMessage(e);
+      if (queued) out.push(queued);
+    } else if (e.type === "user" || e.type === "assistant") {
       out.push({
         type: e.type,
         uuid: String(e.uuid ?? ""),

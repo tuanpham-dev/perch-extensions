@@ -58,11 +58,15 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   );
 });
 
-export const TextMessage = memo(function TextMessage({ role, text }: { role: "user" | "assistant"; text: string }) {
+export const TextMessage = memo(function TextMessage({ role, text, queued }: { role: "user" | "assistant"; text: string; queued?: boolean }) {
   if (role === "user") {
     return (
       <div className="msg msg-user">
         <div className="msg-user-bubble">
+          {/* A queued message is absorbed into the turn that was already
+              running, so it shows up between that turn's tool calls rather
+              than starting one - the marker says why it sits there. */}
+          {queued && <div className="msg-user-queued">Sent while Claude was working</div>}
           <Markdown text={text} />
         </div>
       </div>

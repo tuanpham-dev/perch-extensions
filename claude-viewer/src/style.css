@@ -168,6 +168,12 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.claude-viewer .msg-user-queued {
+  margin-bottom: 4px;
+  color: var(--cv-dim);
+  font-size: 0.82em;
+  font-style: italic;
+}
 .claude-viewer .msg-assistant { min-width: 0; overflow-wrap: anywhere; }
 .claude-viewer .msg-image { max-width: min(320px, 70%); border-radius: 8px; border: 1px solid var(--cv-border); cursor: zoom-in; }
 
