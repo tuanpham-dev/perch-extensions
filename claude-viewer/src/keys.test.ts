@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { KEYS, bracketedPaste, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption } from "../keys.mjs";
+import { KEYS, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption, typedText } from "../keys.mjs";
 
 const numbered = {
   numbered: true,
@@ -76,9 +76,17 @@ test("a preview question leaves its Notes field and its Chat row before moving",
   assert.equal(nextKeyForChat(question(1)), null);
 });
 
-test("bracketed paste wraps text and strips embedded paste markers", () => {
-  assert.equal(bracketedPaste("a\nb"), "\x1b[200~a\nb\x1b[201~");
-  assert.equal(bracketedPaste("x\x1b[201~y"), "\x1b[200~xy\x1b[201~");
+test("typed text goes in as keystrokes, never as a paste: a paste reaches the model tagged as pasted content", () => {
+  assert.equal(typedText("plain words"), "plain words");
+  assert.equal(typedText("\x1b[200~x\x1b[201~"), "x");
+  // Each line break opens a line in the input box (Esc+Enter) instead of
+  // submitting what is there; tabs go in as Claude Code's own four spaces.
+  assert.equal(typedText("a\nb\r\nc"), "a\x1b\rb\x1b\rc");
+  assert.equal(typedText("a\tb"), "a    b");
+  // A prompt's one-line field takes the lines flattened: Esc leaves the prompt.
+  assert.equal(typedText("a\nb", { newlines: "space" }), "a b");
+  // Stray control bytes would act as keys (\x03 interrupts the turn).
+  assert.equal(typedText("keep\x03this"), "keepthis");
 });
 
 test("key names", () => {

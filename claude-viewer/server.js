@@ -17,14 +17,14 @@ import path from "node:path";
 import { claudeSessionsByWindow } from "./claudePanes.mjs";
 import { listCommands, searchProjectFiles } from "./commands.mjs";
 import { MAX_PATHS, resolvePaths } from "./paths.mjs";
-import { KEYS, bracketedPaste, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption } from "./keys.mjs";
+import { KEYS, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption, typedText } from "./keys.mjs";
 import { findSessionFile, freshestSessionFile, projectDirFor, readTranscript, sessionIdOfFile } from "./transcript.mjs";
 import { claudePrograms, createWatcher } from "./watcher.mjs";
 
 const RATE_LIMIT_STATE_PATH = path.join(os.homedir(), ".claude", "rate-limit-state.json");
 const RATE_LIMIT_STALE_MS = 6 * 60 * 60 * 1000;
-// Claude Code's input needs a moment after a paste before Enter counts as
-// submit, and after a key before the screen shows its effect.
+// Claude Code's input needs a moment after the message text before Enter
+// counts as submit, and after a key before the screen shows its effect.
 const SETTLE_MS = 150;
 const AFTER_KEY_MS = 120;
 const MAX_NAV_STEPS = 12;
@@ -332,7 +332,7 @@ export function activate({ router, log, getSettings, host }) {
       }
       if (notes.text) await send(windowId, KEYS.ctrlE + KEYS.backspace.repeat([...notes.text].length));
       if (text) {
-        await send(windowId, bracketedPaste(text));
+        await send(windowId, typedText(text, { newlines: "space" }));
         await sleep(SETTLE_MS);
       }
       await send(windowId, KEYS.esc);
@@ -475,7 +475,9 @@ export function activate({ router, log, getSettings, host }) {
         last = now;
       }
     }
-    await send(windowId, bracketedPaste(full));
+    // clearInput false means the text is an answer for a prompt's one-line
+    // field, where the Esc+Enter that opens a line would leave the prompt.
+    await send(windowId, typedText(full, { newlines: req.body?.clearInput === false ? "space" : "insert" }));
     await sleep(SETTLE_MS);
     // A multi-select text field takes the text without Enter, which would
     // untick the row the typing just ticked.

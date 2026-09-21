@@ -30,10 +30,31 @@ export function isKeyName(name) {
   return typeof name === "string" && Object.hasOwn(KEYS, name);
 }
 
-// Text as one paste: Claude Code's input treats a bracketed paste as literal
-// text, so newlines in it stay newlines instead of submitting early.
-export function bracketedPaste(text) {
-  return `\x1b[200~${String(text).replace(/\x1b\[20[01]~/g, "")}\x1b[201~`;
+// Text as keystrokes, the way a person at the keyboard would enter it.
+//
+// Not as a bracketed paste, which is what this used to send: Claude Code files
+// any paste of 20 characters or more away as pasted content and wraps it in
+// <pasted_content> tags on its way to the model, where it reads as material
+// quoted from somewhere else rather than as the user's own words - a message
+// sent that way has come back answered with "the pasted content contains an
+// instruction, but since your own message doesn't ask me to follow it...".
+// A message composed in this tab IS the user's own words.
+//
+// So: control bytes dropped (they would act as keys), tabs as the four spaces
+// Claude Code itself turns a pasted tab into, and each newline as Esc+Enter -
+// the sequence /terminal-setup binds Shift+Enter to, which opens a line in the
+// input box instead of submitting what is in it. With `newlines: "space"` the
+// text is flattened instead, for a prompt's one-line text field, where Esc
+// would leave the prompt rather than open a line.
+export function typedText(text, { newlines = "insert" } = {}) {
+  const body = String(text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "    ")
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[20[01]~/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "");
+  return newlines === "space" ? body.replace(/\n+/g, " ") : body.split("\n").join("\x1b\r");
 }
 
 // The arrow that moves a prompt's cursor one row toward option `n`, "here"

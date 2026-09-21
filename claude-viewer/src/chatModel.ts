@@ -94,9 +94,12 @@ function userText(list: ChatItem[], raw: string): void {
     return;
   }
   // "[Image #2]" is Claude Code's inline placeholder for an attached image,
-  // which renders here as the image itself.
+  // which renders here as the image itself. A <pasted_content> block is what
+  // Claude Code makes of anything pasted into the terminal (and of what this
+  // tab itself used to send): the person wrote the text, so show the text.
   const text = raw
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+    .replace(/<pasted_content id="([0-9a-f]{4})">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g, "$2")
     .replace(/\[Image #\d+\]\s*/g, "")
     .trim();
   if (text) list.push({ kind: "text", role: "user", text, key: nextKey() });
