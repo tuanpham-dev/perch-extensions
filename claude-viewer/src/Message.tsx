@@ -58,11 +58,25 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   );
 });
 
-export const TextMessage = memo(function TextMessage({ role, text, queued }: { role: "user" | "assistant"; text: string; queued?: boolean }) {
+export const TextMessage = memo(function TextMessage({
+  role,
+  text,
+  queued,
+  pending,
+}: {
+  role: "user" | "assistant";
+  text: string;
+  queued?: boolean;
+  pending?: boolean;
+}) {
   if (role === "user") {
     return (
       <div className="msg msg-user">
-        <div className="msg-user-bubble">
+        <div className={`msg-user-bubble${pending ? " msg-user-pending" : ""}`}>
+          {/* Sent, but not in the transcript yet: Claude Code records a
+              message when the turn it belongs to starts, so one sent while
+              Claude is working only lands with the next tool result. */}
+          {pending && <div className="msg-user-queued">Sent - waiting for Claude to pick it up</div>}
           {/* A queued message is absorbed into the turn that was already
               running, so it shows up between that turn's tool calls rather
               than starting one - the marker says why it sits there. */}

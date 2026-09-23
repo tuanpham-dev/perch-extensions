@@ -8,7 +8,10 @@
 export type ContentBlock = { type: string; [key: string]: unknown };
 
 export type ChatItem =
-  | { kind: "text"; role: "user" | "assistant"; text: string; queued?: boolean; key: string }
+  // `pending`: the tab's own copy of a message it just sent, shown until the
+  // transcript catches up (see pending.ts). Never built from a transcript
+  // message.
+  | { kind: "text"; role: "user" | "assistant"; text: string; queued?: boolean; pending?: boolean; key: string }
   | { kind: "image"; dataUri: string; key: string }
   | { kind: "thinking"; text: string; key: string }
   | { kind: "tool"; toolId: string; key: string }

@@ -305,7 +305,7 @@ export function ChatItemView({ item, model }: { item: ChatItem; model: ChatModel
   const lightbox = useLightbox();
   switch (item.kind) {
     case "text":
-      return <TextMessage role={item.role} text={item.text} queued={item.queued} />;
+      return <TextMessage role={item.role} text={item.text} queued={item.queued} pending={item.pending} />;
     case "image":
       return <ImageMessage dataUri={item.dataUri} onOpen={lightbox.open} />;
     case "thinking":

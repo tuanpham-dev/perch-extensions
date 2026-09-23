@@ -839,3 +839,10 @@
   .cv-option-row { flex-direction: column; }
   .cv-option-alt { max-width: none; height: 30px; }
 }
+
+/* A message the tab has sent but not yet seen in the transcript (pending.ts):
+   the same bubble, held back a little until the real entry replaces it. */
+.claude-viewer .msg-user-bubble.msg-user-pending {
+  opacity: 0.72;
+  border: 1px dashed var(--cv-border);
+}

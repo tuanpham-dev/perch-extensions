@@ -1,12 +1,15 @@
 // Virtualized conversation with stick-to-bottom scrolling. Ported from the
 // claude-web extension's MessageList.tsx.
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 import type { ChatModel } from "./chatModel";
+import { pendingItems, type PendingMessage } from "./pending";
 import { ChatItemView } from "./ToolCall";
 
 type Props = {
   model: ChatModel;
+  /** Sent but not in the transcript yet - drawn after it (see pending.ts). */
+  pending: PendingMessage[];
   /** Bumped whenever the (mutable) model changes, so we re-render and re-measure. */
   version: number;
   scrollRef: RefObject<HTMLDivElement>;
@@ -18,8 +21,13 @@ type Props = {
  * cards that expand), so rows are measured after render rather than assumed —
  * `measureElement` observes each mounted row and feeds real heights back.
  */
-export function MessageList({ model, version, scrollRef, stickToBottom }: Props) {
-  const items = model.items;
+export function MessageList({ model, pending, version, scrollRef, stickToBottom }: Props) {
+  // The model's own array while nothing is pending, so the common case
+  // allocates nothing per render.
+  const items = useMemo(
+    () => (pending.length === 0 ? model.items : [...model.items, ...pendingItems(pending)]),
+    [model.items, pending, version],
+  );
   const count = items.length;
   const listRef = useRef<HTMLDivElement>(null);
 

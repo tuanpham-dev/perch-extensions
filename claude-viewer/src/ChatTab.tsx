@@ -14,6 +14,7 @@ import { applyMessages, collectImages, createChatModel, type ChatModel, type Tra
 import { createFileLinks, FileLinksContext } from "./FileLinks";
 import { Composer, type ComposerHandle, type PendingImage, type SlashCommand } from "./Composer";
 import { Lightbox, LightboxContext } from "./Lightbox";
+import { createPending, resolvePending, type PendingMessage } from "./pending";
 import { MessageList } from "./MessageList";
 import { PromptCard, type PromptCardHandle } from "./PromptCard";
 import { ScreenStrip, ScreenStripHeading, ScreenStripToggle, useScreenStrip } from "./ScreenStrip";
@@ -156,6 +157,9 @@ export function ChatTab({
   const [version, setVersion] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // Sent, not in the transcript yet - see pending.ts.
+  const [pending, setPending] = useState<PendingMessage[]>([]);
+  const pendingKey = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const userScrolled = useRef(false);
@@ -167,6 +171,7 @@ export function ChatTab({
   useEffect(() => {
     modelRef.current = createChatModel();
     tallyRef.current = createTally();
+    setPending([]);
     cursorRef.current = null;
     stickToBottom.current = true;
     userScrolled.current = false;
@@ -189,6 +194,9 @@ export function ChatTab({
           addToTally(tallyRef.current, data.messages as Parameters<typeof addToTally>[1]);
           setVersion((v) => v + 1);
         }
+        // Also with no new messages: this is what gives up on a message the
+        // transcript never claims.
+        setPending((prev) => resolvePending(prev, modelRef.current.items, Date.now()));
         setLoaded(true);
       } catch {
         // Retried next tick.
@@ -243,6 +251,17 @@ export function ChatTab({
         return false;
       }
       stickToBottom.current = true;
+      // Claude Code writes a message into the transcript when the turn it
+      // belongs to starts, so one sent mid-run doesn't appear until the next
+      // tool result. Show it now, marked, and let the poll above swap it for
+      // the real entry. Text only: an images-only message has no text to
+      // match a transcript entry by, and would only ever time out.
+      if (text.trim()) {
+        setPending((prev) => [
+          ...prev,
+          createPending(modelRef.current.items, prev, text, `pending-${++pendingKey.current}`, Date.now()),
+        ]);
+      }
       return true;
     } catch (err) {
       setSendError(`The message could not be sent: ${(err as Error).message}`);
@@ -420,7 +439,13 @@ export function ChatTab({
                     : "Loading the conversation"}
           </div>
         )}
-        <MessageList model={model} version={version} scrollRef={scrollRef} stickToBottom={stickToBottom} />
+        <MessageList
+          model={model}
+          pending={pending}
+          version={version}
+          scrollRef={scrollRef}
+          stickToBottom={stickToBottom}
+        />
       </div>
       {prompt && <PromptCard ref={promptCardRef} windowId={windowId} prompt={prompt} onState={acceptScreen} enterSends={settings.enterSends} />}
       {sendError && (
