@@ -35,6 +35,8 @@ export const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input"])
 
 const PROMPT_MAX = 160;
 const TOOL_NAME_MAX = 60;
+// Orca's NOTIFICATION_BODY_PREVIEW_MAX_LENGTH.
+const BODY_MAX = 180;
 
 function text(value, max) {
   if (typeof value !== "string") return undefined;
@@ -46,6 +48,42 @@ function text(value, max) {
 function toolNameOf(payload) {
   if (!payload || typeof payload !== "object") return undefined;
   return text(payload.tool_name ?? payload.name, TOOL_NAME_MAX);
+}
+
+// Which field of a tool's input says what it is doing, per tool - Orca's
+// TOOL_INPUT_KEYS_BY_TOOL (src/shared/agent-hook-listener/tool-input-preview.ts),
+// cut down to the tools Claude Code and Codex call.
+const TOOL_INPUT_KEYS = {
+  Read: ["file_path", "path"],
+  Write: ["file_path", "path"],
+  Edit: ["file_path", "path"],
+  MultiEdit: ["file_path", "path"],
+  NotebookEdit: ["notebook_path", "file_path", "path"],
+  Bash: ["command"],
+  Glob: ["pattern"],
+  Grep: ["pattern"],
+  WebFetch: ["url"],
+  WebSearch: ["query"],
+  Task: ["description", "prompt"],
+  Agent: ["description", "prompt"],
+  exec_command: ["cmd", "command"],
+  shell_command: ["cmd", "command"],
+  apply_patch: ["path", "file_path"],
+  request_user_input: ["question", "prompt", "message"],
+};
+
+// One line saying what a tool call is about, for a notification's body. A
+// question's input is an array of questions, which Orca's preview skips; the
+// first question's text is what the user is being asked, so it is shown.
+export function toolInputPreview(toolName, input) {
+  if (typeof input === "string") return text(input, BODY_MAX);
+  if (!input || typeof input !== "object") return undefined;
+  if (Array.isArray(input.questions)) return text(input.questions[0]?.question, BODY_MAX);
+  for (const key of TOOL_INPUT_KEYS[toolName] ?? []) {
+    const value = text(input[key], BODY_MAX);
+    if (value) return value;
+  }
+  return undefined;
 }
 
 // previous: the pane's current record or undefined. event: core's normalized
@@ -65,7 +103,8 @@ export function reduceHookEvent(previous, event) {
     case "tool-start": {
       const toolName = toolNameOf(payload);
       if (toolName && QUESTION_TOOLS.has(toolName)) {
-        return { state: "waiting", detail: "question", at, toolName, prompt: carried };
+        const toolInput = toolInputPreview(toolName, payload.tool_input);
+        return { state: "waiting", detail: "question", at, toolName, toolInput, prompt: carried };
       }
       return { state: "working", at, toolName, prompt: carried };
     }
@@ -76,13 +115,71 @@ export function reduceHookEvent(previous, event) {
       // Same tool-name rule as tool-start: a question reported through the
       // permission channel is still a question.
       const detail = toolName && QUESTION_TOOLS.has(toolName) ? "question" : "permission";
-      return { state: "waiting", detail, at, toolName, prompt: carried };
+      const toolInput = toolInputPreview(toolName, payload.tool_input);
+      return { state: "waiting", detail, at, toolName, toolInput, prompt: carried };
     }
     case "stop":
-      return { state: "done", at, interrupted: payload.is_interrupt === true || undefined, prompt: carried };
+      return {
+        state: "done",
+        at,
+        interrupted: payload.is_interrupt === true || undefined,
+        prompt: carried,
+        lastMessage: text(payload.last_assistant_message, BODY_MAX),
+      };
     default:
       return null;
   }
+}
+
+// Which notification, if any, a move from `previous` to `next` deserves:
+// "question" or "permission" when an agent starts blocking on the user, "done"
+// when a turn it was on ends. Only transitions count - the same prompt
+// reported twice (AskUserQuestion arrives as tool-start and then again as
+// permission on newer Claude builds) is one notification, not two.
+//
+// Not "done" for a session boundary (a resumed or cleared session was never
+// on a turn) nor for an interrupted turn: the user just pressed Esc, so they
+// are already looking at it.
+export function notificationFor(previous, next) {
+  if (!next) return null;
+  if (next.state === "waiting") {
+    const same =
+      previous?.state === "waiting" && previous.detail === next.detail && previous.toolName === next.toolName;
+    return same ? null : next.detail;
+  }
+  if (next.state === "done") {
+    if (next.sessionBoundary || next.interrupted || previous?.state === "done") return null;
+    return "done";
+  }
+  return null;
+}
+
+// A notification's words, in Orca's shape (src/main/ipc/notification-options.ts):
+//
+//   title  "<repo> / <worktree> - <Agent> needs input", or "... finished"
+//   body   the agent's last message, else "Using <Tool>: <input>", else
+//          "Using <Tool>", else "<Agent> finished."
+//
+// Orca says "needs input" for a question and a permission prompt alike: both
+// are the agent stopped until you answer.
+export function notificationContent(kind, { agentLabel, context, record }) {
+  const status = kind === "done" ? "finished" : "needs input";
+  const title = `${context || "workspace"} - ${agentLabel || "Agent"} ${status}`;
+  const lastMessage = kind === "done" ? record?.lastMessage : undefined;
+  const tool = kind === "done" ? undefined : record?.toolName;
+  const input = kind === "done" ? undefined : record?.toolInput;
+  const body =
+    lastMessage ??
+    (tool && input ? `Using ${tool}: ${input}` : tool ? `Using ${tool}` : input ? `Tool input: ${input}` : null) ??
+    `${agentLabel || "Agent"} ${status}.`;
+  return { title, body };
+}
+
+// Orca's "<repo> / <worktree>": the project, and the branch of the worktree
+// the agent sits in when there is one.
+export function notificationContext(project) {
+  if (!project?.project) return "";
+  return project.branch ? `${project.project} / ${project.branch}` : project.project;
 }
 
 // What the classifier reports for a pane from its record alone, or null when

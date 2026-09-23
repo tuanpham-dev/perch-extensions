@@ -21,6 +21,25 @@ complete, still ring.
 "Which of my agents needs me?" at a glance, without opening every tab — built assuming
 one window per tab, so a window's mark always reflects a single pane.
 
+## Notifications
+
+With the agent hooks installed (Settings → AI Providers) and notifications turned on for a
+browser in Settings, that browser gets a push notification when an agent asks you a question,
+needs permission for a tool, or finishes a turn. The words are Orca's:
+
+| When | Title | Body |
+| --- | --- | --- |
+| A question or a permission prompt | `perch / main - Claude Code needs input` | `Using Bash: npm test`, or for a question the question itself |
+| A finished turn | `perch / main - Claude Code finished` | The agent's last message |
+
+The title leads with the project and the branch of the worktree the agent runs in. When there
+is nothing more to say, the body repeats the state (`Claude Code finished.`).
+
+Each fires once per change of state, so a question reported twice by the agent is one
+notification. A turn you interrupted and a resumed session send nothing. Turn either kind off
+with the two Agent Monitor notify settings in Settings. Core drops a second push for the same
+window within 5 seconds, so two permission prompts in quick succession show as one.
+
 ## The AGENTS board
 
 The same states, for every agent at once, in the editor area: an **Agents** tab that lays

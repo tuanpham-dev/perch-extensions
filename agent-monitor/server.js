@@ -39,9 +39,16 @@
 // Claude's own session_id is what makes the hook path work for Codex and
 // Antigravity at all: neither sends a session id.
 import { claudeSessionsByWindow } from "./claudePanes.mjs";
-import { classifyFromHook, classifyQuiet, reduceHookEvent } from "./hookStatus.mjs";
+import {
+  classifyFromHook,
+  classifyQuiet,
+  notificationContent,
+  notificationContext,
+  notificationFor,
+  reduceHookEvent,
+} from "./hookStatus.mjs";
 import { resolveProject } from "./projects.mjs";
-import { readdir, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -240,14 +247,103 @@ const hookEvents = new Map(); // paneId -> record from hookStatus.mjs's reduceHo
 
 function recordHookEvent(event) {
   const paneId = event.paneId;
-  if (!paneId) return;
-  const next = reduceHookEvent(hookEvents.get(paneId), event);
-  if (!next) return;
+  if (!paneId) return null;
+  const previous = hookEvents.get(paneId);
+  const next = reduceHookEvent(previous, event);
+  if (!next) return null;
   if (hookEvents.size >= MAX_HOOK_EVENTS && !hookEvents.has(paneId)) {
     const oldestKey = hookEvents.keys().next().value;
     if (oldestKey !== undefined) hookEvents.delete(oldestKey);
   }
   hookEvents.set(paneId, next);
+  return notificationFor(previous, next);
+}
+
+// ---- Notifications — a web push when an agent starts waiting on you or
+// finishes a turn, through core's host.notifications (the same channel as the
+// bell). Only browsers that turned notifications on in Settings get one ----
+
+const NOTIFY_SETTING = {
+  question: "agentMonitor.notify.waiting",
+  permission: "agentMonitor.notify.waiting",
+  done: "agentMonitor.notify.done",
+};
+
+// The folder the agent runs in: the hook's own cwd (Claude Code and Codex both
+// send one), else the window's.
+async function cwdForEvent(host, event) {
+  const fromPayload = event.payload?.cwd;
+  if (typeof fromPayload === "string" && fromPayload) return fromPayload;
+  try {
+    for (const session of await host.sessions.list()) {
+      const win = (session.windows ?? []).find((w) => w.id === event.paneId);
+      if (win) return win.cwd || session.path || "";
+    }
+  } catch {
+    // No folder; the notification falls back to the session name.
+  }
+  return "";
+}
+
+// The text of the transcript's last assistant message, for a Stop that did
+// not carry last_assistant_message itself (older Claude Code builds). Reads
+// only the tail: a transcript runs to megabytes and the answer is at its end.
+const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+
+async function lastAssistantMessage(transcriptPath) {
+  if (typeof transcriptPath !== "string" || !transcriptPath) return undefined;
+  let handle;
+  try {
+    handle = await open(transcriptPath, "r");
+    const { size } = await handle.stat();
+    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    const lines = buffer.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue; // Blank, or the partial first line of the tail.
+      }
+      if (entry?.type !== "assistant") continue;
+      const content = entry.message?.content;
+      const textOf = Array.isArray(content)
+        ? content.filter((c) => c?.type === "text" && typeof c.text === "string").map((c) => c.text).join(" ")
+        : typeof content === "string"
+          ? content
+          : "";
+      const oneLine = textOf.replace(/\s+/g, " ").trim();
+      if (oneLine) return oneLine.length > 180 ? `${oneLine.slice(0, 179)}…` : oneLine;
+    }
+  } catch {
+    // Unreadable transcript: the body falls back to "<Agent> finished."
+  } finally {
+    await handle?.close();
+  }
+  return undefined;
+}
+
+async function sendNotification(host, getSettings, kind, event, record) {
+  if (!host.notifications?.push) return;
+  const settings = await getSettings();
+  if (settings[NOTIFY_SETTING[kind]] === false) return;
+  let agentLabel = event.agent;
+  try {
+    const agents = (await host.agents?.list()) ?? [];
+    agentLabel = agents.find((a) => a?.id === event.agent)?.label ?? agentLabel;
+  } catch {
+    // The id is still a usable name.
+  }
+  const cwd = await cwdForEvent(host, event);
+  const context = (cwd ? notificationContext(await resolveProject(host, cwd)) : "") || event.sessionName || "";
+  const withMessage =
+    kind === "done" && !record.lastMessage
+      ? { ...record, lastMessage: await lastAssistantMessage(event.payload?.transcript_path) }
+      : record;
+  const { title, body } = notificationContent(kind, { agentLabel, context, record: withMessage });
+  await host.notifications.push({ title, body, windowId: event.paneId });
 }
 
 // ---- Classification ----
@@ -393,7 +489,14 @@ export function activate({ router, getSettings, host }) {
   host.agentHooks?.subscribe({
     events: ["session-start", "prompt-submit", "tool-start", "tool-end", "permission", "stop"],
     onEvent(event) {
-      recordHookEvent(event);
+      const kind = recordHookEvent(event);
+      if (!kind) return;
+      // Taken now: by the time the settings and agent list are read, a
+      // later event may already have replaced this window's record.
+      const record = hookEvents.get(event.paneId);
+      sendNotification(host, getSettings, kind, event, record).catch((err) => {
+        console.warn("agent-monitor: could not send a notification:", err.message);
+      });
     },
   });
 

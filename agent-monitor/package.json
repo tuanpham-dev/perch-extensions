@@ -2,7 +2,7 @@
   "name": "agent-monitor",
   "private": true,
   "publisher": "perch",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "displayName": "Agent Monitor",
   "description": "Classifies every terminal window running an AI coding agent as working/waiting/done/idle and marks that window's own PROJECTS-pane row the way Orca does: a spinner, an amber ?, an emerald dot, a red dot for an interrupted turn, a gray dot for idle. Reads the app's own agent list from Settings \u2192 AI Providers, with zero-config detection from pane titles and Claude Code transcripts; installing the app's agent hooks there upgrades permission-prompt and done detection to the agent's own events, for every agent in that list rather than Claude Code alone. The AGENTS board lays every agent window out as a kanban of those same states, grouped by status or by project, from the robot icon in the status bar or Agent Board: Open.",
   "icon": "./icon.svg",
@@ -16,6 +16,16 @@
           "minimum": 3,
           "maximum": 120,
           "description": "How long an agent's transcript can go unwritten before it's shown as done rather than working. Only used when no hook event is fresher (see the extension's README): a single tool call routinely runs longer than a few seconds without writing anything, so a short threshold reports a busy agent as waiting. Install the agent hooks from Settings \u2192 AI Providers for the exact answer instead of a timeout."
+        },
+        "agentMonitor.notify.waiting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a notification when an agent stops to ask you a question or for permission. Needs the agent hooks installed in Settings \u2192 AI Providers, and notifications turned on for this browser in Settings."
+        },
+        "agentMonitor.notify.done": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a notification when an agent finishes a turn. Not sent for a turn you interrupted. Needs the agent hooks installed in Settings \u2192 AI Providers, and notifications turned on for this browser in Settings."
         },
         "agentMonitor.board.defaultScope": {
           "type": "string",

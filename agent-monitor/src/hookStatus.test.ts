@@ -3,7 +3,16 @@
 // mapping it asserts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyFromHook, classifyQuiet, reduceHookEvent, STALE_AFTER_MS } from "../hookStatus.mjs";
+import {
+  classifyFromHook,
+  classifyQuiet,
+  notificationContent,
+  notificationContext,
+  notificationFor,
+  reduceHookEvent,
+  STALE_AFTER_MS,
+  toolInputPreview,
+} from "../hookStatus.mjs";
 
 const at = 1_000_000;
 const ev = (event: string, payload: unknown = {}, receivedAt = at) => ({ event, payload, receivedAt, paneId: "%1" });
@@ -134,4 +143,61 @@ test("a reported finish never decays to idle; an unfinished turn does", () => {
   assert.equal(classifyQuiet(working, long, threshold, at).state, "idle");
   const asking = reduceHookEvent(undefined, ev("permission", { tool_name: "Bash" }, long));
   assert.equal(classifyQuiet(asking, null, threshold, at).state, "idle");
+});
+
+test("a notification fires when an agent starts waiting on you, once", () => {
+  const working = reduceHookEvent(undefined, ev("prompt-submit", { prompt: "go" }));
+  const asked = reduceHookEvent(working, ev("tool-start", { tool_name: "AskUserQuestion" }));
+  assert.equal(notificationFor(working, asked), "question");
+  // Newer Claude builds report the same question again through permission.
+  const again = reduceHookEvent(asked, ev("permission", { tool_name: "AskUserQuestion" }));
+  assert.equal(notificationFor(asked, again), null);
+  const perm = reduceHookEvent(working, ev("permission", { tool_name: "Bash" }));
+  assert.equal(notificationFor(working, perm), "permission");
+  // A second prompt for a different tool is a new thing to answer.
+  const perm2 = reduceHookEvent(perm, ev("permission", { tool_name: "Edit" }));
+  assert.equal(notificationFor(perm, perm2), "permission");
+});
+
+test("a finished turn notifies, an interrupted one or a session boundary does not", () => {
+  const working = reduceHookEvent(undefined, ev("prompt-submit", { prompt: "go" }));
+  const done = reduceHookEvent(working, ev("stop"));
+  assert.equal(notificationFor(working, done), "done");
+  assert.equal(notificationFor(done, reduceHookEvent(done, ev("stop"))), null);
+  assert.equal(notificationFor(working, reduceHookEvent(working, ev("stop", { is_interrupt: true }))), null);
+  assert.equal(notificationFor(undefined, reduceHookEvent(undefined, ev("session-start", { source: "resume" }))), null);
+  assert.equal(notificationFor(undefined, working), null);
+});
+
+test("notifications read the way Orca's do", () => {
+  const context = notificationContext({ project: "perch", branch: "main" });
+  assert.equal(context, "perch / main");
+  const working = reduceHookEvent(undefined, ev("prompt-submit", { prompt: "go" }));
+
+  const perm = reduceHookEvent(working, ev("permission", { tool_name: "Bash", tool_input: { command: "npm test" } }));
+  assert.deepEqual(notificationContent("permission", { agentLabel: "Claude Code", context, record: perm }), {
+    title: "perch / main - Claude Code needs input",
+    body: "Using Bash: npm test",
+  });
+
+  const done = reduceHookEvent(working, ev("stop", { last_assistant_message: "All  tests\npass." }));
+  assert.deepEqual(notificationContent("done", { agentLabel: "Claude Code", context, record: done }), {
+    title: "perch / main - Claude Code finished",
+    body: "All tests pass.",
+  });
+
+  // Nothing to say beyond the state: the body repeats it, as Orca's does.
+  const bare = reduceHookEvent(working, ev("stop"));
+  assert.equal(notificationContent("done", { agentLabel: "Codex", context: "", record: bare }).body, "Codex finished.");
+  assert.equal(notificationContent("done", { agentLabel: "Codex", context: "", record: bare }).title, "workspace - Codex finished");
+});
+
+test("a question's notification shows the question, not the tool's input array", () => {
+  const input = { questions: [{ question: "Which database should we use?", options: [] }] };
+  assert.equal(toolInputPreview("AskUserQuestion", input), "Which database should we use?");
+  const asked = reduceHookEvent(undefined, ev("tool-start", { tool_name: "AskUserQuestion", tool_input: input }));
+  assert.equal(
+    notificationContent("question", { agentLabel: "Claude Code", context: "perch", record: asked }).body,
+    "Using AskUserQuestion: Which database should we use?",
+  );
 });
