@@ -320,3 +320,20 @@ test("footers without letter keys offer none", () => {
   assert.deepEqual(parse("permission-bash").prompt.letterKeys, []);
   assert.deepEqual(parseLetterKeys("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"), []);
 });
+
+test("a barred question keeps every wrapped line, not only the last", () => {
+  // Claude Code 2.1.281 draws the question with a "│ " bar down its left
+  // edge. Captured at 70 columns: the wrap falls before a lowercase word.
+  const whole =
+    "Before I refactor the session store, should I keep the JSON file format we use today or switch to SQLite for Perch?";
+  const p = parseScreen(fixture("ask-user-question-barred")).prompt;
+  assert.equal(p?.kind, "question");
+  assert.equal(p?.title, "Session Store");
+  assert.equal(p?.question, whole);
+  assert.deepEqual(p?.body, []);
+  // The same prompt at 60 columns wraps before "JSON" and before "Perch?":
+  // capitalised words the terminal pushed down, still one question.
+  const narrow = parseScreen(fixture("ask-user-question-barred-narrow")).prompt;
+  assert.equal(narrow?.question, whole);
+  assert.deepEqual(narrow?.body, []);
+});

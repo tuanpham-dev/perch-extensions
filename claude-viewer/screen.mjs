@@ -558,7 +558,15 @@ export function parsePrompt(lines) {
   // Title/body/question: the text between the block's top rule and the first
   // option. AskUserQuestion's tab strip is the first line there.
   const rule = topRuleAbove(lines, read.top - 1);
-  const header = lines.slice(rule + 1, read.top).filter((l) => !isBlank(l) && !DASHED_RE.test(l));
+  // Newer builds (seen on 2.1.281) draw an AskUserQuestion question with a
+  // "│ " bar down its left edge. The bar is decoration, not text: left on,
+  // it lands in the heading and hides every wrapped line after the first.
+  // Only a bar with nothing matching on the right is one - a line closed by
+  // "│" is a box.
+  const header = lines
+    .slice(rule + 1, read.top)
+    .filter((l) => !isBlank(l) && !DASHED_RE.test(l));
+  const isBarred = (l) => /^│ /.test(l) && !/│\s*$/.test(l);
   let tabs = null;
   let tabRow = null;
   if (header.length > 0) {
@@ -570,22 +578,34 @@ export function parsePrompt(lines) {
   }
   // Rejoin text the terminal wrapped: a line that doesn't end a sentence,
   // followed by one that starts lowercase (or continues a word or path that
-  // filled the width), is one line.
+  // filled the width), is one line. So is one whose next line opens with a
+  // word that would not have fit after it: the terminal wraps at word
+  // boundaries, so that word was pushed down, whatever its case ("...keep
+  // the" / "JSON file format...").
   const width = screenWidth(lines);
   const joined = [];
-  for (const l of header) {
+  for (const drawn of header) {
+    const l = isBarred(drawn) ? drawn.slice(2) : drawn;
     const prev = joined[joined.length - 1];
     const t = l.trim();
-    const prevLen = prev === undefined ? 0 : [...prev.raw].length;
+    // Measured as drawn, bar and all: that is the width the terminal filled.
+    const prevLen = prev === undefined ? 0 : [...prev.drawn].length;
     const filled = width > 0 && prevLen >= width - 1;
     // A word wrap leaves the line short by at most about one word.
     const nearlyFull = width > 0 && prevLen >= width - 20;
-    if (prev !== undefined && !/^[☐☒]\s/.test(t) && !/[.?!:]$/.test(prev.text) && (filled || (nearlyFull && /^[a-z(]/.test(t)))) {
+    const pushedDown = width > 0 && prevLen + 1 + [...t.split(/\s/)[0]].length > width;
+    if (
+      prev !== undefined &&
+      !/^[☐☒]\s/.test(t) &&
+      !/[.?!:]$/.test(prev.text) &&
+      (filled || pushedDown || (nearlyFull && /^[a-z(]/.test(t)))
+    ) {
       prev.text = filled || prev.text.endsWith("-") ? prev.text + t : `${prev.text} ${t}`;
       prev.raw = l;
+      prev.drawn = drawn;
       prev.lines.push(l);
     } else {
-      joined.push({ text: t, raw: l, lines: [l] });
+      joined.push({ text: t, raw: l, drawn, lines: [l] });
     }
   }
   const texts = joined.map((j) => j.text);
