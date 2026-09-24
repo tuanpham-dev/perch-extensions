@@ -3,7 +3,8 @@
 // input and result. Ported from the claude-web extension's ToolCall.tsx, with
 // syntax-highlighted diffs and the new chat item kinds.
 import { useState } from "react";
-import { resultImages as imagesIn, type ChatItem, type ChatModel, type ToolCard } from "./chatModel";
+import { agentReport, agentStatus, resultImages as imagesIn, type ChatItem, type ChatModel, type ToolCard } from "./chatModel";
+import { AgentNote, useAgentNav } from "./AgentView";
 import { useLightbox } from "./Lightbox";
 import { langFor, TokenLine, useTokens } from "./Highlight";
 import { LinkedText } from "./FileLinks";
@@ -198,16 +199,13 @@ function ToolPreview({
   model: ChatModel;
   onImageClick: (src: string) => void;
 }) {
-  const isSubagent = (card.name === "Task" || card.name === "Agent") && card.children.length > 0;
-
-  if (isSubagent) {
-    if (card.result) {
-      const finalReport =
-        card.structuredResult && typeof card.structuredResult === "object"
-          ? ((card.structuredResult as { content?: unknown }).content ?? undefined)
-          : undefined;
-      const reportText = resultText(finalReport !== undefined ? finalReport : card.result.content);
-      const { lines, hidden } = firstLines(reportText, 3);
+  if (card.agent) {
+    // A background agent's call returns at once with launch metadata, so
+    // what the agent is doing (or reported) is read from its record instead.
+    if (agentStatus(card) !== "running") {
+      const report = agentReport(card);
+      if (report === null) return card.result?.isError ? <PreviewLines lines={firstLines(resultText(card.result.content), 3).lines} className="tool-preview-error" /> : null;
+      const { lines, hidden } = firstLines(report, 3);
       return <PreviewLines lines={lines} hidden={hidden} />;
     }
     const steps: string[] = [];
@@ -300,7 +298,42 @@ function ToolPreview({
   return <PreviewLines lines={lines} hidden={hidden} className={errorClass} />;
 }
 
-/** One chat item. Shared by the virtualized list and subagent traces. */
+/**
+ * An expanded Agent card: the prompt it was given and what it reported. Its
+ * conversation opens on its own (Open transcript), not squeezed in here.
+ */
+function AgentBody({ card, report, onImageClick }: { card: ToolCard; report: string | null; onImageClick: (src: string) => void }) {
+  const { prompt, description: _d, subagent_type: _t, ...rest } = card.input;
+  return (
+    <>
+      {typeof prompt === "string" && (
+        <div className="cv-agent-prompt">
+          <div className="cv-agent-label">Prompt</div>
+          <pre className="tool-input">
+            <LinkedText text={prompt} />
+          </pre>
+        </div>
+      )}
+      {Object.keys(rest).length > 0 && (
+        <pre className="tool-input">
+          <LinkedText text={JSON.stringify(rest, null, 2)} />
+        </pre>
+      )}
+      {report !== null ? (
+        <div className="tool-result">
+          <div className="cv-agent-label">Report</div>
+          <pre>
+            <LinkedText text={report} />
+          </pre>
+        </div>
+      ) : (
+        agentStatus(card) === "failed" && <ToolResult card={card} onImageClick={onImageClick} />
+      )}
+    </>
+  );
+}
+
+/** One chat item, in the main conversation or a subagent's. */
 export function ChatItemView({ item, model }: { item: ChatItem; model: ChatModel }) {
   const lightbox = useLightbox();
   switch (item.kind) {
@@ -320,28 +353,36 @@ export function ChatItemView({ item, model }: { item: ChatItem; model: ChatModel
       const card = model.tools[item.toolId];
       return card ? <ToolCallCard card={card} model={model} /> : null;
     }
+    case "agentNote": {
+      const card = model.tools[item.toolId];
+      return card ? <AgentNote card={card} /> : null;
+    }
     default:
       return null;
   }
 }
 
-/** Plain (non-virtual) list — used for subagent traces, which are short. */
-export function ChatItems({ items, model }: { items: ChatItem[]; model: ChatModel }) {
-  return (
-    <>
-      {items.map((item) => (
-        <ChatItemView key={item.key} item={item} model={model} />
-      ))}
-    </>
-  );
-}
-
 export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel }) {
   const [open, setOpen] = useState(false);
   const lightbox = useLightbox();
-  const isSubagent = (card.name === "Task" || card.name === "Agent") && card.children.length > 0;
+  const nav = useAgentNav();
   const summary = inputSummary(card.name, card.input);
-  const statusClass = !card.result ? "tool-running" : card.result.isError ? "tool-error" : "tool-ok";
+  const status = card.agent ? agentStatus(card) : null;
+  const statusClass =
+    status !== null
+      ? status === "running"
+        ? "tool-running"
+        : status === "failed"
+          ? "tool-error"
+          : "tool-ok"
+      : !card.result
+        ? "tool-running"
+        : card.result.isError
+          ? "tool-error"
+          : "tool-ok";
+  const steps = card.agent ? card.children.filter((i) => i.kind === "tool").length : 0;
+  const canOpen = Boolean(card.agent) && card.children.length > 0;
+  const report = card.agent ? agentReport(card) : null;
 
   const finalReport =
     card.structuredResult && typeof card.structuredResult === "object"
@@ -369,12 +410,27 @@ export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel
         <span className="tool-summary">
           <LinkedText text={summary} />
         </span>
-        {isSubagent && <span className="tool-badge">{card.children.length} steps</span>}
+        {card.agent && steps > 0 && <span className="tool-badge">{steps} {steps === 1 ? "step" : "steps"}</span>}
+        {canOpen && (
+          <button
+            type="button"
+            className="btn cv-agent-open"
+            onClick={(e) => {
+              e.stopPropagation();
+              nav.open(card.id);
+            }}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            Open transcript
+          </button>
+        )}
       </div>
       {!open && <ToolPreview card={card} model={model} onImageClick={lightbox.open} />}
       {open && (
         <div className="tool-body">
-          {card.name === "Edit" &&
+          {card.agent ? (
+            <AgentBody card={card} report={report} onImageClick={lightbox.open} />
+          ) : card.name === "Edit" &&
           typeof card.input.old_string === "string" &&
           typeof card.input.new_string === "string" ? (
             <DiffView oldStr={card.input.old_string} newStr={card.input.new_string} path={String(card.input.file_path ?? "")} />
@@ -385,13 +441,7 @@ export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel
               <LinkedText text={JSON.stringify(card.input, null, 2)} />
             </pre>
           )}
-          {isSubagent && (
-            <div className="subagent-trace">
-              <div className="subagent-label">Subagent</div>
-              <ChatItems items={card.children} model={model} />
-            </div>
-          )}
-          {finalReport !== undefined ? (
+          {card.agent ? null : finalReport !== undefined ? (
             <div className="tool-result">
               <pre>
                 <LinkedText text={resultText(finalReport)} />

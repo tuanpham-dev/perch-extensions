@@ -7,10 +7,11 @@
 //   - session: which session the window runs, every few seconds
 //   - transcript: new messages while the tab is focused
 //   - screen: a long poll the server answers as soon as the screen changes
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { getJson, host, postJson, setting, uploadFile, type ShowMenu } from "./bridge";
-import { applyMessages, collectImages, createChatModel, type ChatModel, type TranscriptMessage } from "./chatModel";
+import { AgentHeader, AgentNavContext, AgentsChip, closeAgentsList, livePath, pathTo, type AgentNav } from "./AgentView";
+import { applyAgentMeta, applyMessages, collectImages, createChatModel, type AgentMeta, type ChatModel, type TranscriptMessage } from "./chatModel";
 import { createFileLinks, FileLinksContext } from "./FileLinks";
 import { Composer, type ComposerHandle, type PendingImage, type SlashCommand } from "./Composer";
 import { Lightbox, LightboxContext } from "./Lightbox";
@@ -24,6 +25,9 @@ import type { ScreenState, SessionInfo } from "./types";
 import { addToTally, createTally, currentModelLabel, type UsageTally } from "./usage";
 
 const SESSION_POLL_MS = 3000;
+// A subagent view shows no pending messages: what you send goes to the main
+// conversation. One array, so the list sees no change between renders.
+const NO_PENDING: PendingMessage[] = [];
 
 export function windowIdFromPath(filePath: string): string {
   return filePath.split("/").pop() ?? filePath;
@@ -166,10 +170,14 @@ export function ChatTab({
   const activeRef = useRef(active);
   activeRef.current = active;
   const pollRef = useRef<(() => Promise<void>) | null>(null);
+  // The subagent being read, as tool ids from the main conversation down;
+  // [] is the main conversation. Never saved: a reload starts on the main one.
+  const [path, setPath] = useState<string[]>([]);
 
   // Transcript: reset on a session change, then tail it.
   useEffect(() => {
     modelRef.current = createChatModel();
+    setPath([]);
     tallyRef.current = createTally();
     setPending([]);
     cursorRef.current = null;
@@ -186,11 +194,12 @@ export function ChatTab({
       try {
         const qs = new URLSearchParams({ sessionId, cwd });
         if (cursorRef.current) qs.set("cursor", cursorRef.current);
-        const data = await getJson<{ messages: TranscriptMessage[]; cursor: string }>(`/transcript?${qs}`);
+        const data = await getJson<{ messages: TranscriptMessage[]; agents?: AgentMeta[]; cursor: string }>(`/transcript?${qs}`);
         if (cancelled) return;
         cursorRef.current = data.cursor;
         if (data.messages.length > 0) {
           applyMessages(modelRef.current, data.messages);
+          applyAgentMeta(modelRef.current, data.agents);
           addToTally(tallyRef.current, data.messages as Parameters<typeof addToTally>[1]);
           setVersion((v) => v + 1);
         }
@@ -251,6 +260,8 @@ export function ChatTab({
         return false;
       }
       stickToBottom.current = true;
+      // What you send goes to the main conversation, so that is where to be.
+      navigate([]);
       // Claude Code writes a message into the transcript when the turn it
       // belongs to starts, so one sent mid-run doesn't appear until the next
       // tool result. Show it now, marked, and let the poll above swap it for
@@ -281,6 +292,46 @@ export function ChatTab({
   const tally = useMemo(() => tallyRef.current, [version]);
   const model = modelRef.current;
   const empty = model.items.length === 0;
+
+  // A subagent that went away (/clear, a new session) takes the view back to
+  // the nearest level that still exists.
+  const shownPath = livePath(model, path);
+  useEffect(() => {
+    if (shownPath.length !== path.length) setPath(shownPath);
+  }, [shownPath.length, path.length]);
+  const openCard = shownPath.length > 0 ? model.tools[shownPath[shownPath.length - 1]] : null;
+  const shownItems = openCard ? openCard.children : model.items;
+
+  // The main conversation's place is kept while a subagent is open, and
+  // given back on return; a subagent opens at its newest step.
+  const mainScroll = useRef<{ top: number; stick: boolean } | null>(null);
+  const restoreMain = useRef(false);
+  const navigate = useCallback((next: string[]) => {
+    setPath((prev) => {
+      if (prev.length === 0 && next.length > 0 && scrollRef.current) {
+        mainScroll.current = { top: scrollRef.current.scrollTop, stick: stickToBottom.current };
+      }
+      if (next.length === 0) restoreMain.current = prev.length > 0;
+      else {
+        stickToBottom.current = true;
+        userScrolled.current = false;
+      }
+      return next;
+    });
+  }, []);
+  useLayoutEffect(() => {
+    if (shownPath.length > 0 || !restoreMain.current) return;
+    restoreMain.current = false;
+    const saved = mainScroll.current;
+    mainScroll.current = null;
+    if (!saved || !scrollRef.current) return;
+    stickToBottom.current = saved.stick;
+    if (!saved.stick) scrollRef.current.scrollTop = saved.top;
+  }, [shownPath.length]);
+  const agentNav = useMemo<AgentNav>(
+    () => ({ path: shownPath, open: (toolId: string) => navigate(pathTo(modelRef.current, toolId)) }),
+    [shownPath.join("/"), navigate],
+  );
 
   // The lightbox steps through every image in the conversation, collected
   // when it opens so it starts on the one that was clicked.
@@ -320,6 +371,11 @@ export function ChatTab({
     if (e.defaultPrevented || e.nativeEvent.isComposing || !running) return;
     // Portalled children (the lightbox, the tab bar button) bubble here too.
     if (!rootRef.current?.contains(e.target as Node)) return;
+    // An open agents list takes Esc first, so closing it never stops Claude.
+    if (e.key === "Escape" && closeAgentsList(rootRef.current)) {
+      e.preventDefault();
+      return;
+    }
     if (prompt) {
       if (promptCardRef.current?.handleKey(e)) e.preventDefault();
       return;
@@ -370,6 +426,7 @@ export function ChatTab({
       : null;
 
   return (
+    <AgentNavContext.Provider value={agentNav}>
     <LightboxContext.Provider value={lightbox}>
     <FileLinksContext.Provider value={fileLinks}>
     <div
@@ -414,6 +471,7 @@ export function ChatTab({
           </button>,
           toolbarTarget,
         )}
+      {openCard && <AgentHeader model={model} path={shownPath} version={version} onNavigate={navigate} />}
       <div
         className="chat-scroll"
         ref={scrollRef}
@@ -426,7 +484,7 @@ export function ChatTab({
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
       >
-        {empty && (
+        {empty && !openCard && (
           <div className="cv-empty">
             {!info
               ? "Loading"
@@ -440,8 +498,10 @@ export function ChatTab({
           </div>
         )}
         <MessageList
+          key={shownPath.join("/") || "main"}
           model={model}
-          pending={pending}
+          items={shownItems}
+          pending={openCard ? NO_PENDING : pending}
           version={version}
           scrollRef={scrollRef}
           stickToBottom={stickToBottom}
@@ -480,6 +540,7 @@ export function ChatTab({
         footerEnd={
           <>
             <UsageStats tally={tally} showContext={settings.showContext} showMeters={settings.showMeters} />
+            <AgentsChip model={model} version={version} onOpen={navigate} />
             {modelLabel && (
               <span className="cv-foot-model" title={tally.switchedTo ? `Switched with /model: ${tally.switchedTo}` : (tally.model ?? undefined)}>
                 {modelLabel}
@@ -505,5 +566,6 @@ export function ChatTab({
     </div>
     </FileLinksContext.Provider>
     </LightboxContext.Provider>
+    </AgentNavContext.Provider>
   );
 }

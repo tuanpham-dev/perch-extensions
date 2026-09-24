@@ -375,14 +375,124 @@
   object-fit: cover;
   cursor: zoom-in;
 }
-.claude-viewer .subagent-trace {
-  border-left: 3px solid var(--cv-accent-soft);
-  padding-left: 10px;
+/* ---- Subagents ---- */
+
+/* Status, in the same colors as a tool card's name. */
+.claude-viewer .cv-agent-pill {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.claude-viewer .cv-agent-pill-running { color: var(--cv-warn); }
+.claude-viewer .cv-agent-pill-done { color: var(--cv-ok); }
+.claude-viewer .cv-agent-pill-failed { color: var(--cv-err); }
+.claude-viewer .cv-agent-pill-stopped { color: var(--cv-dim); }
+.claude-viewer .cv-agent-facts {
+  color: var(--cv-dim);
+  font-family: var(--cv-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* The open subagent's header, over the conversation, as wide as it. */
+.claude-viewer .cv-agent-head {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--cv-border);
+  background: var(--cv-panel);
+  padding: 8px max(16px, calc((100% - 880px) / 2 + 16px));
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
 }
-.claude-viewer .subagent-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cv-accent); }
+.claude-viewer .cv-agent-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; color: var(--cv-dim); min-width: 0; }
+.claude-viewer .cv-agent-crumb-part { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.claude-viewer .cv-agent-back { height: 24px; padding: 0 8px; font-size: 12px; margin-right: 4px; }
+.claude-viewer .cv-agent-crumb {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--cv-accent);
+  cursor: pointer;
+}
+.claude-viewer .cv-agent-crumb:hover { text-decoration: underline; }
+.claude-viewer .cv-agent-crumb:focus-visible { outline: 1px solid var(--cv-accent); outline-offset: 1px; }
+.claude-viewer .cv-agent-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.claude-viewer .cv-agent-title strong { color: var(--cv-strong); font-weight: 600; }
+.claude-viewer .cv-agent-title span:not(.cv-agent-pill) { overflow-wrap: anywhere; min-width: 0; }
+
+/* An Agent card's way into its transcript. */
+.claude-viewer .cv-agent-open { height: 22px; padding: 0 8px; font-size: 12px; color: var(--cv-accent); flex-shrink: 0; }
+.claude-viewer .cv-agent-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cv-dim); margin-bottom: 4px; }
+
+/* Where a background agent's finish arrived. */
+.claude-viewer .cv-agent-note {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font: inherit;
+  font-size: calc(var(--cv-font-size) - 1px);
+  color: var(--cv-dim);
+  text-align: left;
+  cursor: pointer;
+}
+.claude-viewer .cv-agent-note:hover span:last-child { color: var(--cv-text); text-decoration: underline; }
+.claude-viewer .cv-agent-note:focus-visible { outline: 1px solid var(--cv-accent); outline-offset: 2px; }
+.claude-viewer .cv-agent-note-done .cv-agent-note-dot { color: var(--cv-ok); }
+.claude-viewer .cv-agent-note-failed .cv-agent-note-dot { color: var(--cv-err); }
+.claude-viewer .cv-agent-note-running .cv-agent-note-dot { color: var(--cv-warn); }
+
+/* The footer chip, and the list it opens above the footer. */
+.claude-viewer .cv-agents { position: relative; display: inline-flex; min-width: 0; }
+.claude-viewer .cv-agents-chip { font-variant-numeric: tabular-nums; }
+.claude-viewer .cv-agents-chip-running { color: var(--cv-warn); }
+.claude-viewer .cv-agents[data-open] .cv-agents-chip { background: var(--hover); color: var(--cv-text); }
+.claude-viewer .cv-agents-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  background: var(--cv-panel);
+  border: 1px solid var(--cv-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 28%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+.claude-viewer .cv-agents-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--cv-border);
+  color: var(--cv-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.claude-viewer .cv-agents-row:last-child { border-bottom: none; }
+.claude-viewer .cv-agents-row:hover,
+.claude-viewer .cv-agents-row:focus-visible { background: var(--hover); outline: none; }
+.claude-viewer .cv-agents-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.claude-viewer .cv-agents-row-top strong { font-weight: 600; color: var(--cv-strong); }
+.claude-viewer .cv-agents-row-desc { color: var(--cv-text); overflow-wrap: anywhere; }
 
 .claude-viewer-lightbox {
   position: fixed;

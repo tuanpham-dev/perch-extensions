@@ -191,8 +191,8 @@ export function activate({ router, log, getSettings, host }) {
     } catch {
       cursor = null;
     }
-    const { messages, cursor: next } = await readTranscript(file, cursor);
-    res.json({ messages, cursor: JSON.stringify(next) });
+    const { messages, agents, cursor: next } = await readTranscript(file, cursor);
+    res.json({ messages, agents, cursor: JSON.stringify(next) });
   });
 
   router.get("/screen", async (req, res) => {

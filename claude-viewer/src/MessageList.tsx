@@ -2,12 +2,14 @@
 // claude-web extension's MessageList.tsx.
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
-import type { ChatModel } from "./chatModel";
+import type { ChatItem, ChatModel } from "./chatModel";
 import { pendingItems, type PendingMessage } from "./pending";
 import { ChatItemView } from "./ToolCall";
 
 type Props = {
   model: ChatModel;
+  /** What to draw: the main conversation's items, or a subagent card's children. */
+  items: ChatItem[];
   /** Sent but not in the transcript yet - drawn after it (see pending.ts). */
   pending: PendingMessage[];
   /** Bumped whenever the (mutable) model changes, so we re-render and re-measure. */
@@ -21,12 +23,12 @@ type Props = {
  * cards that expand), so rows are measured after render rather than assumed —
  * `measureElement` observes each mounted row and feeds real heights back.
  */
-export function MessageList({ model, pending, version, scrollRef, stickToBottom }: Props) {
-  // The model's own array while nothing is pending, so the common case
-  // allocates nothing per render.
+export function MessageList({ model, items: base, pending, version, scrollRef, stickToBottom }: Props) {
+  // The given array while nothing is pending, so the common case allocates
+  // nothing per render.
   const items = useMemo(
-    () => (pending.length === 0 ? model.items : [...model.items, ...pendingItems(pending)]),
-    [model.items, pending, version],
+    () => (pending.length === 0 ? base : [...base, ...pendingItems(pending)]),
+    [base, pending, version],
   );
   const count = items.length;
   const listRef = useRef<HTMLDivElement>(null);

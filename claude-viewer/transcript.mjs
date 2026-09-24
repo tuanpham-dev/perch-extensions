@@ -143,21 +143,111 @@ export function extendCorrelation(sessionId, entries) {
   return map;
 }
 
-// Meta files never change once written, so a successful read is kept for the
-// life of the process; a missing one is retried (it can land just after the
-// agent's .jsonl).
+// Meta files never change once written, so a read that names the tool call
+// is kept for the life of the process; a missing one is retried (it can land
+// just after the agent's .jsonl).
 const agentMetaCache = new Map();
 
-export async function readAgentMetaToolUseId(metaFile) {
+// { toolUseId, agentType, description }, each null when absent.
+export async function readAgentMeta(metaFile) {
   if (agentMetaCache.has(metaFile)) return agentMetaCache.get(metaFile);
   try {
     const meta = JSON.parse(await fs.readFile(metaFile, "utf8"));
-    const toolUseId = typeof meta.toolUseId === "string" ? meta.toolUseId : null;
-    if (toolUseId) agentMetaCache.set(metaFile, toolUseId);
-    return toolUseId;
+    const read = {
+      toolUseId: typeof meta.toolUseId === "string" ? meta.toolUseId : null,
+      agentType: typeof meta.agentType === "string" ? meta.agentType : null,
+      description: typeof meta.description === "string" ? meta.description : null,
+    };
+    if (read.toolUseId) agentMetaCache.set(metaFile, read);
+    return read;
   } catch {
-    return null;
+    return { toolUseId: null, agentType: null, description: null };
   }
+}
+
+// A background agent's finish, as Claude Code tells the main agent about it:
+//
+//   <task-notification>
+//   <task-id>…</task-id>
+//   <tool-use-id>toolu_…</tool-use-id>     the Agent call that started it
+//   <status>completed</status>              seen: completed, failed, stopped
+//   <summary>Agent "…" finished</summary>
+//   <result>the agent's report</result>
+//   <usage><subagent_tokens>…</subagent_tokens><tool_uses>…</tool_uses><duration_ms>…</duration_ms></usage>
+//   </task-notification>
+//
+// It arrives as a "user" entry (origin kind "task-notification") between
+// turns, or folded into a running turn as a queued_command attachment. Either
+// way it is not something the person said, so it becomes a message of its
+// own rather than a user bubble of raw XML. Null for anything else.
+const NOTIFICATION_RE = /^\s*<task-notification>/;
+
+function notificationText(entry) {
+  if (entry.type === "user") {
+    const content = entry.message?.content;
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content) && content.length === 1 && content[0]?.type === "text"
+          ? String(content[0].text ?? "")
+          : null;
+    // Recognized by its content: origin.kind says "task-notification" on
+    // 2.1.281, but older entries carry no origin at all.
+    return text !== null && NOTIFICATION_RE.test(text) ? text : null;
+  }
+  // In the main transcript the attachment says origin kind
+  // "task-notification"; in a subagent's own transcript (the finish of an
+  // agent it started) there is no origin, only commandMode. So it is
+  // recognized by content too, and only a message marked as the person's
+  // own is ever left alone.
+  const a = entry.attachment;
+  if (entry.type === "attachment" && a?.type === "queued_command" && a.origin?.kind !== "human") {
+    return typeof a.prompt === "string" && NOTIFICATION_RE.test(a.prompt) ? a.prompt : null;
+  }
+  return null;
+}
+
+// The report and summary arrive XML-escaped ("Promise&lt;T&gt;"), while
+// the agent's own transcript has the text as written.
+function unescapeXml(text) {
+  return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+}
+
+function tag(text, name) {
+  const m = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text);
+  return m ? m[1].trim() : null;
+}
+
+function count(text, name) {
+  const value = tag(text, name);
+  const n = value === null ? NaN : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function taskNotificationOf(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const text = notificationText(entry);
+  if (text === null) return null;
+  // A report can itself mention the tag, so it runs to the LAST close.
+  const open = text.indexOf("<result>");
+  const close = text.lastIndexOf("</result>");
+  const result = open !== -1 && close > open ? unescapeXml(text.slice(open + "<result>".length, close).trim()) : null;
+  // Read the other fields outside the report, so a report quoting them can't
+  // stand in for the real ones.
+  const outside = open !== -1 && close > open ? text.slice(0, open) + text.slice(close) : text;
+  const summary = tag(outside, "summary");
+  return {
+    type: "task_notification",
+    uuid: String(entry.uuid ?? ""),
+    timestamp: typeof entry.timestamp === "string" ? entry.timestamp : null,
+    toolUseId: tag(outside, "tool-use-id"),
+    status: tag(outside, "status"),
+    summary: summary === null ? null : unescapeXml(summary),
+    result,
+    tokens: count(outside, "subagent_tokens"),
+    toolUses: count(outside, "tool_uses"),
+    durationMs: count(outside, "duration_ms"),
+  };
 }
 
 // A message the person sent while Claude was already working, as Claude Code
@@ -198,6 +288,11 @@ export function toTranscriptMessages(entries) {
   const out = [];
   for (const e of entries) {
     if (!e || typeof e !== "object") continue;
+    const notification = taskNotificationOf(e);
+    if (notification) {
+      out.push(notification);
+      continue;
+    }
     if (e.type === "attachment") {
       const queued = queuedHumanMessage(e);
       if (queued) out.push(queued);
@@ -245,14 +340,18 @@ export async function readTranscript(file, cursor) {
     // No subagents in this session.
   }
   const agents = { ...(cursor?.agents ?? {}) };
+  // Every linked subagent's type and description, on every call: the tab
+  // may have started from a cursor and never seen an agent's first read.
+  const agentMeta = [];
   for (const name of names) {
     const agentId = name.slice("agent-".length, -".jsonl".length);
-    const parent =
-      (await readAgentMetaToolUseId(path.join(subagentsDir, `agent-${agentId}.meta.json`))) ?? correlation.get(agentId);
+    const meta = await readAgentMeta(path.join(subagentsDir, `agent-${agentId}.meta.json`));
+    const parent = meta.toolUseId ?? correlation.get(agentId);
     if (!parent) continue;
+    agentMeta.push({ toolUseId: parent, agentId, agentType: meta.agentType, description: meta.description });
     const tail = await tailSince(path.join(subagentsDir, name), agents[name] ?? 0);
     agents[name] = tail.newOffset;
     for (const m of toTranscriptMessages(tail.entries)) messages.push({ ...m, parent_tool_use_id: parent });
   }
-  return { messages, cursor: { main: newOffset, agents } };
+  return { messages, agents: agentMeta, cursor: { main: newOffset, agents } };
 }
