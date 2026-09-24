@@ -101,6 +101,11 @@ function isUnderRepo(sessionPath: string, repoPath: string): boolean {
 // line that starts it. The other half of a registry entry from the detection
 // half above, and the shape the "Start work" flows want.
 export interface AgentLaunchPreset {
+  // The registry id (`<extensionId>.<agentId>`). "Start work" types the
+  // command itself and never needed it; a batch asks the SERVER to launch the
+  // agent, and the server takes the id - it is the only thing that survives
+  // the trip and lets the host apply the Yolo/Manual choice on its own side.
+  id: string;
   name: string;
   command: string;
   // See AgentRegistryEntry. Carried through so a caller can offer "start it
@@ -119,6 +124,7 @@ export async function resolveAgentPresets(): Promise<AgentLaunchPreset[]> {
     .map((agent) => {
       const skipArgs = agent.skipPermissionsArgs ?? "";
       return {
+        id: agent.id,
         name: agent.label || agent.command,
         // The Yolo/Manual choice is already applied. A caller launches
         // `command` as given and never decides this for itself.

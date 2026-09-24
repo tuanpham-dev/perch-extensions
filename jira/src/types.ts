@@ -119,3 +119,19 @@ export interface ProjectRow {
   key: string;
   name: string;
 }
+
+// A context-menu row, as the host's showMenu takes them. Not a server shape
+// like the rest of this file, but it is the one type several components need
+// and none of them can take it from client.tsx without closing an import
+// cycle.
+export interface MenuItem {
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+  // Leading check icon. The host has supported this all along (see core's
+  // MenuItem in client/src/types.ts); this structural copy just never
+  // declared it.
+  checked?: boolean;
+  // Thin divider row - label/onClick are unused placeholders on one.
+  separator?: boolean;
+}

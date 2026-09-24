@@ -1,0 +1,213 @@
+#!/bin/sh
+# jira-batch - report on a Jira batch cluster from the terminal it runs in.
+#
+# Installed by the Jira extension into <config>/perch/bin/ and put on the
+# agent's PATH by the line that launches its cluster, together with the ids
+# below. Every verb is one POST to the extension's 0600 unix socket; the reply
+# is printed as-is. POSIX sh plus curl (--unix-socket) and awk, nothing else.
+#
+#   JB_SOCK        the control socket (required)
+#   JB_BATCH_ID    the batch      -> sent as batchId
+#   JB_CLUSTER_ID  this cluster   -> sent as clusterId
+#
+# Modelled on the agent-tasks extension's `agent-task`, down to the JSON
+# quoting: a ticket summary routinely contains quotes and newlines, and awk is
+# the one tool every POSIX shell has that can escape them.
+
+usage() {
+  cat <<'USAGE'
+jira-batch - report on your cluster's tickets from inside its worktree
+
+Usage: jira-batch <verb> [KEY] [--flag value ...]
+
+  start <KEY>
+      Say you are starting that ticket. Do this before you touch any file
+      for it.
+  done <KEY> --summary <text>
+      Say it is finished, after committing it as [KEY] <what changed>. The
+      summary is what the reviewer reads first.
+  fail <KEY> --reason <text>
+      Say it cannot be done, and carry on with the next ticket.
+  qa <KEY> --status pass|fail|partial|blocked [--problem <text>]...
+           [--fix <text>]... [--steps <text>]... [--notes <text>]...
+           [--files <path>]... [--before <image>] [--after <image>]
+           [--report <path>]
+      File the QA report for a ticket, before `done`. Repeat --problem,
+      --fix, --steps, --notes and --files to build a list - one short
+      bullet per idea reads better than one long sentence. --before and
+      --after are screenshots; they are copied, so the panel keeps them
+      after the worktree is gone.
+  note <text>
+      Anything worth recording against this cluster. Does not change a
+      ticket's state.
+  brief
+      Print your cluster's brief again: its tickets, in order, and the rules.
+  status
+      This cluster and where each of its tickets stands.
+  help
+      This text.
+
+Any flag value can be "-" to read it from stdin, e.g.
+  git log -1 --format=%s | jira-batch done CAP-12 --summary -
+
+Environment: JB_SOCK (required), JB_BATCH_ID, JB_CLUSTER_ID.
+USAGE
+}
+
+die() {
+  printf 'jira-batch: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+# A JSON string literal for $1: backslash, quote and control characters
+# escaped, newlines kept as \n.
+json_string() {
+  printf '%s' "$1" | awk '
+    BEGIN { ORS = ""; print "\"" }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      gsub(/\r/, "\\r")
+      gsub(/[\001-\010\013\014\016-\037]/, "")
+      if (NR > 1) print "\\n"
+      print
+    }
+    END { print "\"" }'
+}
+
+# --kebab-case -> camelCase
+flag_key() {
+  printf '%s' "$1" | awk '{
+    n = split($0, parts, "-"); out = parts[1]
+    for (i = 2; i <= n; i++) out = out toupper(substr(parts[i], 1, 1)) substr(parts[i], 2)
+    print out
+  }'
+}
+
+verb=${1:-help}
+case "$verb" in
+  help | -h | --help) usage; exit 0 ;;
+esac
+shift
+
+case "$verb" in
+  start | done | fail | qa | note | brief | status) ;;
+  *) die "unknown verb \"$verb\" - run: jira-batch help" 2 ;;
+esac
+
+command -v curl >/dev/null 2>&1 || die "curl is required but was not found on PATH"
+
+if [ -z "${JB_SOCK-}" ]; then
+  die "not inside a Jira batch cluster (JB_SOCK is unset)"
+fi
+if [ ! -S "$JB_SOCK" ]; then
+  die "no socket at $JB_SOCK - is the Jira extension enabled on this perch?"
+fi
+
+body=""
+seen=" "
+add_field() {
+  # $1 key, $2 already-encoded JSON value
+  if [ -n "$body" ]; then body="$body,"; fi
+  body="$body$(json_string "$1"):$2"
+  seen="$seen$1 "
+}
+
+# A flag that may be given several times becomes a JSON array, in the order
+# it was given. Anything else keeps the last value, as before.
+list_problem=""; list_fix=""; list_steps=""; list_notes=""; list_files=""
+is_list_flag() {
+  case "$1" in problem | fix | steps | notes | files) return 0 ;; *) return 1 ;; esac
+}
+append_list() {
+  # $1 key, $2 encoded value
+  eval "current=\$list_$1"
+  if [ -n "$current" ]; then eval "list_$1=\"\$current,\$2\""; else eval "list_$1=\$2"; fi
+}
+flush_lists() {
+  for name in problem fix steps notes files; do
+    eval "collected=\$list_$name"
+    [ -n "$collected" ] && add_field "$name" "[$collected]"
+  done
+}
+
+# Relative to where the agent is standing, absolute by the time it is sent:
+# the server must never have to guess a working directory.
+absolute_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$(pwd)" "$1" ;;
+  esac
+}
+
+# The ticket key is a positional, because `jira-batch done CAP-12` is what an
+# agent types without being told twice. Uppercased here so a lowercased key
+# never reads as a ticket this cluster does not hold.
+case "$verb" in
+  start | done | fail | qa)
+    [ $# -gt 0 ] || die "$verb needs a ticket key, e.g. jira-batch $verb CAP-12" 2
+    case "$1" in
+      --*) die "$verb needs a ticket key before any flags, e.g. jira-batch $verb CAP-12" 2 ;;
+    esac
+    key=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+    shift
+    printf '%s' "$key" | grep -Eq '^[A-Z][A-Z0-9_]+-[0-9]+$' ||
+      die "\"$key\" is not a ticket key - they look like CAP-12" 2
+    add_field key "$(json_string "$key")"
+    ;;
+  note)
+    # `note` takes its text as a positional too: quoting a sentence after
+    # --body is one more thing to get wrong mid-task.
+    if [ $# -gt 0 ]; then
+      case "$1" in
+        --*) ;;
+        *)
+          value=$1
+          shift
+          [ "$value" = "-" ] && value=$(cat)
+          add_field text "$(json_string "$value")"
+          ;;
+      esac
+    fi
+    ;;
+esac
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --*) ;;
+    *) die "unexpected argument \"$1\" - flags look like --name value" 2 ;;
+  esac
+  name=${1#--}
+  shift
+  key=$(flag_key "$name")
+  [ $# -gt 0 ] || die "--$name needs a value" 2
+  value=$1
+  shift
+  if [ "$value" = "-" ]; then
+    value=$(cat)
+  fi
+  case "$key" in
+    before | after | report) value=$(absolute_path "$value") ;;
+  esac
+  if is_list_flag "$key"; then
+    append_list "$key" "$(json_string "$value")"
+  else
+    add_field "$key" "$(json_string "$value")"
+  fi
+done
+flush_lists
+
+for pair in "batchId:${JB_BATCH_ID-}" "clusterId:${JB_CLUSTER_ID-}"; do
+  field=${pair%%:*}
+  value=${pair#*:}
+  case "$seen" in
+    *" $field "*) continue ;;
+  esac
+  [ -n "$value" ] && add_field "$field" "$(json_string "$value")"
+done
+
+printf '{%s}' "$body" | curl -sS --fail-with-body --unix-socket "$JB_SOCK" \
+  -H 'content-type: application/json' --data-binary @- "http://jira-batch/$verb"
+status=$?
+exit $status

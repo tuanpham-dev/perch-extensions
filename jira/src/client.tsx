@@ -15,6 +15,34 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
+import { apiGet, apiPost, setApiFetcher } from "./api";
+import {
+  addCluster,
+  analyzeBatch,
+  applyProposal,
+  getBadge,
+  getBatch,
+  installBundledQaSkill,
+  listAiProfiles,
+  listBatches,
+  listSkills,
+  lookupIssues,
+  moveTicket,
+  removeCluster,
+  renameCluster,
+  setClusterBranch,
+  startClusters,
+  clusterAction,
+  rebuildReport,
+  saveFeedbackDraft as saveFeedback,
+  acceptTicket,
+  sendFeedback,
+  archiveBatch,
+  unarchiveBatch as unarchive,
+  deleteBatch,
+  subscribeBatchEvents,
+} from "./batchApi";
+import type { Batch, BatchSummary, ClusterAction, SkillsResponse } from "./batchTypes";
 import Icon from "./Icon";
 import {
   agentWindows,
@@ -29,6 +57,13 @@ import FilterBar from "./FilterBar";
 import Markdown, { setMarkdownAssetUrl } from "./Markdown";
 import SelectionBar from "./SelectionBar";
 import StartWorkForm from "./StartWorkForm";
+import BatchForm from "./BatchForm";
+import BatchReview, { QA_DEFAULT_NOTE } from "./BatchReview";
+import BatchBoard from "./BatchBoard";
+import BatchDetail from "./BatchDetail";
+import SkillPicker from "./SkillPicker";
+import Lightbox, { type Shot } from "./Lightbox";
+import { columns } from "./batchViewModel";
 import ProjectPicker from "./ProjectPicker";
 import { buildCombinedBrief } from "./brief";
 import { buildBranch, sessionNameFor } from "./naming";
@@ -77,6 +112,7 @@ import {
   type BoardConfig,
 } from "./boardModel";
 import type {
+  MenuItem,
   Facets,
   IssueDetail,
   IssueRow,
@@ -105,17 +141,8 @@ interface SettingsApi {
   onDidChange(cb: () => void): () => void;
 }
 
-interface MenuItem {
-  label: string;
-  danger?: boolean;
-  onClick: () => void;
-  // Leading check icon. The host has supported this all along (see core's
-  // MenuItem in client/src/types.ts); this structural copy just never
-  // declared it. Informational only - the app applies the Yolo/Manual choice.
-  checked?: boolean;
-  // Thin divider row - label/onClick are unused placeholders on one.
-  separator?: boolean;
-}
+// MenuItem lives in types.ts, so the batch views can type their own
+// showMenu prop without importing this module back.
 
 // The subset of the host's SidebarPanelHostProps these panes use.
 interface SidebarPanelHostProps {
@@ -126,6 +153,16 @@ let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | nul
 let getActiveContext: (() => ActiveContext) | null = null;
 let onDidChangeContext: ((cb: (ctx: ActiveContext) => void) => () => void) | null = null;
 let openSessionWindow: ((sessionName: string, opts?: { createCwd?: string }) => void) | null = null;
+let hostConfirm: ((message: string, confirmLabel?: string) => Promise<boolean>) | null = null;
+let setHostBadge: ((panelId: string, badge: number | null) => void) | null = null;
+let openFileTab: ((path: string, line?: number) => void) | null = null;
+
+// The app's own dialog where there is one; the browser's where there is not.
+// Never "just do it": every caller here is destructive.
+function confirmDialog(message: string, confirmLabel?: string): Promise<boolean> {
+  if (hostConfirm) return hostConfirm(message, confirmLabel);
+  return Promise.resolve(window.confirm(message));
+}
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 let disposeBridge: (() => void)[] = [];
@@ -134,35 +171,9 @@ let disposeBridge: (() => void)[] = [];
 // share them without importing this React tree.
 
 // ---- Fetch helpers ----
-
-async function readJson<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
-    try {
-      const body = await res.json();
-      if (body?.error) message = body.error;
-    } catch {
-      // non-JSON error body; keep the status message
-    }
-    throw new Error(message);
-  }
-  const text = await res.text();
-  return text ? (JSON.parse(text) as T) : (undefined as T);
-}
-
-function apiGet<T>(path: string): Promise<T> {
-  if (!serverFetch) return Promise.reject(new Error("extension not activated"));
-  return serverFetch(path).then((res) => readJson<T>(res));
-}
-
-function apiPost<T>(path: string, body: unknown): Promise<T> {
-  if (!serverFetch) return Promise.reject(new Error("extension not activated"));
-  return serverFetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }).then((res) => readJson<T>(res));
-}
+//
+// In api.ts, so the batch views can call the same hook without importing this
+// panel (which imports them).
 
 // ---- Helpers ----
 //
@@ -370,15 +381,68 @@ interface JiraState {
   boardConfig: BoardConfig;
   // The column editor, open from the board's toolbar.
   columnEditor: { anchor: PopoverAnchor } | null;
+  // ---- Batches ----
+  // The repo's batches, for the Plan batch menu and the picker. Summaries
+  // only; the open batch below is the full document.
+  batchSummaries: BatchSummary[];
+  batchArchived: BatchSummary[];
+  // The batch on screen, exactly as the server computed it. Replaced whole
+  // on every change, never patched.
+  batch: Batch | null;
+  // Its clusters as a plan you are still editing, or as agents at work.
+  batchView: BatchView;
+  // Which clusters the board is showing. Empty means all of them, so a new
+  // cluster is never hidden by a filter set before it existed.
+  clusterFilter: Set<string>;
+  batchForm: BatchFormState | null;
+  batchBusy: boolean;
+  batchError: string | null;
+  batchNote: string | null;
+  // Tickets that need you, across every batch - the sidebar tab's badge.
+  batchBadge: number;
+  // The open screenshot, if any. `shots` is every stored image in the batch
+  // in board order, so the arrows walk the whole batch rather than the two on
+  // one ticket - comparing across tickets is most of what reviewing is.
+  lightbox: { shots: Shot[]; index: number } | null;
+  // What the pickers offer for this repository, fetched with the batch list.
+  skills: SkillsResponse | null;
+  // The slots this run will use. They start from the stored settings and are
+  // overridden per cluster in the review bar, for that run only.
+  executionSkill: string;
+  qaSkill: string;
 }
 
-type TabView = "table" | "board";
+type TabView = "table" | "board" | "batches";
+type BatchView = "review" | "board";
+
+// The Plan batch popover: which tickets, how to split them, and whether the
+// AI may read the repository first.
+interface BatchFormState {
+  origin: Host;
+  anchor: PopoverAnchor;
+  // null for a new batch; an id to add these tickets to that one.
+  batchId: string | null;
+  issues: IssueRow[];
+  keysText: string;
+  lookupNote: string | null;
+  criteria: string;
+  readCodebase: boolean;
+  canReadCodebase: boolean;
+  aiHint: string | null;
+  busy: boolean;
+  error: string | null;
+  // The server refused a codebase read for a reason a plain retry fixes.
+  fallback: boolean;
+}
 
 const TAB_VIEW_KEY = "perch.jira.tabView";
 
 function readTabView(): TabView {
   try {
-    return localStorage.getItem(TAB_VIEW_KEY) === "board" ? "board" : "table";
+    const stored = localStorage.getItem(TAB_VIEW_KEY);
+    // Batches is deliberately not restored: it needs a batch loaded, and a
+    // tab that reopens on an empty third mode reads as broken.
+    return stored === "board" ? "board" : "table";
   } catch {
     return "table";
   }
@@ -416,6 +480,20 @@ let state: JiraState = {
   board: null,
   boardConfig: { columns: [] },
   columnEditor: null,
+  batchSummaries: [],
+  batchArchived: [],
+  batch: null,
+  batchView: "board",
+  clusterFilter: new Set<string>(),
+  batchForm: null,
+  batchBusy: false,
+  batchError: null,
+  batchNote: null,
+  batchBadge: 0,
+  lightbox: null,
+  skills: null,
+  executionSkill: "",
+  qaSkill: "",
 };
 
 const listeners = new Set<() => void>();
@@ -463,7 +541,7 @@ function issuesUrl(cwd: string, list: ListId, board = false): string {
 function refresh(): void {
   const cwd = state.cwd;
   if (!cwd) {
-    setState({ status: null, mine: [], project: null, error: null, loading: false, facets: null, projects: [] });
+    setState({ status: null, mine: [], project: null, error: null, loading: false, facets: null, projects: [], batchSummaries: [], batchArchived: [] });
     return;
   }
   const token = ++refreshToken;
@@ -483,6 +561,12 @@ function refresh(): void {
       loadFacets(token, q);
       loadProjects(token);
       loadIssues(cwd);
+      // Batches belong to the repository, not to Jira, but this is where the
+      // repository is settled - and the Plan batch menu needs them before it
+      // is ever opened.
+      loadBatches(cwd);
+      refreshBadge();
+      loadSkills(cwd);
       if (state.boardActive) loadBoard(cwd, state.tabList);
     })
     .catch((err: Error) => {
@@ -1091,6 +1175,659 @@ export function addSelectionToWorktree(showMenu: SidebarPanelHostProps["showMenu
   void addToWorktree(selectedIssues(), showMenu, x, y);
 }
 
+// ---- Batches ----
+//
+// Planning several clusters of tickets and watching the agents work them.
+// The server owns all of it - the store is on disk, the states are computed
+// there, and a mutating call answers with the whole batch - so everything
+// here is "ask, then replace what we hold". Nothing is derived twice.
+
+// Every row this pane is showing, which is what Select all takes. Filters
+// already narrowed the list server-side, and a collapsed project group is
+// still part of the list, so this is the whole of what the user filtered to
+// rather than only what is scrolled into view.
+// The editor tab shows one list at a time, so "the rows in front of you"
+// there means whichever it is showing.
+function rowsOf(host: Host): IssueRow[] {
+  const list: ListId = host === "tab" ? state.tabList : host;
+  if (list === "mine") return state.mine;
+  return state.project?.issues ?? [];
+}
+
+export function selectAll(host: Host): void {
+  const next = new Set(state.selection);
+  for (const issue of rowsOf(host)) next.add(issue.key);
+  setState({ selection: next });
+}
+
+export function setClusterFilter(next: Set<string>): void {
+  setState({ clusterFilter: next });
+}
+
+export function toggleClusterFilter(clusterId: string): void {
+  const next = new Set(state.clusterFilter);
+  if (next.has(clusterId)) next.delete(clusterId);
+  else next.add(clusterId);
+  setState({ clusterFilter: next });
+}
+
+function batchNote(text: string | null): void {
+  if (!text) return;
+  setState({ batchNote: state.batchNote ? `${state.batchNote} ${text}` : text });
+}
+
+export function clearBatchNote(): void {
+  setState({ batchNote: null, batchError: null });
+}
+
+// The batches for this repo, for the Plan batch menu and the board's picker.
+function loadBatches(cwd: string | null): void {
+  if (!cwd) {
+    setState({ batchSummaries: [], batchArchived: [] });
+    return;
+  }
+  void listBatches(cwd)
+    .then((res) => setState({ batchSummaries: res.batches, batchArchived: res.archived }))
+    .catch(() => setState({ batchSummaries: [], batchArchived: [] }));
+}
+
+function loadSkills(cwd: string | null): void {
+  if (!cwd) {
+    setState({ skills: null });
+    return;
+  }
+  void listSkills(cwd)
+    .then((skills) =>
+      setState({
+        skills,
+        // The stored settings are where a run starts; the review bar can
+        // override them for one cluster.
+        executionSkill: readSetting("jira.executionSkill"),
+        qaSkill: readSetting("jira.qaSkill"),
+      }),
+    )
+    .catch(() => setState({ skills: null }));
+}
+
+// Copy the bundled QA skill into the user's own directory.
+//
+// The confirmation only appears when there is already a skill of that name:
+// somebody who has edited theirs must not lose it to a command they ran to
+// see what it does.
+export async function installQaSkill(): Promise<void> {
+  try {
+    let result = await installBundledQaSkill(false);
+    if (!result.ok && result.existed) {
+      const ok = await confirmDialog(
+        `A skill called jira-batch-qa is already installed at ${result.dir}. Replace it with the extension's copy? Any edits you made to it are lost.`,
+        "Replace",
+      );
+      if (!ok) return;
+      result = await installBundledQaSkill(true);
+    }
+    batchNote(
+      result.existed
+        ? `Replaced the skill at ${result.dir}. It is now yours to edit - pick it in the QA slot.`
+        : `Installed the QA skill at ${result.dir}. It is now yours to edit - pick it in the QA slot.`,
+    );
+    loadSkills(state.cwd);
+  } catch (err) {
+    setState({ batchError: message(err) });
+  }
+}
+
+export function setSkillSlot(slot: "execution" | "qa", value: string): void {
+  setState(slot === "execution" ? { executionSkill: value } : { qaSkill: value });
+}
+
+export function refreshBadge(): void {
+  void getBadge()
+    .then((res) => {
+      setState({ batchBadge: res.badge });
+      // On the Project pane only: it is the one tied to a repository, and a
+      // second copy of the same number on the other pane would just be noise.
+      // null rather than 0 clears it instead of drawing an empty badge.
+      setHostBadge?.("project", res.badge > 0 ? res.badge : null);
+    })
+    .catch(() => {});
+}
+
+// Replaces the open batch wholesale. Every mutating call answers with one,
+// which is why there is no patching anywhere in this file.
+function holdBatch(batch: Batch, warnings?: string[]): void {
+  setState({ batch, batchBusy: false });
+  if (warnings && warnings.length > 0) batchNote(warnings.join(" "));
+  loadBatches(state.cwd);
+  refreshBadge();
+}
+
+export function openBatch(id: string, view: BatchView = "board"): void {
+  setState({ batchBusy: true, batchError: null });
+  void getBatch(id)
+    .then((res) => {
+      setState({ batch: res.batch, batchView: view, batchBusy: false, clusterFilter: new Set<string>() });
+      setTabView("batches");
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+// Called from the event stream: only refetch what is actually on screen.
+export function onBatchChanged(batchId: string): void {
+  // The badge counts every batch, not just the open one, so it is refreshed
+  // whichever changed.
+  refreshBadge();
+  if (state.batch?.id !== batchId) {
+    loadBatches(state.cwd);
+    return;
+  }
+  void getBatch(batchId)
+    .then((res) => holdBatch(res.batch))
+    .catch(() => {});
+}
+
+export function closeBatch(): void {
+  setState({ batch: null, batchView: "board", clusterFilter: new Set<string>() });
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// ---- The planning form ----
+
+const DEFAULT_CRITERIA =
+  "Group tickets that touch the same area of the codebase so clusters can be worked in parallel without editing the same files. Keep a cluster to 2-5 tickets. Order tickets within a cluster so earlier ones unblock later ones.";
+
+const CRITERIA_KEY = "jira.batchCriteria";
+
+function savedCriteria(): string {
+  const stored = extSettings?.get(CRITERIA_KEY);
+  return typeof stored === "string" && stored.trim() ? stored : DEFAULT_CRITERIA;
+}
+
+export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId: string | null): Promise<void> {
+  const issues = selectedIssues();
+  setState({
+    batchForm: {
+      origin,
+      anchor,
+      batchId,
+      issues,
+      keysText: "",
+      lookupNote: null,
+      criteria: savedCriteria(),
+      // Only a CLI agent can read files; the checkbox is settled once the
+      // profiles answer, and starts off rather than promising something the
+      // configured AI may not be able to do.
+      readCodebase: false,
+      canReadCodebase: false,
+      aiHint: null,
+      busy: false,
+      error: null,
+      fallback: false,
+    },
+  });
+
+  try {
+    const res = await listAiProfiles();
+    const profile = res.profiles.find((entry) => entry.isDefault) ?? res.profiles[0] ?? null;
+    if (!state.batchForm) return;
+    if (!profile) {
+      updateBatchForm({ canReadCodebase: false, aiHint: "No AI is configured - the tickets will be grouped by epic, component and label." });
+      return;
+    }
+    // A keyed API has no tools and no working directory; only an agent CLI
+    // can look at the repository.
+    const isCli = Boolean(profile.program);
+    updateBatchForm({
+      canReadCodebase: isCli,
+      readCodebase: isCli,
+      aiHint: isCli ? null : `${profile.label} is a keyed API and cannot read files.`,
+    });
+  } catch {
+    // The route is this extension's own; if it cannot answer, the form still
+    // works without the option.
+  }
+}
+
+// With no batch for this repo there is one thing Plan batch can mean, so it
+// opens the form. With batches already running there are two, and guessing
+// wrong would either strand tickets in a new batch or hand them to agents
+// nobody meant to disturb - so it asks.
+export function planBatchWithPicker(
+  anchor: PopoverAnchor,
+  showMenu: SidebarPanelHostProps["showMenu"],
+  x: number,
+  y: number,
+  origin: Host,
+): void {
+  const open = state.batchSummaries;
+  if (open.length === 0 || !showMenu) {
+    void openBatchForm(anchor, origin, null);
+    return;
+  }
+  showMenu(x, y, [
+    { label: "New batch...", onClick: () => void openBatchForm(anchor, origin, null) },
+    { label: "", onClick: () => {}, separator: true },
+    ...open.map((batch) => ({
+      label: `Add to "${batch.name}"`,
+      onClick: () => void openBatchForm(anchor, origin, batch.id),
+    })),
+  ]);
+}
+
+export function updateBatchForm(patch: Partial<BatchFormState>): void {
+  if (!state.batchForm) return;
+  setState({ batchForm: { ...state.batchForm, ...patch } });
+}
+
+export function closeBatchForm(): void {
+  setState({ batchForm: null });
+}
+
+export function removeFormIssue(key: string): void {
+  const form = state.batchForm;
+  if (!form) return;
+  updateBatchForm({ issues: form.issues.filter((issue) => issue.key !== key) });
+}
+
+// Resolving what was pasted. Run when the field loses focus and again on
+// Analyze, so a paste followed straight by Enter is never lost.
+export async function resolvePastedKeys(): Promise<IssueRow[]> {
+  const form = state.batchForm;
+  if (!form || !form.keysText.trim()) return form?.issues ?? [];
+  updateBatchForm({ busy: true });
+  try {
+    const res = await lookupIssues(form.keysText);
+    const current = state.batchForm;
+    if (!current) return [];
+    const have = new Set(current.issues.map((issue) => issue.key));
+    const added = res.found.filter((issue) => !have.has(issue.key));
+    const notes: string[] = [];
+    if (res.missing.length > 0) notes.push(`Not found: ${res.missing.join(", ")}.`);
+    if (res.invalid.length > 0) notes.push(`Not ticket keys: ${res.invalid.join(", ")}.`);
+    const issues = [...current.issues, ...added];
+    updateBatchForm({
+      issues,
+      keysText: "",
+      busy: false,
+      lookupNote: notes.length > 0 ? notes.join(" ") : null,
+    });
+    return issues;
+  } catch (err) {
+    updateBatchForm({ busy: false, error: message(err) });
+    return state.batchForm?.issues ?? [];
+  }
+}
+
+export async function submitBatchForm(options: { readCodebase?: boolean } = {}): Promise<void> {
+  const form = state.batchForm;
+  const cwd = state.cwd;
+  if (!form || !cwd) return;
+  const issues = await resolvePastedKeys();
+  if (issues.length === 0) {
+    updateBatchForm({ error: "Pick or paste at least one ticket." });
+    return;
+  }
+  const readCodebase = options.readCodebase ?? form.readCodebase;
+  updateBatchForm({ busy: true, error: null, fallback: false, readCodebase });
+  extSettings?.set(CRITERIA_KEY, form.criteria);
+  try {
+    const res = await analyzeBatch({
+      cwd,
+      keys: issues.map((issue) => issue.key),
+      criteria: form.criteria,
+      readCodebase,
+      batchId: form.batchId,
+    });
+    setState({
+      batchForm: null,
+      batch: res.batch,
+      // A brand-new batch opens in the review, where the clusters are still
+      // yours to change; adding to one opens there too, to confirm the
+      // placement before an agent is told about it.
+      batchView: "review",
+      batchBusy: false,
+      clusterFilter: new Set<string>(),
+    });
+    setTabView("batches");
+    if (res.heuristic) batchNote("No AI is configured, so these were grouped by epic, component and label.");
+    if (res.warnings.length > 0) batchNote(res.warnings.join(" "));
+    loadBatches(cwd);
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    // 422 is the server saying "this specific approach will not work here" -
+    // a codebase read on a core that stops at 60s, or a reply it could not
+    // use. The first has an obvious next step, so the form offers it.
+    updateBatchForm({ busy: false, error: message(err), fallback: status === 422 && readCodebase });
+  }
+}
+
+// ---- Review-time edits ----
+//
+// Each one posts and takes the batch back. They are small enough that
+// optimism would only buy a flicker, and a refusal (a cluster that started
+// while you dragged) has to win anyway.
+
+function batchEdit(run: () => Promise<{ batch: Batch; warnings?: string[] }>): void {
+  setState({ batchBusy: true, batchError: null });
+  void run()
+    .then((res) => holdBatch(res.batch, res.warnings))
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function renameBatchCluster(clusterId: string, name: string): void {
+  if (!state.batch) return;
+  batchEdit(() => renameCluster(state.batch!.id, clusterId, name));
+}
+
+export function setBatchClusterBranch(clusterId: string, branch: string): void {
+  if (!state.batch) return;
+  batchEdit(() => setClusterBranch(state.batch!.id, clusterId, branch));
+}
+
+export function addBatchCluster(): void {
+  if (!state.batch) return;
+  batchEdit(() => addCluster(state.batch!.id, ""));
+}
+
+export function removeBatchCluster(clusterId: string): void {
+  if (!state.batch) return;
+  batchEdit(() => removeCluster(state.batch!.id, clusterId));
+}
+
+export function moveBatchTicket(key: string, clusterId: string | null, index: number): void {
+  if (!state.batch) return;
+  batchEdit(() => moveTicket(state.batch!.id, key, clusterId, index));
+}
+
+export function reanalyze(criteria: string, readCodebase: boolean): void {
+  const batch = state.batch;
+  const cwd = state.cwd;
+  if (!batch || !cwd) return;
+  const keys = Object.keys(batch.tickets).filter((key) => !batch.ticketStates[key]);
+  if (keys.length === 0) {
+    setState({ batchError: "Every ticket in this batch is already with an agent." });
+    return;
+  }
+  setState({ batchBusy: true, batchError: null });
+  extSettings?.set(CRITERIA_KEY, criteria);
+  void analyzeBatch({ cwd, keys, criteria, readCodebase })
+    .then((res) => {
+      // Re-analyzing makes a NEW batch from the unstarted tickets rather than
+      // rewriting this one: the started clusters here have agents in them,
+      // and a second proposal must not be able to disturb that.
+      setState({ batch: res.batch, batchView: "review", batchBusy: false });
+      if (res.warnings.length > 0) batchNote(res.warnings.join(" "));
+      loadBatches(cwd);
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+// Opening the mode from the tab's own switch: the batch already on screen,
+// else the newest one for this repo, else an empty state that says how to
+// make one.
+export function openBatches(): void {
+  setTabView("batches");
+  if (state.batch) return;
+  const newest = state.batchSummaries[0];
+  if (newest) openBatch(newest.id);
+}
+
+// After a dropped stream: events that happened while it was down were never
+// delivered, so the open batch is refetched rather than trusted.
+export function refreshOpenBatch(): void {
+  if (state.batch) onBatchChanged(state.batch.id);
+  loadBatches(state.cwd);
+}
+
+// Clicking a card opens the ticket in the detail pane, fetching it the same
+// way the table does - the batch knows the summary, not the description.
+export function focusBatchTicket(key: string): void {
+  const batch = state.batch;
+  if (!batch) return;
+  const row = batch.tickets[key];
+  focusIssue({
+    key,
+    summary: row?.summary ?? "",
+    status: "",
+    statusCategory: null,
+    type: row?.type ?? "",
+    assignee: null,
+    priority: row?.priority ?? null,
+    projectKey: row?.projectKey ?? null,
+    projectName: null,
+    updated: null,
+    url: row?.url ?? "",
+  });
+}
+
+export function runClusterAction(clusterId: string, action: ClusterAction): void {
+  const batch = state.batch;
+  if (!batch) return;
+  const cluster = batch.clusters.find((entry) => entry.id === clusterId);
+  if (!cluster) return;
+
+  if (action === "start") {
+    startBatchClusters([clusterId], { [clusterId]: cluster.branch });
+    return;
+  }
+  if (action === "open") {
+    if (cluster.sessionName) openSessionWindow?.(cluster.sessionName, { createCwd: cluster.worktreePath });
+    return;
+  }
+
+  // Stopping kills a live agent's session and removing a worktree can throw
+  // work away, so both ask first - the server runs no confirmation of its own.
+  const ask = async (): Promise<boolean> => {
+    if (action === "stop") return confirmDialog(`Stop "${cluster.name}"? Its agent's session is closed, and whatever it was on goes back to the queue.`, "Stop");
+    if (action === "close") return confirmDialog(`Close "${cluster.name}"? Its session is closed; the worktree and the branch stay.`, "Close");
+    if (action === "remove-worktree") return confirmDialog(`Remove the worktree at ${cluster.worktreePath}? The branch is kept.`, "Remove");
+    return true;
+  };
+
+  setState({ batchBusy: true, batchError: null });
+  void ask()
+    .then((go) => {
+      if (!go) {
+        setState({ batchBusy: false });
+        return null;
+      }
+      return clusterAction(batch.id, clusterId, action);
+    })
+    .then(async (res) => {
+      if (!res) return;
+      // A worktree with uncommitted work is a question, not a failure.
+      if (action === "remove-worktree" && res.result?.dirty) {
+        const force = await confirmDialog(
+          `${cluster.worktreePath} has uncommitted or untracked files. Remove it anyway and lose them?`,
+          "Remove anyway",
+        );
+        if (force) {
+          const forced = await clusterAction(batch.id, clusterId, action, { force: true });
+          holdBatch(forced.batch);
+          return;
+        }
+        setState({ batchBusy: false });
+        batchNote(`"${cluster.name}" was left alone - its worktree has uncommitted files.`);
+        return;
+      }
+      holdBatch(res.batch);
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+// Every shot the open batch holds, in the order the board lists its columns,
+// so stepping through them follows what is on screen.
+function batchShots(batch: Batch): Shot[] {
+  const shots: Shot[] = [];
+  for (const column of columns(batch)) {
+    for (const card of column.cards) {
+      const qa = batch.ticketStates[card.key]?.qa;
+      if (!qa) continue;
+      for (const which of ["before", "after"] as const) {
+        if (!qa[which]) continue;
+        shots.push({
+          src: `/api/ext/perch.jira/qa/${encodeURIComponent(batch.id)}/${encodeURIComponent(card.key)}/${which}`,
+          key: card.key,
+          label: which,
+        });
+      }
+    }
+  }
+  return shots;
+}
+
+// The element that opened the viewer, so closing can hand focus back to it.
+// Remembered rather than looked up by class: two Jira tabs can be open, and
+// querying the document would find the hidden one's thumbnail.
+let shotOpener: HTMLElement | null = null;
+
+export function openShot(key: string, which: "before" | "after", opener?: HTMLElement | null): void {
+  const batch = state.batch;
+  if (!batch) return;
+  shotOpener = opener ?? null;
+  const shots = batchShots(batch);
+  const index = shots.findIndex((shot) => shot.key === key && shot.label === which);
+  if (index < 0) return;
+  setState({ lightbox: { shots, index } });
+}
+
+export function setShotIndex(index: number): void {
+  if (!state.lightbox) return;
+  setState({ lightbox: { ...state.lightbox, index } });
+}
+
+export function closeShot(): void {
+  setState({ lightbox: null });
+  // After React has taken the viewer away, so the focus is not stolen back.
+  const opener = shotOpener;
+  shotOpener = null;
+  if (opener?.isConnected) requestAnimationFrame(() => opener.focus());
+}
+
+// Rebuilt from whatever has been reported so far - useful mid-run, and the
+// way to pick up a report after a ticket was re-QA'd.
+export function rebuildClusterReport(clusterId: string): void {
+  const batch = state.batch;
+  if (!batch) return;
+  setState({ batchBusy: true, batchError: null });
+  void rebuildReport(batch.id, clusterId)
+    .then((res) => {
+      holdBatch(res.batch);
+      batchNote(res.result.reportPath ? `Report written to ${res.result.reportPath}` : `Spec written to ${res.result.specPath}`);
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function saveFeedbackDraft(key: string, text: string): void {
+  if (!state.batch) return;
+  batchEdit(() => saveFeedback(state.batch!.id, key, text));
+}
+
+export function acceptBatchTicket(key: string): void {
+  if (!state.batch) return;
+  batchEdit(() => acceptTicket(state.batch!.id, key));
+}
+
+export function sendBatchFeedback(): void {
+  const batch = state.batch;
+  if (!batch) return;
+  setState({ batchBusy: true, batchError: null });
+  void sendFeedback(batch.id)
+    .then((res) => {
+      holdBatch(res.batch);
+      for (const sent of res.sent) {
+        batchNote(`Sent ${sent.keys.join(", ")} back to "${sent.clusterName}".`);
+      }
+      // A cluster with no agent keeps its drafts rather than losing them to a
+      // send that went nowhere, and the note says which and why.
+      for (const skipped of res.skipped) {
+        batchNote(`"${skipped.clusterName}" did not get ${skipped.keys.join(", ")}: ${skipped.reason}. The feedback is still saved.`);
+      }
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function archiveOpenBatch(): void {
+  const batch = state.batch;
+  if (!batch) return;
+  if (!batch.canArchive) {
+    setState({ batchError: "Close every cluster before archiving this batch." });
+    return;
+  }
+  void archiveBatch(batch.id)
+    .then(() => {
+      setState({ batch: null });
+      loadBatches(state.cwd);
+    })
+    .catch((err) => setState({ batchError: message(err) }));
+}
+
+export function unarchiveBatch(id: string): void {
+  void unarchive(id)
+    .then((res) => {
+      setState({ batch: res.batch, batchView: "board" });
+      loadBatches(state.cwd);
+    })
+    .catch((err) => setState({ batchError: message(err) }));
+}
+
+export function deleteOpenBatch(): void {
+  const batch = state.batch;
+  if (!batch) return;
+  void confirmDialog(`Delete the batch "${batch.name}"? Its worktrees and branches are left alone.`, "Delete")
+    .then((go) => (go ? deleteBatch(batch.id) : null))
+    .then((res) => {
+      if (!res) return;
+      setState({ batch: null });
+      loadBatches(state.cwd);
+    })
+    .catch((err) => setState({ batchError: message(err) }));
+}
+
+export function startBatchClusters(clusterIds: string[], branches: Record<string, string>): void {
+  const batch = state.batch;
+  if (!batch) return;
+  const agentId = batch.agentId || "";
+  if (!agentId) {
+    setState({ batchError: "Pick an agent first." });
+    return;
+  }
+  setState({ batchBusy: true, batchError: null });
+  void startClusters(batch.id, clusterIds, agentId, branches, { execution: state.executionSkill, qa: state.qaSkill })
+    .then((res) => {
+      // Starting several is not all-or-nothing: a branch name that is taken
+      // stops that one cluster, and the rest are already working.
+      setState({ batch: res.batch, batchBusy: false, batchView: res.started.length > 0 ? "board" : "review" });
+      for (const failure of res.failed) {
+        const cluster = res.batch.clusters.find((entry) => entry.id === failure.clusterId);
+        batchNote(`"${cluster?.name ?? "A cluster"}" did not start: ${failure.error}`);
+      }
+      for (const started of res.started) {
+        if (started.note) batchNote(started.note);
+      }
+      loadBatches(state.cwd);
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function applyPendingProposal(): void {
+  const batch = state.batch;
+  if (!batch) return;
+  setState({ batchBusy: true, batchError: null });
+  void applyProposal(batch.id)
+    .then((res) => {
+      setState({ batch: res.batch, batchView: "board", batchBusy: false });
+      if (res.warnings && res.warnings.length > 0) batchNote(res.warnings.join(" "));
+      for (const handover of res.handovers) {
+        const cluster = res.batch.clusters.find((entry) => entry.id === handover.clusterId);
+        batchNote(`Sent ${handover.keys.join(", ")} to "${cluster?.name ?? "a cluster"}".`);
+      }
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
 // ---- Project mapping ----
 
 export function openProjectPicker(anchor: PopoverAnchor, origin: Host): void {
@@ -1679,10 +2416,40 @@ function SelectionBarFor({ showMenu, origin }: SidebarPanelHostProps & { origin:
   return (
     <SelectionBar
       count={s.selection.size}
+      total={(origin === "mine" ? s.mine : (s.project?.issues ?? [])).length}
       busy={s.busyKey !== null}
       onStart={(anchor) => void openStartForm(anchor, origin)}
       onAdd={(x, y) => addSelectionToWorktree(showMenu, x, y)}
+      onSelectAll={() => selectAll(origin)}
+      onPlanBatch={(anchor, x, y) => planBatchWithPicker(anchor, showMenu, x, y, origin)}
       onClear={clearSelection}
+    />
+  );
+}
+
+function BatchFormFor({ form }: { form: BatchFormState }) {
+  const s = useJira();
+  const addingTo = form.batchId ? (s.batchSummaries.find((batch) => batch.id === form.batchId)?.name ?? "this batch") : null;
+  return (
+    <BatchForm
+      anchor={form.anchor}
+      addingTo={addingTo}
+      issues={form.issues}
+      keysText={form.keysText}
+      lookupNote={form.lookupNote}
+      criteria={form.criteria}
+      readCodebase={form.readCodebase}
+      canReadCodebase={form.canReadCodebase}
+      aiHint={form.aiHint}
+      busy={form.busy}
+      error={form.error}
+      fallback={form.fallback}
+      onChange={(patch) => updateBatchForm(patch)}
+      onResolveKeys={() => void resolvePastedKeys()}
+      onRemoveIssue={removeFormIssue}
+      onSubmit={() => void submitBatchForm()}
+      onSubmitWithoutCodebase={() => void submitBatchForm({ readCodebase: false })}
+      onCancel={closeBatchForm}
     />
   );
 }
@@ -1730,6 +2497,7 @@ function Floating({ host }: { host: Host }) {
   return (
     <>
       {s.startForm?.origin === host && <StartWorkFormFor form={s.startForm} />}
+      {s.batchForm?.origin === host && <BatchFormFor form={s.batchForm} />}
       {s.projectPicker?.origin === host && <ProjectPickerFor picker={s.projectPicker} />}
     </>
   );
@@ -1911,6 +2679,134 @@ function categoryLookup(s: JiraState, issues: readonly IssueRow[]): (status: str
 
 // The board for the tab's list: columns from the global configuration, with a
 // column for each leftover status, and swimlanes when grouping by project.
+// The Batches mode. One batch at a time: its clusters as a plan you are
+// still editing, or - once agents are on them - as a board. Which one is
+// decided by the batch, not by a toggle: a proposal waiting to be applied,
+// or nothing started yet, is a plan; anything else is work in progress.
+function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] }) {
+  const s = useJira();
+  const agents = useAgentPresets();
+  const [layout, chooseLayout] = useLayoutChoice();
+  const split = useSplitResize(layout);
+
+  useEffect(() => {
+    refreshBadge();
+  }, []);
+
+
+  if (!s.batch) {
+    return (
+      <div className="jira-empty">
+        {s.batchBusy
+          ? "Loading..."
+          : s.batchSummaries.length > 0
+            ? "Pick a batch from the list, or plan a new one from a ticket selection."
+            : "No batches yet. Tick some tickets in the Table view and choose Plan batch."}
+        {s.batchError && <div className="jira-error">{s.batchError}</div>}
+      </div>
+    );
+  }
+
+  const batch = s.batch;
+  const addOnly = Boolean(batch.pendingProposal);
+  const review = s.batchView === "review" || addOnly;
+
+  return (
+    <div className="jira-batcharea">
+      {s.batchNote && (
+        <div className="jira-note">
+          {s.batchNote}
+          <button className="jira-linkish" onClick={clearBatchNote}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {s.batchError && <div className="jira-error">{s.batchError}</div>}
+      {review ? (
+        <BatchReview
+          batch={batch}
+          busy={s.batchBusy}
+          addOnly={addOnly}
+          agents={agents.map((preset) => ({ id: preset.id, label: preset.name }))}
+          agentId={batch.agentId || agents[0]?.id || ""}
+          skills={s.skills}
+          executionSkill={s.executionSkill}
+          qaSkill={s.qaSkill}
+          onSkill={setSkillSlot}
+          branchTemplate={readSetting("jira.clusterBranchTemplate") || "{cluster}"}
+          worktreeLocation={worktreeLocationFor}
+          showMenu={showMenu}
+          onRename={renameBatchCluster}
+          onBranch={setBatchClusterBranch}
+          onAddCluster={addBatchCluster}
+          onRemoveCluster={removeBatchCluster}
+          onMove={moveBatchTicket}
+          onAgent={(agentId) => setState({ batch: { ...batch, agentId } })}
+          onReanalyze={reanalyze}
+          onStart={(clusterIds, branches) => startBatchClusters(clusterIds, branches)}
+          onApply={applyPendingProposal}
+        />
+      ) : (
+        <div className={`jira-split${layout ? ` layout-${layout}` : ""}`} ref={split.splitRef}>
+          <div className="jira-split-list">
+            <BatchBoard
+              batch={batch}
+              batches={s.batchSummaries}
+              archived={s.batchArchived}
+              busy={s.batchBusy}
+              focusedKey={s.focused?.key ?? null}
+              clusterFilter={s.clusterFilter}
+              showMenu={showMenu}
+              onPickBatch={(id) => openBatch(id)}
+              onToggleCluster={toggleClusterFilter}
+              onClearFilter={() => setClusterFilter(new Set<string>())}
+              onFocus={(key) => focusBatchTicket(key)}
+              onClusterAction={runClusterAction}
+              onSendFeedback={sendBatchFeedback}
+              onArchive={archiveOpenBatch}
+              onUnarchive={unarchiveBatch}
+              onDelete={deleteOpenBatch}
+              onPlanMore={() => void openBatchForm({ top: 96, bottom: 96, left: 300, right: 300 }, "tab", batch.id)}
+              onOpenReport={(reportPath) => openFileTab?.(reportPath)}
+              onRebuildReport={rebuildClusterReport}
+            />
+          </div>
+          {/* Only with a ticket open. It used to render beside the board
+              whatever was selected, so half the width of the main screen was
+              a sentence telling you to click a card, while the board it was
+              crowding had its columns cut off at the split. */}
+          {s.focused && (
+            <>
+              <div className={`jira-splitter ${split.direction}`} {...split.handleProps} />
+              <aside className="jira-split-detail" aria-label="Ticket details" style={split.detailStyle}>
+                <>
+                  <div className="jira-pop-head">
+                    <span className="jira-key">{s.focused.key}</span>
+                    <button className="icon-button" title="Close" onClick={clearFocus}>
+                      <Icon name="close" />
+                    </button>
+                  </div>
+                  <BatchDetail
+                    batch={batch}
+                    issueKey={s.focused.key}
+                    busy={s.batchBusy}
+                    onFeedback={saveFeedbackDraft}
+                    onAccept={acceptBatchTicket}
+                    onOpenTerminal={(clusterId) => runClusterAction(clusterId, "open")}
+                    onOpenShot={(key, which, opener) => openShot(key, which, opener)}
+                    onOpenReport={(reportPath) => openFileTab?.(reportPath)}
+                  />
+                  <DetailBody detail={s.focused.detail} error={s.focused.error} />
+                </>
+              </aside>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BoardArea({ list }: { list: ListId }) {
   const s = useJira();
   if (!s.board) return <div className="jira-empty">Loading the board…</div>;
@@ -1971,6 +2867,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
   }, [title, setTitle]);
 
   const onBoard = s.tabView === "board";
+  const onBatches = s.tabView === "batches";
   const boardIssues = s.board?.issues ?? null;
   // The open ticket may be one only the board holds (past the table's cap,
   // or already Done), so both lists are searched.
@@ -1999,8 +2896,13 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
     actions = (
       <>
         <span className="jira-head-target">{s.selection.size} selected</span>
+        {s.selection.size < issues.length && (
+          <button className="jira-linkish" onClick={() => selectAll("tab")} title={`Select the ${issues.length} tickets in this list`}>
+            Select all
+          </button>
+        )}
         <button className="jira-linkish" onClick={clearSelection}>
-          Clear
+          Deselect all
         </button>
         <button
           className="jira-selaction"
@@ -2009,6 +2911,14 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
           onClick={(e) => addSelectionToWorktree(showMenu, e.clientX, e.clientY)}
         >
           Add to worktree
+        </button>
+        <button
+          className="jira-selaction"
+          disabled={busy}
+          title="Split these tickets into clusters and work them in parallel"
+          onClick={(e) => planBatchWithPicker(anchorOf(e.currentTarget), showMenu, e.clientX, e.clientY, "tab")}
+        >
+          Plan batch...
         </button>
         <button
           className="jira-selaction primary"
@@ -2046,6 +2956,17 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
 
   return (
     <div className={`jira-tab${split.dragging ? " resizing" : ""}`}>
+      {/* At the TAB's root, not the batch area's: the viewer has to cover this
+          tab's own toolbars as well as its content, or a click meant for the
+          image's edge lands on "Table" and swaps the view out from under it. */}
+      {s.lightbox && (
+        <Lightbox
+          shots={s.lightbox.shots}
+          index={s.lightbox.index}
+          onIndex={setShotIndex}
+          onClose={closeShot}
+        />
+      )}
       <div className="jira-tab-head">
         <div className="jira-scope" role="tablist" aria-label="Which issues">
           <button
@@ -2081,6 +3002,15 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
             onClick={() => setTabView("board")}
           >
             <Icon name="project" /> Board
+          </button>
+          <button
+            aria-pressed={onBatches}
+            className={`jira-scope-button${onBatches ? " active" : ""}`}
+            title={s.batch ? `Batch: ${s.batch.name}` : "Tickets split into clusters, one agent each"}
+            onClick={() => openBatches()}
+          >
+            <Icon name="layers" /> Batches
+            {s.batchBadge > 0 && <span className="jira-scope-count">{s.batchBadge}</span>}
           </button>
         </div>
         {!gate && list === "project" && <ProjectCaption host="tab" />}
@@ -2128,6 +3058,8 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
 
       {gate ? (
         <Gate message={gate} />
+      ) : onBatches ? (
+        <BatchArea showMenu={showMenu} />
       ) : list === "project" && !hasProject(s) ? (
         <div className="jira-empty">
           No project key for this repository. Choose one above, or add a .jira-project file.
@@ -2208,15 +3140,57 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
 // The Jira mark in the status bar; a click opens the editor tab. The count of
 // tickets assigned to you rides in the tooltip rather than on the bar, which
 // keeps the item one glyph wide on a phone's compact bar.
+// The two slots in Settings. They read the same list the review bar does and
+// write the stored default, which every new cluster starts from.
+function SkillSetting({ slot }: { slot: "execution" | "qa" }) {
+  const s = useJira();
+  const [, rerender] = useState(0);
+  useEffect(() => extSettings?.onDidChange(() => rerender((n) => n + 1)), []);
+  const key = slot === "execution" ? "jira.executionSkill" : "jira.qaSkill";
+  if (!s.skills) return <div className="jira-skillpicker-note">Open a repository to list the skills it can see.</div>;
+  return (
+    <SkillPicker
+      value={readSetting(key)}
+      skills={s.skills.skills}
+      defaultLabel={slot === "execution" ? s.skills.defaults.execution : s.skills.defaults.qa}
+      defaultDescription={slot === "qa" ? QA_DEFAULT_NOTE : undefined}
+      onChange={(value) => {
+        extSettings?.set(key, value);
+        setSkillSlot(slot, value);
+      }}
+    />
+  );
+}
+
+function ExecutionSkillSetting() {
+  return <SkillSetting slot="execution" />;
+}
+
+function QaSkillSetting() {
+  return <SkillSetting slot="qa" />;
+}
+
 function JiraStatusItem() {
   const s = useJira();
   const [, rerender] = useState(0);
   useEffect(() => extSettings?.onDidChange(() => rerender((n) => n + 1)), []);
   if (extSettings?.get("jira.showStatusBarIcon") === false) return null;
   const assigned = s.status?.authed ? ` - ${s.mine.length} assigned to you` : "";
+  // The batch count is what is back with YOU: an agent blocked on a prompt,
+  // or work waiting to be reviewed. Worth the tooltip's second line, since a
+  // batch runs whether or not this tab is open.
+  const waiting =
+    s.batchBadge > 0
+      ? `\n${s.batchBadge} batch ${s.batchBadge === 1 ? "ticket needs you or is" : "tickets need you or are"} in review`
+      : "";
   return (
-    <button className="status-bar-item jira-statusbar" title={`Open Jira${assigned}`} onClick={() => openJiraTab()}>
+    <button
+      className={`status-bar-item jira-statusbar${s.batchBadge > 0 ? " attention" : ""}`}
+      title={`Open Jira${assigned}${waiting}`}
+      onClick={() => openJiraTab()}
+    >
       <span className="codicon codicon-project jira-statusbar-icon" aria-hidden="true" />
+      {s.batchBadge > 0 && <span className="jira-statusbar-count">{s.batchBadge}</span>}
     </button>
   );
 }
@@ -2324,14 +3298,28 @@ interface ExtensionContext {
     onDidChangeContext(cb: (ctx: ActiveContext) => void): () => void;
     openSessionWindow(sessionName: string, opts?: { createCwd?: string }): void;
     openViewerTab(viewerId: string, path: string, opts?: { title?: string }): void;
+    // Opens the cluster's rendered QA report - an ordinary file, opened the
+    // way the FILES tree opens one.
+    openFileTab?(path: string, line?: number): void;
+    // Optional: an older core has no badges. Without it the count still shows
+    // on the Batches button in the tab, which is where it matters most.
+    setSidebarBadge?(panelId: string, badge: number | null): void;
+    // Optional: an older core has no dialogs. Stopping a cluster and removing
+    // a worktree both confirm first, and without this they fall back to
+    // window.confirm rather than doing it unasked.
+    confirmDialog?(message: string, confirmLabel?: string): Promise<boolean>;
   };
 }
 
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
+  setApiFetcher(ctx.serverFetch);
   getActiveContext = ctx.app.getActiveContext;
   onDidChangeContext = ctx.app.onDidChangeContext;
   openSessionWindow = ctx.app.openSessionWindow;
+  hostConfirm = ctx.app.confirmDialog ? ctx.app.confirmDialog.bind(ctx.app) : null;
+  setHostBadge = ctx.app.setSidebarBadge ? ctx.app.setSidebarBadge.bind(ctx.app) : null;
+  openFileTab = ctx.app.openFileTab ? ctx.app.openFileTab.bind(ctx.app) : null;
   openViewerTab = ctx.app.openViewerTab.bind(ctx.app);
   extSettings = ctx.settings;
   refreshPrint = fingerprint(REFRESH_KEYS);
@@ -2446,6 +3434,10 @@ export function activate(ctx: ExtensionContext): void {
   // edits. Registered token first, so on a core without `after` - where both
   // land at the bottom - the credential still comes before the table.
   ctx.registerSettingsComponent({ id: "jira-token", component: SettingsPanel, after: "jira.email" });
+  // The same picker as the review bar, writing the stored default instead of
+  // a per-run override.
+  ctx.registerSettingsComponent({ id: "jira-execution-skill", component: ExecutionSkillSetting, after: "jira.executionSkill" });
+  ctx.registerSettingsComponent({ id: "jira-qa-skill", component: QaSkillSetting, after: "jira.qaSkill" });
   ctx.registerSettingsComponent({ id: "jira-project-map", component: ProjectMapSettings, after: "jira.projectMap" });
 
   // extensions: [] - the tab is never matched to a file; it is reached only
@@ -2453,10 +3445,51 @@ export function activate(ctx: ExtensionContext): void {
   // below. editorFallback: false, since there is no file to fall back to.
   ctx.registerFileViewer({ id: TAB_VIEWER, extensions: [], editorFallback: false, component: JiraTab });
 
+  // One stream for the page, opened at activation rather than by the board:
+  // the badge has to move while you are looking at something else - that is
+  // the whole point of it - and a batch runs whether or not its view is open.
+  // The board still only refetches the batch actually on screen.
+  disposeBridge.push(subscribeBatchEvents(onBatchChanged, refreshOpenBatch));
+
   ctx.registerCommand({
     id: "open",
     label: "Jira: Open in Editor Tab",
     run: () => openJiraTab(),
+  });
+
+  // Reachable with nothing ticked, which is the point: a batch can be built
+  // entirely from pasted keys, and the selection bar only exists once
+  // something is selected.
+  ctx.registerCommand({
+    id: "plan-batch",
+    label: "Jira: Plan Batch",
+    run: () => {
+      openJiraTab();
+      // No button was pressed, so the popover is anchored to a thin strip
+      // near the top of the window instead of to an element.
+      const x = Math.round(window.innerWidth / 2);
+      void openBatchForm({ top: 96, bottom: 96, left: x, right: x }, "tab", null);
+    },
+  });
+
+  // Adopting the QA procedure rather than patching it. A copy in the user's
+  // own skills directory is theirs: the picker lists it, editing it takes
+  // effect on the next cluster, and an extension update cannot undo it.
+  ctx.registerCommand({
+    id: "install-qa-skill",
+    label: "Jira: Install the batch QA skill",
+    run: () => {
+      void installQaSkill();
+    },
+  });
+
+  ctx.registerCommand({
+    id: "open-batches",
+    label: "Jira: Open Batches",
+    run: () => {
+      openJiraTab();
+      openBatches();
+    },
   });
 
   // One click to the editor tab from anywhere. The host shows or hides it by

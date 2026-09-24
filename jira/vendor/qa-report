@@ -1,0 +1,552 @@
+#!/usr/bin/env node
+/*
+ * VENDORED COPY - not the authoritative one.
+ *
+ * This is execute-jira-ticket's `scripts/qa-report`, copied into the Jira
+ * extension so a batch still produces a report on a machine where that skill
+ * is not installed. When it IS installed, the extension runs the user's own
+ * copy instead and this file is never touched - so improvements made there
+ * reach batch runs without anyone syncing anything.
+ *
+ * Do not fix bugs here first. Fix them in the skill and re-copy, or the two
+ * drift and the fallback quietly becomes the odd one out.
+ */
+
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+const die = (m, code = 1) => { console.error(`qa-report: ${m}`); process.exit(code); };
+const sh = (cmd) => { try { return execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return ''; } };
+
+// ---------------------------------------------------------------- arguments
+const argv = process.argv.slice(2);
+if (!argv.length || argv[0] === '-h' || argv[0] === '--help') {
+  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 40)
+    .map(l => l.replace(/^ \* ?/, '').replace(/^ \*\/$/, '')).join('\n'));
+  process.exit(2);
+}
+const specArg = argv[0];
+const useAssets = argv.includes('--assets');
+const outIdx = argv.indexOf('--out');
+const outNameOverride = outIdx > -1 ? argv[outIdx + 1] : null;
+
+// ---------------------------------------------------------------- load spec
+let raw;
+try {
+  raw = specArg === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(specArg, 'utf8');
+} catch (e) { die(`cannot read spec: ${e.message}`, 2); }
+
+let spec;
+try { spec = JSON.parse(raw); } catch (e) { die(`spec is not valid JSON: ${e.message}`, 2); }
+if (!Array.isArray(spec.tickets) || !spec.tickets.length) die('spec.tickets must be a non-empty array', 2);
+
+// ------------------------------------------------------------ resolve paths
+if (!sh('git rev-parse --git-dir')) die('not inside a git repository');
+// Reports collect in the PRIMARY worktree so every branch's QA lands in one
+// place, regardless of which worktree ran it.
+const primary = sh('git worktree list --porcelain').split('\n')
+  .find(l => l.startsWith('worktree '))?.slice(9) || sh('git rev-parse --show-toplevel');
+const outDir = process.env.QA_REPORT_DIR || path.join(primary, '.backups');
+fs.mkdirSync(outDir, { recursive: true });
+
+const ids = spec.tickets.map(t => t.id).filter(Boolean);
+const slug = spec.slug || (ids.length === 1
+  ? `${ids[0].toLowerCase()}-qa`
+  : `${(ids[0] || 'qa').split('-')[0].toLowerCase()}-qa-${ids.length}-tickets`);
+const stamp = new Date().toISOString().slice(0, 10);
+const outName = outNameOverride || `${slug}-${stamp}.html`;
+const outPath = path.join(outDir, outName);
+const assetDir = path.join(outDir, outName.replace(/\.html$/, '') + '-images');
+
+// --------------------------------------------------------------- environment
+const env = Object.assign({
+  branch: sh('git rev-parse --abbrev-ref HEAD') || '?',
+  commit: sh('git rev-parse --short HEAD') || '?',
+  worktree: sh('git rev-parse --show-toplevel') || '?',
+  date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+}, spec.environment || {});
+
+// ------------------------------------------------------------------- images
+const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif' };
+
+const missing = [];
+let inlinedBytes = 0;
+if (useAssets) fs.mkdirSync(assetDir, { recursive: true });
+
+const resolveImage = (p, ticketId, i) => {
+  const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+  if (!fs.existsSync(abs)) { missing.push(`${ticketId}: ${p}`); return null; }
+  const ext = path.extname(abs).toLowerCase();
+  const mime = MIME[ext];
+  if (!mime) { missing.push(`${ticketId}: unsupported image type ${ext} (${p})`); return null; }
+  const buf = fs.readFileSync(abs);
+  if (useAssets) {
+    const name = `${ticketId.toLowerCase()}-${i + 1}${ext}`;
+    fs.writeFileSync(path.join(assetDir, name), buf);
+    return `${path.basename(assetDir)}/${name}`;
+  }
+  inlinedBytes += buf.length;
+  return `data:${mime};base64,${buf.toString('base64')}`;
+};
+
+// Resolve everything up front so a missing file fails before any output.
+for (const t of spec.tickets) {
+  t._evidence = (t.evidence || []).map((e, i) => ({
+    ...e, src: resolveImage(e.image, t.id || 'ticket', i),
+  })).filter(e => e.src);
+}
+if (missing.length) {
+  die(`referenced screenshots not found — nothing written:\n  ${missing.join('\n  ')}`, 2);
+}
+
+// --------------------------------------------------------------------- HTML
+const esc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const STATUS = {
+  pass:    { label: 'PASS',    cls: 'pass' },
+  fail:    { label: 'FAIL',    cls: 'fail' },
+  partial: { label: 'PARTIAL', cls: 'partial' },
+  blocked: { label: 'BLOCKED', cls: 'blocked' },
+};
+const statusOf = t => STATUS[(t.status || '').toLowerCase()] || { label: 'UNVERIFIED', cls: 'unknown' };
+
+const counts = spec.tickets.reduce((a, t) => {
+  const k = statusOf(t).cls; a[k] = (a[k] || 0) + 1; return a;
+}, {});
+
+// Filter chips only earn their place once there's something to filter —
+// one shared tag (or none at all) renders no differently than before.
+const tags = [...new Set(spec.tickets.map(t => t.tag).filter(Boolean))];
+const showFilters = tags.length > 1;
+
+// problem/fix accept a string or a list — a fix is often more than one change.
+const asList = v => Array.isArray(v) ? v.filter(Boolean) : (v ? [v] : []);
+
+// A URL in a step or a note is only useful if the reader can open it. Linkify
+// AFTER escaping, so the text is still escaped exactly as before and the href
+// carries the already-escaped form (&amp; is what a browser wants anyway).
+// Trailing sentence punctuation is left outside the link.
+const linkify = escaped => escaped.replace(
+  /https?:\/\/[^\s<>"']+/g,
+  m => {
+    const trail = m.match(/(?:&amp;|[.,;:!?)\]])+$/);
+    const href = trail ? m.slice(0, -trail[0].length) : m;
+    if (!href) return m;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>${trail ? trail[0] : ''}`;
+  },
+);
+const rich = v => linkify(esc(v));
+
+const prose = items => items.length === 1
+  ? `<p>${rich(items[0])}</p>`
+  : `<ul>${items.map(x => `<li>${rich(x)}</li>`).join('')}</ul>`;
+
+// notes take a string or a list too — bullets whenever there is more than one.
+const noteHtml = t => {
+  const n = asList(t.notes);
+  if (!n.length) return '';
+  return `<div class="note"><h4>Note${n.length > 1 ? 's' : ''}</h4>${prose(n)}</div>`;
+};
+
+const problemFixHtml = t => {
+  const p = asList(t.problem), f = asList(t.fix);
+  if (!p.length && !f.length) return '';
+  const box = (cls, label, items) =>
+    `<div class="pf-box ${cls}"><h4>${label}</h4>${prose(items)}</div>`;
+  return `<div class="pf${p.length && f.length ? '' : ' pf-one'}">
+      ${p.length ? box('problem', 'Problem', p) : ''}
+      ${f.length ? box('fix', 'Fix', f) : ''}
+    </div>`;
+};
+
+const ticketHtml = t => {
+  const s = statusOf(t);
+  const steps = (t.steps || []).map(x => `<li>${rich(x)}</li>`).join('\n');
+  const files = (t.files || []).map(f => `<code>${esc(f)}</code>`).join(' ');
+  const shots = t._evidence.map(e => `
+      <figure class="shot">
+        <img src="${e.src}" alt="${esc(e.caption || t.id)}" loading="lazy"
+             data-caption="${esc([t.id, e.label, e.caption].filter(Boolean).join(' · '))}">
+        <figcaption>${e.label ? `<span class="tag">${esc(e.label)}</span>` : ''}${esc(e.caption || '')}</figcaption>
+      </figure>`).join('\n');
+
+  return `
+  <section class="ticket" id="${esc(t.id)}" data-tag="${esc(t.tag || '')}">
+    <header class="t-head">
+      <span class="pill ${s.cls}">${s.label}</span>
+      ${t.tag ? `<span class="tag-chip">${esc(t.tag)}</span>` : ''}
+      <h2>${t.url ? `<a href="${esc(t.url)}">${esc(t.id)}</a>` : esc(t.id)} — ${esc(t.title || '')}</h2>
+    </header>
+    ${t.summary ? `<p class="summary">${esc(t.summary)}</p>` : ''}
+    ${problemFixHtml(t)}
+    ${steps ? `<div class="block"><h3>How to QA</h3><ol class="steps">${steps}</ol></div>` : ''}
+    ${shots ? `<div class="block"><h3>Evidence</h3><div class="shots">${shots}</div></div>` : ''}
+    ${files ? `<div class="block"><h3>Files changed</h3><p class="files">${files}</p></div>` : ''}
+    ${noteHtml(t)}
+  </section>`;
+};
+
+const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(spec.title || `${ids.join(', ')} — QA Report`)}</title>
+<style>
+:root{--bg:#f7f7f5;--surface:#fff;--surface-2:#f0efec;--border:#dedcd6;--text:#1c1b19;
+--dim:#63605a;--faint:#8b877f;--accent:#2f6f5e;
+--pass-bg:#e8f1ed;--pass-fg:#1f5546;--pass-br:#a9cbc0;
+--fail-bg:#f7e6e4;--fail-fg:#7d2f24;--fail-br:#dfb0a8;
+--warn-bg:#f6eddc;--warn-fg:#6d5116;--warn-br:#d8c294;
+--unk-bg:#eceaf4;--unk-fg:#443f6b;--unk-br:#bab5d8;
+--shadow:0 1px 2px rgba(0,0,0,.05),0 6px 20px rgba(0,0,0,.04)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--bg:#17181a;--surface:#1f2124;--surface-2:#26282c;--border:#34373c;--text:#eceae6;
+--dim:#a5a29c;--faint:#7c7973;--accent:#6dbfa5;
+--pass-bg:#16302a;--pass-fg:#86d3ba;--pass-br:#2c5c4e;
+--fail-bg:#331d1a;--fail-fg:#e5a89e;--fail-br:#5d3630;
+--warn-bg:#33290f;--warn-fg:#dfbc76;--warn-br:#5d4b1f;
+--unk-bg:#232139;--unk-fg:#aaa5e0;--unk-br:#413d66;
+--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25)}}
+:root[data-theme="dark"]{
+--bg:#17181a;--surface:#1f2124;--surface-2:#26282c;--border:#34373c;--text:#eceae6;
+--dim:#a5a29c;--faint:#7c7973;--accent:#6dbfa5;
+--pass-bg:#16302a;--pass-fg:#86d3ba;--pass-br:#2c5c4e;
+--fail-bg:#331d1a;--fail-fg:#e5a89e;--fail-br:#5d3630;
+--warn-bg:#33290f;--warn-fg:#dfbc76;--warn-br:#5d4b1f;
+--unk-bg:#232139;--unk-fg:#aaa5e0;--unk-br:#413d66;
+--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+-webkit-font-smoothing:antialiased}
+.wrap{max-width:1000px;margin:0 auto;padding:48px 24px 96px}
+h1{font-size:29px;line-height:1.15;margin:0 0 10px;letter-spacing:-.02em;font-weight:640}
+.meta{color:var(--dim);font-size:13.5px;margin:0 0 22px}
+.meta code{background:var(--surface-2);border:1px solid var(--border);padding:1px 5px;border-radius:4px;font-size:12.5px}
+.tiles{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:34px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;box-shadow:var(--shadow)}
+.tile .n{font-size:25px;font-weight:660;line-height:1;letter-spacing:-.02em}
+.tile .l{font-size:11.5px;color:var(--dim);margin-top:6px;text-transform:uppercase;letter-spacing:.06em}
+.tile.pass .n{color:var(--pass-fg)}.tile.fail .n{color:var(--fail-fg)}
+.tile.partial .n,.tile.blocked .n{color:var(--warn-fg)}.tile.unknown .n{color:var(--unk-fg)}
+.pill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.05em;padding:3px 9px;border-radius:999px;border:1px solid;white-space:nowrap}
+.pill.pass{background:var(--pass-bg);color:var(--pass-fg);border-color:var(--pass-br)}
+.pill.fail{background:var(--fail-bg);color:var(--fail-fg);border-color:var(--fail-br)}
+.pill.partial,.pill.blocked{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-br)}
+.pill.unknown{background:var(--unk-bg);color:var(--unk-fg);border-color:var(--unk-br)}
+.tag-chip{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+background:var(--surface-2);color:var(--dim);border:1px solid var(--border);white-space:nowrap}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 26px}
+.filter-chip{font:inherit;font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:999px;
+border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+.filter-chip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.ticket{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+padding:20px 22px;margin-bottom:22px;box-shadow:var(--shadow)}
+.t-head{display:flex;gap:11px;align-items:flex-start;margin-bottom:10px}
+.t-head h2{font-size:17px;margin:0;font-weight:620;letter-spacing:-.01em;line-height:1.35}
+.t-head a{color:var(--accent);text-decoration:none}.t-head a:hover{text-decoration:underline}
+.summary{color:var(--dim);margin:0 0 14px}
+/* --- problem / fix, side by side so the before-and-after reads as a pair --- */
+.pf{display:grid;gap:12px;grid-template-columns:1fr 1fr;margin-top:15px}
+.pf.pf-one{grid-template-columns:1fr}
+@media (max-width:680px){.pf{grid-template-columns:1fr}}
+.pf-box{background:var(--surface-2);border:1px solid var(--border);border-radius:9px;
+padding:12px 14px;font-size:13.8px;color:var(--dim)}
+.pf-box.problem{border-left:3px solid var(--fail-br)}
+.pf-box.fix{border-left:3px solid var(--pass-br)}
+.pf-box h4{margin:0 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:700}
+.pf-box.problem h4{color:var(--fail-fg)}
+.pf-box.fix h4{color:var(--pass-fg)}
+.pf-box p{margin:0}
+.pf-box ul{margin:0;padding-left:17px}
+.pf-box li{margin-bottom:4px}
+.pf-box li:last-child{margin-bottom:0}
+.pf-box code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 4px}
+.block{margin-top:16px}
+.block h3{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);
+font-weight:600;margin:0 0 9px}
+ol.steps{margin:0;padding-left:20px}
+ol.steps li{margin-bottom:5px}
+ol.steps li::marker{color:var(--faint);font-variant-numeric:tabular-nums}
+.files code{background:var(--surface-2);border:1px solid var(--border);border-radius:4px;
+padding:1px 5px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+margin-right:5px;display:inline-block;margin-bottom:4px}
+.shots{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+figure.shot{margin:0;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;overflow:hidden}
+figure.shot img{display:block;width:100%;height:auto;background:#fff;cursor:zoom-in;
+transition:opacity .12s ease}
+figure.shot img:hover{opacity:.88}
+figure.shot img:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+
+/* --- lightbox: evidence is only useful if you can inspect it at 1:1 --- */
+.lb[hidden]{display:none}
+.lb{position:fixed;inset:0;z-index:9999;background:rgba(12,12,14,.94);
+display:flex;flex-direction:column;outline:none}
+.lb-stage{flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;
+touch-action:none;cursor:zoom-in}
+.lb[data-zoomed="true"] .lb-stage{cursor:grab}
+.lb[data-zoomed="true"] .lb-stage.dragging{cursor:grabbing}
+.lb-stage img{transform-origin:center center;will-change:transform;
+image-rendering:auto;background:#fff;max-width:none;max-height:none;user-select:none;-webkit-user-drag:none}
+.lb-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+padding:11px 16px;background:rgba(0,0,0,.55);border-top:1px solid rgba(255,255,255,.12);
+color:#f2f1ee;font-size:13px}
+.lb-cap{flex:1;min-width:180px;color:#d9d7d2}
+.lb-count{color:#8f8c86;font-variant-numeric:tabular-nums;font-size:12px}
+.lb button{background:rgba(255,255,255,.09);color:#f2f1ee;border:1px solid rgba(255,255,255,.16);
+border-radius:7px;padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer;line-height:1.4}
+.lb button:hover{background:rgba(255,255,255,.17)}
+.lb button:focus-visible{outline:2px solid #6dbfa5;outline-offset:1px}
+.lb-close{position:absolute;top:12px;right:14px;font-size:15px !important;padding:5px 12px !important}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%);font-size:20px !important;
+padding:10px 15px !important}
+.lb-prev{left:14px}.lb-next{right:14px}
+.lb-hint{color:#8f8c86;font-size:11.5px}
+@media (max-width:640px){.lb-hint{display:none}.lb-nav{padding:8px 12px !important}}
+figure.shot figcaption{padding:9px 11px;font-size:12.5px;color:var(--dim);border-top:1px solid var(--border)}
+.tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:1px 7px;margin-right:7px;color:var(--faint)}
+.note{margin-top:15px;background:var(--surface-2);border-left:3px solid var(--accent);
+border-radius:6px;padding:11px 13px;font-size:13.5px;color:var(--dim)}
+.note h4{margin:0 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+font-weight:700;color:var(--accent)}
+.note p{margin:0}
+.note ul{margin:0;padding-left:17px}
+.note li{margin-bottom:4px}
+.note li:last-child{margin-bottom:0}
+.note strong{color:var(--text)}
+footer{margin-top:38px;padding-top:15px;border-top:1px solid var(--border);font-size:12px;color:var(--faint)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>${esc(spec.title || `${ids.join(', ')} — QA Report`)}</h1>
+<p class="meta">
+  ${spec.tickets.length} ticket${spec.tickets.length === 1 ? '' : 's'} ·
+  branch <code>${esc(env.branch)}</code> at <code>${esc(env.commit)}</code>
+  ${spec.preview_url ? ` · previewed on <code>${linkify(esc(spec.preview_url))}</code>` : ''}<br>
+  Worktree <code>${esc(env.worktree)}</code> · ${esc(env.date)}
+  ${env.server ? `<br>Dev server: ${esc(env.server)}` : ''}
+</p>
+
+${showFilters ? `<div class="filters" id="qa-filters">
+  <button class="filter-chip active" data-filter-tag="">All (${spec.tickets.length})</button>
+  ${tags.map(tag => {
+    const n = spec.tickets.filter(t => t.tag === tag).length;
+    return `<button class="filter-chip" data-filter-tag="${esc(tag)}">${esc(tag)} (${n})</button>`;
+  }).join('\n  ')}
+</div>` : ''}
+
+<div class="tiles" id="qa-tiles">
+  <div class="tile" data-tile="total"><div class="n">${spec.tickets.length}</div><div class="l">Tickets</div></div>
+  ${Object.entries(counts).map(([k, n]) =>
+    `<div class="tile ${k}" data-tile="${k}"><div class="n">${n}</div><div class="l">${(STATUS[k] || { label: 'Unverified' }).label}</div></div>`).join('\n  ')}
+</div>
+
+${spec.tickets.map(ticketHtml).join('\n')}
+
+<footer>
+  Generated by <code>qa-report</code> from ${esc(env.worktree)}.
+  ${useAssets ? `Screenshots in <code>${esc(path.basename(assetDir))}/</code>.`
+              : 'Screenshots are inlined — this file is self-contained and can be attached to a ticket.'}
+  Click any screenshot to open it full-screen; scroll or press <code>Z</code> to zoom to actual pixels.
+</footer>
+</div>
+
+<div class="lb" id="lb" hidden tabindex="-1" role="dialog" aria-modal="true" aria-label="Screenshot viewer">
+  <div class="lb-stage" id="lb-stage"><img id="lb-img" alt=""></div>
+  <button class="lb-close" id="lb-close" aria-label="Close (Esc)">Close &times;</button>
+  <button class="lb-nav lb-prev" id="lb-prev" aria-label="Previous screenshot">&#8249;</button>
+  <button class="lb-nav lb-next" id="lb-next" aria-label="Next screenshot">&#8250;</button>
+  <div class="lb-bar">
+    <span class="lb-cap" id="lb-cap"></span>
+    <span class="lb-count" id="lb-count"></span>
+    <button id="lb-out" aria-label="Zoom out">&minus;</button>
+    <button id="lb-in" aria-label="Zoom in">+</button>
+    <button id="lb-actual" aria-label="Toggle actual size">1:1</button>
+    <button id="lb-fit" aria-label="Fit to screen">Fit</button>
+    <span class="lb-hint">scroll = zoom &middot; drag = pan &middot; Z = 1:1 &middot; &larr;/&rarr; &middot; Esc</span>
+  </div>
+</div>
+
+<script>
+(function () {
+  var filters = document.getElementById('qa-filters');
+  if (!filters) return;
+  var tickets = [].slice.call(document.querySelectorAll('.ticket'));
+  var tiles = document.getElementById('qa-tiles');
+
+  filters.addEventListener('click', function (e) {
+    var btn = e.target.closest('.filter-chip');
+    if (!btn) return;
+    [].slice.call(filters.querySelectorAll('.filter-chip')).forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    var tag = btn.getAttribute('data-filter-tag');
+    var visible = tickets.filter(function (t) {
+      var match = !tag || t.getAttribute('data-tag') === tag;
+      t.hidden = !match;
+      return match;
+    });
+    if (tiles) {
+      var counts = { total: visible.length };
+      visible.forEach(function (t) {
+        var pill = t.querySelector('.pill');
+        var cls = pill ? pill.className.replace('pill', '').trim() : 'unknown';
+        counts[cls] = (counts[cls] || 0) + 1;
+      });
+      [].slice.call(tiles.querySelectorAll('[data-tile]')).forEach(function (tile) {
+        var key = tile.getAttribute('data-tile');
+        var n = tile.querySelector('.n');
+        if (n) n.textContent = counts[key] || 0;
+      });
+    }
+  });
+})();
+
+(function () {
+  var thumbs = [].slice.call(document.querySelectorAll('figure.shot img'));
+  if (!thumbs.length) return;
+
+  var lb = document.getElementById('lb'),
+      stage = document.getElementById('lb-stage'),
+      img = document.getElementById('lb-img'),
+      cap = document.getElementById('lb-cap'),
+      cnt = document.getElementById('lb-count');
+
+  var idx = 0, scale = 1, fitScale = 1, tx = 0, ty = 0;
+  var dragging = false, moved = false, px = 0, py = 0, lastFocus = null;
+
+  function apply() {
+    img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+    lb.setAttribute('data-zoomed', scale > fitScale * 1.02 ? 'true' : 'false');
+  }
+
+  // Fit the whole shot in view first — full-page captures are tall, and the
+  // overview is what you want before drilling into pixels.
+  function fit() {
+    var vw = stage.clientWidth * 0.98, vh = stage.clientHeight * 0.98;
+    var nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+    img.style.width = nw + 'px';
+    img.style.height = nh + 'px';
+    fitScale = Math.min(vw / nw, vh / nh, 1);
+    scale = fitScale; tx = 0; ty = 0; apply();
+  }
+
+  function actual() { scale = 1; tx = 0; ty = 0; apply(); }
+
+  function show(n) {
+    idx = (n + thumbs.length) % thumbs.length;
+    var t = thumbs[idx];
+    img.src = t.currentSrc || t.src;
+    img.alt = t.alt || '';
+    cap.textContent = t.getAttribute('data-caption') || t.alt || '';
+    cnt.textContent = (idx + 1) + ' / ' + thumbs.length;
+    if (img.complete && img.naturalWidth) fit(); else img.onload = fit;
+  }
+
+  function open(n) {
+    lastFocus = document.activeElement;
+    lb.hidden = false;
+    document.body.style.overflow = 'hidden';
+    show(n);
+    lb.focus();
+  }
+
+  function close() {
+    lb.hidden = true;
+    document.body.style.overflow = '';
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+
+  // Zoom about the pointer so the detail under the cursor stays put.
+  function zoomAt(factor, cx, cy) {
+    var r = img.getBoundingClientRect();
+    var ox = cx - (r.left + r.width / 2);
+    var oy = cy - (r.top + r.height / 2);
+    var ns = Math.min(Math.max(scale * factor, fitScale * 0.5), 8);
+    var k = ns / scale;
+    tx -= ox * (k - 1);
+    ty -= oy * (k - 1);
+    scale = ns;
+    apply();
+  }
+
+  thumbs.forEach(function (t, n) {
+    t.setAttribute('tabindex', '0');
+    t.setAttribute('role', 'button');
+    t.addEventListener('click', function () { open(n); });
+    t.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); }
+    });
+  });
+
+  document.getElementById('lb-close').addEventListener('click', close);
+  document.getElementById('lb-prev').addEventListener('click', function (e) { e.stopPropagation(); show(idx - 1); });
+  document.getElementById('lb-next').addEventListener('click', function (e) { e.stopPropagation(); show(idx + 1); });
+  document.getElementById('lb-in').addEventListener('click', function () { zoomAt(1.4, innerWidth / 2, innerHeight / 2); });
+  document.getElementById('lb-out').addEventListener('click', function () { zoomAt(1 / 1.4, innerWidth / 2, innerHeight / 2); });
+  document.getElementById('lb-actual').addEventListener('click', actual);
+  document.getElementById('lb-fit').addEventListener('click', fit);
+
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
+  }, { passive: false });
+
+  stage.addEventListener('pointerdown', function (e) {
+    dragging = true; moved = false; px = e.clientX; py = e.clientY;
+    stage.classList.add('dragging');
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    var dx = e.clientX - px, dy = e.clientY - py;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+    tx += dx; ty += dy; px = e.clientX; py = e.clientY;
+    apply();
+  });
+  function endDrag() { dragging = false; stage.classList.remove('dragging'); }
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+
+  // A click that didn't pan: toggle between fit and 1:1.
+  stage.addEventListener('click', function (e) {
+    if (moved) return;
+    if (e.target !== img) { close(); return; }
+    if (scale > fitScale * 1.02) fit(); else zoomAt(1 / scale, e.clientX, e.clientY);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (lb.hidden) return;
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight') show(idx + 1);
+    else if (e.key === 'ArrowLeft') show(idx - 1);
+    else if (e.key === 'z' || e.key === 'Z') { if (scale > fitScale * 1.02) fit(); else actual(); }
+    else if (e.key === '+' || e.key === '=') zoomAt(1.4, innerWidth / 2, innerHeight / 2);
+    else if (e.key === '-') zoomAt(1 / 1.4, innerWidth / 2, innerHeight / 2);
+    else if (e.key === '0') fit();
+  });
+
+  addEventListener('resize', function () { if (!lb.hidden) fit(); });
+})();
+</script>
+</body>
+</html>
+`;
+
+fs.writeFileSync(outPath, html);
+
+const kb = Math.round(fs.statSync(outPath).size / 1024);
+console.log(`qa-report: wrote ${outPath}`);
+console.log(`  tickets    : ${spec.tickets.map(t => `${t.id}=${statusOf(t).label}`).join(', ')}`);
+console.log(`  screenshots: ${spec.tickets.reduce((a, t) => a + t._evidence.length, 0)}`);
+console.log(`  size       : ${kb} KB${useAssets ? '' : ' (images inlined)'}`);
+if (!useAssets && kb > 10240) {
+  console.log('  note       : over 10 MB — consider --assets to keep images external.');
+}

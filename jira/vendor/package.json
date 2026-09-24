@@ -1,0 +1,6 @@
+{
+  "name": "jira-vendor",
+  "private": true,
+  "//": "The extension is type:module, but the vendored qa-report is the user's own CommonJS script. This marker keeps it running unmodified, so re-copying a newer version is a plain file copy with nothing to edit.",
+  "type": "commonjs"
+}

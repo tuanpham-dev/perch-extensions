@@ -18,19 +18,41 @@ import { anchorOf, type PopoverAnchor } from "./usePopoverPosition";
 
 export interface SelectionBarProps {
   count: number;
+  // How many rows this pane is showing, so "Select all" can say what it will
+  // take and can hide itself once everything is already ticked.
+  total: number;
   busy: boolean;
   onStart: (anchor: PopoverAnchor) => void;
   onAdd: (x: number, y: number) => void;
+  onSelectAll: () => void;
+  onPlanBatch: (anchor: PopoverAnchor, x: number, y: number) => void;
   onClear: () => void;
 }
 
-export default function SelectionBar({ count, busy, onStart, onAdd, onClear }: SelectionBarProps) {
+export default function SelectionBar({
+  count,
+  total,
+  busy,
+  onStart,
+  onAdd,
+  onSelectAll,
+  onPlanBatch,
+  onClear,
+}: SelectionBarProps) {
   return (
     <div className="jira-selectionbar">
       <div className="jira-selhead">
         <span className="jira-selcount">{count} selected</span>
+        {/* Two links rather than one toggle: "Select all" reads as an action,
+            and a toggle would have to explain which of the two lists it
+            meant. It disappears when there is nothing left to add. */}
+        {count < total && (
+          <button className="jira-linkish" onClick={onSelectAll} title={`Select the ${total} tickets in this list`}>
+            Select all
+          </button>
+        )}
         <button className="jira-linkish" onClick={onClear}>
-          Clear
+          Deselect all
         </button>
       </div>
       <div className="jira-selactions">
@@ -49,6 +71,19 @@ export default function SelectionBar({ count, busy, onStart, onAdd, onClear }: S
           onClick={(e) => onStart(anchorOf(e.currentTarget))}
         >
           Start work
+        </button>
+      </div>
+      {/* Its own row: planning a batch is a different scale of action from
+          the two above - several worktrees, several agents - and sharing
+          their row would have read as a third way to start one worktree. */}
+      <div className="jira-selactions">
+        <button
+          className="jira-selaction"
+          disabled={busy}
+          title="Split these tickets into clusters and work them in parallel"
+          onClick={(e) => onPlanBatch(anchorOf(e.currentTarget), e.clientX, e.clientY)}
+        >
+          Plan batch...
         </button>
       </div>
     </div>

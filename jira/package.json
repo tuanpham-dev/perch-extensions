@@ -1,10 +1,11 @@
 {
   "name": "jira",
   "private": true,
+  "type": "module",
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Jira",
-  "description": "A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with a \"Start work\" action that creates a worktree session for one - optionally priming an agent on it and moving the issue to In Progress. Backed by the Jira Cloud REST API; the API token is held in the host's per-extension secret store, never in a setting.",
+  "description": "A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with a \"Start work\" action that creates a worktree session for one - and batches, which split a pile of tickets into clusters, give each its own worktree and coding agent, track every ticket on a kanban filtered by cluster, and send review feedback back to the agent that wrote it. Backed by the Jira Cloud REST API; the API token is held in the host's per-extension secret store, never in a setting.",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
@@ -84,6 +85,33 @@
           "minimum": 0,
           "maximum": 3600,
           "description": "Seconds an opened ticket's details are reused before fetching again. 0 turns caching off."
+        },
+        "jira.executionSkill": {
+          "type": "string",
+          "default": "",
+          "description": "Which skill a cluster's agent implements tickets with, as a path - chosen with the picker below, which writes this same field. Empty uses execute-jira-ticket when it is installed; \"none\" leaves it to the agent. A cluster can override it in the Batches review."
+        },
+        "jira.qaSkill": {
+          "type": "string",
+          "default": "",
+          "description": "Which skill a cluster's agent checks its work with, as a path - chosen with the picker below, which writes this same field. Empty uses the extension's own jira-batch-qa; \"none\" leaves it to the agent."
+        },
+        "jira.skillPaths": {
+          "type": "string",
+          "default": "",
+          "description": "Extra places to look for skills, one per line - a directory of skills, or a single skill directory. ~/.claude/skills and the repository's .claude/skills are always searched."
+        },
+        "jira.clusterBranchTemplate": {
+          "type": "string",
+          "default": "{cluster}",
+          "description": "Branch name for a batch cluster - {cluster} is the cluster's name as a slug."
+        },
+        "jira.batchAnalysisTimeoutSeconds": {
+          "type": "integer",
+          "default": 600,
+          "minimum": 60,
+          "maximum": 900,
+          "description": "How long the AI may take when it reads the codebase before grouping tickets. Needs a Perch new enough to accept it; older ones stop at 60 seconds."
         },
         "jira.branchTemplate": {
           "type": "string",

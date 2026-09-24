@@ -1,3 +1,20 @@
+/* ---- Surfaces ----
+ *
+ * The app gives us colour, not depth: --bg, --fg, --border and friends are
+ * defined, but there is no "one step up from the background" token, and a
+ * dozen rules here used to ask for `--bg-elevated` and silently get the flat
+ * background in every theme. These derive the steps from tokens that do
+ * exist, so a raised surface is actually raised whatever the theme, and a
+ * light theme gets a lighter card rather than a darker one.
+ */
+:root {
+  --jira-elevated: color-mix(in srgb, var(--fg, #ccc) 6%, var(--bg, #1e1e1e));
+  --jira-sunken: color-mix(in srgb, var(--fg, #ccc) 3%, var(--bg, #1e1e1e));
+  /* A hairline that reads as a seam rather than a drawn box. */
+  --jira-hairline: color-mix(in srgb, var(--fg, #ccc) 14%, transparent);
+  --jira-danger: var(--error, #d74e42);
+}
+
 .jira-empty,
 .jira-error,
 .jira-note {
@@ -154,7 +171,7 @@
   padding: 10px 12px 12px;
   border: 1px solid var(--border, #333);
   border-radius: 6px;
-  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  background: var(--jira-elevated);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   font-size: 12px;
 }
@@ -725,7 +742,7 @@
   padding: 6px 8px;
   border: 1px solid var(--border, #333);
   border-radius: 4px;
-  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  background: var(--jira-elevated);
   font-size: 11px;
 }
 
@@ -991,6 +1008,9 @@
    window's - the tab can sit in a narrow split pane on a wide screen. */
 .jira-tab {
   container: jira-tab / inline-size;
+  /* The image viewer is absolutely positioned against this, so it covers the
+     tab's toolbars as well as its content. */
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1537,7 +1557,7 @@
   padding: 7px 9px 8px;
   border: 1px solid var(--border, #333);
   border-radius: 5px;
-  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  background: var(--jira-elevated);
   cursor: pointer;
   user-select: none;
 }
@@ -1552,7 +1572,7 @@
 }
 
 .jira-card.picked {
-  background: color-mix(in srgb, var(--focus-border, #4a9eff) 14%, var(--bg-elevated, var(--bg, #1e1e1e)));
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 14%, var(--jira-elevated));
 }
 
 .jira-card.open {
@@ -1763,7 +1783,7 @@
 }
 
 .jira-swatch.current {
-  box-shadow: 0 0 0 2px var(--bg-elevated, var(--bg, #1e1e1e)), 0 0 0 4px var(--focus-border, #4a9eff);
+  box-shadow: 0 0 0 2px var(--jira-elevated), 0 0 0 4px var(--focus-border, #4a9eff);
 }
 
 .jira-swatch:focus-visible {
@@ -1787,7 +1807,7 @@
   z-index: 2;
   margin: -10px -12px 6px;
   padding: 10px 12px 8px;
-  background: var(--bg-elevated, var(--bg, #1e1e1e));
+  background: var(--jira-elevated);
   border-bottom: 1px solid var(--border, #333);
 }
 
@@ -1877,4 +1897,1177 @@
 
 .jira-statuspicker-row.taken:hover {
   background: none;
+}
+
+/* ---- Batches ----
+   The planning form, and the clusters as a plan you can still change. Colours
+   come from the app's own theme variables (the same set the rest of this file
+   uses) so a cluster chip reads on every theme; only the eight cluster hues
+   are our own, and they are stated as HSL steps rather than a hand-picked
+   palette so a new one is never off-key. */
+
+.jira-batchform {
+  width: min(520px, calc(100vw - 24px));
+}
+
+.jira-batchform-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jira-field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-inactive, #999);
+  margin-top: 4px;
+}
+
+.jira-batchform-tickets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+}
+
+.jira-batchform-tickets li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 6px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.jira-batchform-tickets li:last-child {
+  border-bottom: none;
+}
+
+.jira-batchform-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg, #ccc);
+}
+
+.jira-batchform-empty,
+.jira-batchform-hint,
+.jira-batchform-note,
+.jira-batchform-busy {
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.jira-batchform-note {
+  color: var(--fg-bright, #eee);
+}
+
+.jira-batchform-error {
+  color: var(--jira-danger);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.jira-batchform-keys,
+.jira-batchform-criteria,
+.jira-breview-criteria textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  color: var(--fg, #ccc);
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.jira-batchform-keys:focus,
+.jira-batchform-criteria:focus,
+.jira-breview-criteria textarea:focus {
+  outline: 1px solid var(--focus-border, #0078d4);
+  outline-offset: -1px;
+}
+
+.jira-batchform-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.jira-batchform-check.disabled {
+  opacity: 0.6;
+}
+
+.jira-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* ---- The review ---- */
+
+.jira-batcharea {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.jira-batchreview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+/* Two rows by design rather than by accident: what this batch IS on top,
+   how its clusters will RUN underneath. */
+.jira-breview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--jira-hairline);
+  flex-wrap: wrap;
+}
+
+.jira-breview-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--fg-bright, #eee);
+  margin-right: 2px;
+}
+
+.jira-breview-spacer {
+  flex: 1;
+}
+
+.jira-breview-bar .jira-selaction {
+  height: 24px;
+  flex: none;
+}
+
+/* Always its own row, under the title: `flex-basis: 100%` after the spacer
+   pushes it to the next line whatever the window width, so the layout is the
+   same at 900px as at 1600 instead of reshuffling as you resize. */
+.jira-breview-choices {
+  order: 1;
+  flex: 0 0 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding-top: 2px;
+}
+
+.jira-breview-agent {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  min-width: 0;
+  color: var(--fg-inactive, #999);
+}
+
+/* The label above its control, so the three read as one group of choices
+   with a common baseline rather than three inline phrases of different
+   lengths. */
+.jira-breview-agent > span {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.jira-breview-agent > select {
+  height: 24px;
+  max-width: 220px;
+  font: inherit;
+  color: var(--fg-bright, #eee);
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  border: 1px solid var(--input-border, var(--border, #333));
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.jira-breview-choices .jira-skillpicker select {
+  height: 24px;
+  width: 220px;
+  max-width: none;
+  border-radius: 4px;
+}
+
+/* The choosers sit on a row of their own now, so the note has room for two
+   lines - one clipped line cut this sentence off before the part that says
+   what to do about it. */
+.jira-breview-choices .jira-skillpicker.compact .jira-skillpicker-note {
+  max-width: 220px;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.jira-breview-criteria {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.jira-breview-hint {
+  padding: 6px 8px;
+  color: var(--fg-inactive, #999);
+}
+
+/* One row of columns that scrolls sideways; the page itself never does. */
+.jira-bcols {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  overflow-x: auto;
+  align-items: flex-start;
+  flex: 1;
+  min-height: 0;
+}
+
+.jira-bcol {
+  --jira-cluster-hue: 210;
+  flex: 0 0 260px;
+  /* Without this the "Touches:" line, which never wraps, sets the width: a
+     flex item's min-width is auto, so one long file list stretched its
+     cluster to half the screen while its neighbour stayed narrow. */
+  min-width: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--jira-hairline);
+  border-top: 2px solid hsl(var(--jira-cluster-hue) 55% 55%);
+  border-radius: 5px;
+  background: var(--jira-elevated);
+  padding: 8px;
+  gap: 5px;
+}
+
+.jira-bcol-c0 { --jira-cluster-hue: 210; }
+.jira-bcol-c1 { --jira-cluster-hue: 35; }
+.jira-bcol-c2 { --jira-cluster-hue: 275; }
+.jira-bcol-c3 { --jira-cluster-hue: 150; }
+.jira-bcol-c4 { --jira-cluster-hue: 350; }
+.jira-bcol-c5 { --jira-cluster-hue: 190; }
+.jira-bcol-c6 { --jira-cluster-hue: 90; }
+.jira-bcol-c7 { --jira-cluster-hue: 320; }
+
+.jira-bcol-none {
+  border-top-color: var(--border, #333);
+  opacity: 0.85;
+}
+
+.jira-bcol-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.jira-bcol-name {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg-bright, #eee);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+
+.jira-bcol-name:hover:not(:disabled),
+.jira-bcol-name:focus {
+  border-color: var(--border, #333);
+  background: var(--input-bg, transparent);
+}
+
+.jira-bcol-name.plain {
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bcol-why,
+.jira-bcol-files {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-inactive, #999);
+}
+
+/* What a started cluster actually ran with - the same line the board's chip
+   carries in its tooltip, said out loud here because this is the screen you
+   are on when you wonder why a report reads the way it does. */
+.jira-bcol-skills {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-inactive, #999);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-bcol-files {
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-bcol-error {
+  margin: 0;
+  font-size: 11px;
+  color: var(--jira-danger);
+}
+
+.jira-bcol-branch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bcol-branch input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-family: var(--font-mono, monospace);
+  color: var(--fg, #ccc);
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.jira-bstate {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border, #333);
+  color: var(--fg-inactive, #999);
+  white-space: nowrap;
+}
+
+.jira-bstate-running { color: hsl(205 70% 65%); border-color: hsl(205 40% 40%); }
+.jira-bstate-waiting { color: hsl(35 80% 62%); border-color: hsl(35 45% 40%); }
+.jira-bstate-idle { color: var(--fg-inactive, #999); }
+.jira-bstate-stopped { color: hsl(18 75% 62%); border-color: hsl(18 45% 40%); }
+.jira-bstate-closed { color: var(--fg-inactive, #999); opacity: 0.8; }
+
+.jira-bcards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 24px;
+}
+
+.jira-bcard {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 4px 3px 6px;
+  border: 1px solid var(--border, #333);
+  border-left: 3px solid hsl(var(--jira-cluster-hue) 55% 55%);
+  border-radius: 4px;
+  background: var(--bg, #1e1e1e);
+  cursor: grab;
+}
+
+.jira-bcard.dragging {
+  opacity: 0.5;
+}
+
+.jira-bcard.frozen {
+  cursor: default;
+  opacity: 0.75;
+}
+
+/* A ticket this proposal is adding, so what is new reads at a glance against
+   what the cluster already holds. */
+.jira-bcard.fresh {
+  border-color: hsl(150 45% 45%);
+  border-left-color: hsl(150 55% 50%);
+}
+
+.jira-bcard-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg, #ccc);
+}
+
+.jira-bcard-mark {
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bcard-menu {
+  opacity: 0;
+}
+
+.jira-bcard:hover .jira-bcard-menu,
+.jira-bcard-menu:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  /* No hover on a phone: the menu is the only way to move a card there, so
+     it is always visible. */
+  .jira-bcard-menu {
+    opacity: 1;
+  }
+}
+
+/* ---- The board ----
+   Seven fixed columns that scroll sideways, and a chip per cluster that both
+   reports its agent and filters the board to it. */
+
+.jira-batchboard {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* One row, always. It used to wrap into two whenever the detail pane was
+   open, which put the batch name on one line and its actions on another and
+   made the board look like two unrelated toolbars stacked. The chips are the
+   part that can grow without bound, so they are the part that scrolls. */
+.jira-bboard-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--jira-hairline);
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.jira-bboard-pick {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  max-width: 34%;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bboard-pick select {
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+  color: var(--fg-bright, #eee);
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  border: 1px solid var(--input-border, var(--border, #333));
+  border-radius: 4px;
+  padding: 2px 4px;
+  height: 24px;
+}
+
+.jira-bboard-pick select:focus-visible {
+  outline: 1px solid var(--focus-border, #0078d4);
+  outline-offset: -1px;
+}
+
+/* The chips take what is left and scroll inside it rather than pushing the
+   actions off the row. */
+.jira-bboard-bar .jira-bchips {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 1px;
+}
+
+.jira-bboard-bar .jira-bchips::-webkit-scrollbar {
+  display: none;
+}
+
+/* Every control on the row shares a height, which is most of what makes a
+   toolbar look assembled rather than accumulated. */
+.jira-bboard-bar .jira-selaction,
+.jira-bboard-bar .icon-button {
+  height: 24px;
+  flex: none;
+}
+
+.jira-bboard-spacer {
+  flex: 1;
+}
+
+.jira-bboard-archived {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, #333);
+  color: var(--fg-inactive, #999);
+  flex-wrap: wrap;
+}
+
+.jira-bchips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.jira-bchip {
+  --jira-cluster-hue: 210;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 4px 1px 6px;
+  border: 1px solid var(--border, #333);
+  border-radius: 999px;
+  background: var(--jira-elevated);
+  color: var(--fg, #ccc);
+  font: inherit;
+  max-width: 260px;
+}
+
+.jira-bchip.off {
+  opacity: 0.45;
+}
+
+.jira-bchip.static {
+  cursor: default;
+}
+
+.jira-bchip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: hsl(var(--jira-cluster-hue) 55% 55%);
+  flex: none;
+}
+
+.jira-bchip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-bchip-state {
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* The one state that is about YOU rather than the agent gets the colour. */
+.jira-bchip.state-waiting .jira-bchip-state {
+  color: hsl(35 80% 62%);
+}
+
+.jira-bchip.state-stopped .jira-bchip-state {
+  color: hsl(18 75% 62%);
+}
+
+.jira-bchip-go {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 999px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bchip-go:hover {
+  background: var(--list-hover-bg, rgba(255, 255, 255, 0.08));
+  color: var(--fg-bright, #eee);
+}
+
+.jira-bboard-cols {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  overflow-x: auto;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
+
+/* A column is a track, not a box. Seven bordered panels - four of them
+   usually empty - read as a wireframe of a board rather than a board; with
+   the frames gone the cards carry the weight and an empty column costs a
+   heading. */
+.jira-bbcol {
+  /* Share the width when there is enough for all seven, scroll when there is
+     not. A fixed width left a column clipped at the right edge on a screen
+     with room to spare. */
+  flex: 1 1 0;
+  /* All seven fit side by side on a normal window: Done and Failed are the
+     two you most need to notice, and a board that pushes them off the right
+     edge hides exactly the wrong thing. */
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 7px;
+}
+
+.jira-bbcol-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--jira-hairline);
+}
+
+.jira-bbcol-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-inactive, #999);
+}
+
+/* The column's hue, as a dot rather than a rule: the same "left to right is
+   progress" cue at a fraction of the ink, and it leaves the heading legible
+   against any theme instead of tinting the words themselves. */
+.jira-bbcol-title::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--jira-column-color, var(--fg-inactive, #999));
+  flex: none;
+}
+
+.jira-bbcol-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  text-align: center;
+  background: var(--jira-sunken);
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* An empty column says so once, quietly, instead of leaving a hole. */
+.jira-bbcol.is-empty .jira-bbcol-title,
+.jira-bbcol.is-empty .jira-bbcol-count {
+  opacity: 0.55;
+}
+
+/* One hue per column, so a glance at the board reads as movement left to
+   right, and the two columns that want YOU stand out from the rest. */
+.jira-bbcol.state-queued { --jira-column-color: hsl(210 8% 55%); }
+.jira-bbcol.state-in-progress { --jira-column-color: hsl(205 70% 58%); }
+.jira-bbcol.state-needs-you { --jira-column-color: hsl(35 85% 58%); }
+.jira-bbcol.state-review { --jira-column-color: hsl(275 55% 65%); }
+.jira-bbcol.state-rework { --jira-column-color: hsl(18 75% 58%); }
+.jira-bbcol.state-done { --jira-column-color: hsl(150 50% 48%); }
+.jira-bbcol.state-failed { --jira-column-color: hsl(0 60% 58%); }
+
+.jira-bbcards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  min-height: 20px;
+}
+
+.jira-bbcard {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--fg, #ccc);
+  padding: 7px 8px 7px 9px;
+  border: 1px solid var(--jira-hairline);
+  border-left: 3px solid hsl(var(--jira-cluster-hue, 210) 55% 55%);
+  border-radius: 4px;
+  background: var(--jira-elevated);
+  transition: background 90ms ease, border-color 90ms ease;
+}
+
+.jira-bbcard.jira-bcol-cnone {
+  border-left-color: var(--border, #333);
+}
+
+.jira-bbcard:hover {
+  background: var(--list-hover-bg, rgba(255, 255, 255, 0.06));
+}
+
+.jira-bbcard.focused {
+  outline: 1px solid var(--focus-border, #0078d4);
+  outline-offset: -1px;
+}
+
+.jira-bbcard-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.jira-bbcard-age {
+  color: var(--fg-inactive, #999);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.jira-bbcard-summary {
+  line-height: 1.3;
+  /* Two lines, then ellipsis: a card is a glance, and the detail pane is one
+     click away for the rest. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.jira-bbcard-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bbcard-cluster {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-bbcard-flag {
+  color: hsl(275 55% 68%);
+  white-space: nowrap;
+}
+
+.jira-bbcard-note {
+  font-size: 10.5px;
+  color: var(--fg-inactive, #999);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  border-top: 1px dotted var(--border, #333);
+  padding-top: 3px;
+}
+
+/* ---- The detail pane's batch section ---- */
+
+.jira-bdetail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.jira-bdetail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.jira-bdetail-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-inactive, #999);
+}
+
+/* One entry per line with the times in a column. Wrapped inline it ran
+   together into a paragraph of timestamps that had to be read word by word
+   to work out what happened when. */
+.jira-bhistory {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 2px 10px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+  border-top: 1px solid var(--jira-hairline);
+}
+
+.jira-bhistory li {
+  display: contents;
+}
+
+.jira-bhistory-at {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.jira-bhistory-state {
+  color: var(--fg, #ccc);
+  white-space: nowrap;
+}
+
+.jira-bhistory-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-bdetail-said {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.jira-bdetail-said.failed {
+  color: var(--jira-danger);
+}
+
+.jira-bfeedback {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.jira-bfeedback li {
+  border-left: 2px solid var(--border, #333);
+  padding-left: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.jira-bfeedback-at {
+  display: block;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-bdetail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.jira-bdetail-hint,
+.jira-bdetail-note {
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+  margin: 0;
+}
+
+/* The status bar's Jira icon, when a batch wants you. */
+.jira-statusbar.attention .jira-statusbar-icon {
+  color: hsl(35 85% 60%);
+}
+
+.jira-statusbar-count {
+  margin-left: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A ticket's QA verdict on its card, and the gap when none was filed. The
+   gap is muted rather than alarming: it is a thing to notice, not a failure. */
+.jira-bbcard-qa {
+  white-space: nowrap;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+
+.jira-bbcard-qa.qa-pass { color: hsl(150 50% 48%); }
+.jira-bbcard-qa.qa-fail { color: hsl(0 60% 60%); }
+.jira-bbcard-qa.qa-partial { color: hsl(35 80% 58%); }
+.jira-bbcard-qa.qa-blocked,
+.jira-bbcard-qa.qa-unverified { color: var(--fg-inactive, #999); }
+
+.jira-bbcard-qa.qa-none {
+  color: var(--fg-inactive, #999);
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+/* ---- The QA block ---- */
+
+.jira-qa {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.jira-qa-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.jira-qa-status {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+
+.jira-qa-status.qa-pass { color: hsl(150 50% 45%); }
+.jira-qa-status.qa-fail { color: hsl(0 60% 60%); }
+.jira-qa-status.qa-partial { color: hsl(35 80% 55%); }
+.jira-qa-status.qa-blocked,
+.jira-qa-status.qa-unverified { color: var(--fg-inactive, #999); }
+
+.jira-qa-at {
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+}
+
+.jira-qa-shots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.jira-qa-shot {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg, #1e1e1e);
+  cursor: zoom-in;
+  font: inherit;
+  color: inherit;
+}
+
+.jira-qa-shot:hover {
+  border-color: var(--focus-border, #0078d4);
+}
+
+.jira-qa-shot img {
+  width: 100%;
+  /* Tall captures are common; the thumbnail shows the top of one rather than
+     squashing it, and the viewer is one click away for the rest. */
+  max-height: 140px;
+  object-fit: cover;
+  object-position: top;
+  display: block;
+}
+
+.jira-qa-shot-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 2px 6px;
+  background: var(--jira-elevated);
+  color: var(--fg-inactive, #999);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.jira-qa-shot.empty {
+  align-items: stretch;
+  cursor: default;
+}
+
+.jira-qa-shot-none {
+  padding: 16px 6px;
+  text-align: center;
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+}
+
+.jira-qa-list b {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-qa-list ul,
+.jira-qa-list ol {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  line-height: 1.4;
+}
+
+.jira-qa-files {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-qa-missing {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--border, #333);
+  border-radius: 4px;
+  color: var(--fg-inactive, #999);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ---- The viewer ----
+   Fills the editor region and stops there: the tab bar, the sidebar and the
+   status bar stay visible and clickable, which is what makes this a viewer
+   rather than a modal. It is mounted at the TAB's root - inside the detail
+   pane it would be sealed in that pane's scrolled, clipped box and could not
+   cover the board at any z-index. */
+
+.jira-lightbox {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #1e1e1e);
+  outline: none;
+}
+
+.jira-lb-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--jira-elevated);
+  color: var(--fg, #ccc);
+}
+
+.jira-lb-caption {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-inactive, #999);
+}
+
+.jira-lb-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.jira-lb-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  /* The browser's own panning and pinching would fight the handlers. */
+  touch-action: none;
+  cursor: zoom-in;
+  background: var(--jira-elevated);
+}
+
+.jira-lb-stage.zoomed {
+  cursor: grab;
+}
+
+.jira-lb-stage.zoomed:active {
+  cursor: grabbing;
+}
+
+.jira-lb-stage img {
+  transform-origin: center center;
+  will-change: transform;
+  max-width: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ---- The skill pickers ---- */
+
+.jira-skillpicker {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.jira-skillpicker select,
+.jira-skillpicker-path {
+  font: inherit;
+  color: var(--fg, #ccc);
+  background: var(--input-bg, var(--bg, #1e1e1e));
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  padding: 1px 4px;
+  max-width: 220px;
+}
+
+/* Settings has a column to itself: the skill's own description wraps, which
+   is the whole reason it is shown, and the block keeps a gap under it so it
+   does not run into the next setting's label. */
+.jira-skillpicker-note {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--fg-inactive, #999);
+  max-width: 60ch;
+}
+
+/* The review bar is one crowded row, so there the note is a single clipped
+   line - the select above it already carries the name. */
+.jira-skillpicker.compact .jira-skillpicker-note {
+  margin: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-skillpicker-note .warn {
+  color: hsl(35 80% 55%);
 }
