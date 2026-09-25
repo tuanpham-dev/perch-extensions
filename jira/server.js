@@ -1284,6 +1284,20 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   // whatever happened to be checked out. origin/HEAD is often simply absent
   // (a --depth clone, or an origin added by hand), so this falls back through
   // `git remote show` to the current HEAD, reporting which it used.
+  // What origin/HEAD says without asking origin. Nothing here leaves the
+  // machine, so it is safe on a repo with no remote, an unreachable one, or
+  // one whose credentials would prompt.
+  async function localDefaultBranch(repo) {
+    try {
+      const ref = (await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo)).trim();
+      if (ref) return { base: ref, note: null };
+    } catch {
+      // Not set locally, which is not worth a note here: branching from HEAD
+      // is what someone starting a cluster on their current work expects.
+    }
+    return { base: null, note: null };
+  }
+
   async function defaultBranch(repo) {
     try {
       const ref = (await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo)).trim();
@@ -1308,7 +1322,14 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   // function because a batch creates one per cluster from the server, with no
   // browser in the loop, and must land in exactly the same place with exactly
   // the same refusals as the button does.
-  async function createWorktree(cwd, branch, settings) {
+  //
+  // `offline` is the one deliberate difference. "Start work" fetches first,
+  // because one worktree branched off a stale base is worth a moment's wait
+  // and a refusal if the network says no. A batch is N worktrees in a row:
+  // that is N fetches of the same repository, N chances to sit on a timeout
+  // or a credential prompt, and a failure there takes down a start that has
+  // nothing to do with the network.
+  async function createWorktree(cwd, branch, settings, { offline = false } = {}) {
     const name = branch.trim();
     const repo = await repoRoot(cwd);
     if (!repo) throw bad(`${cwd} is not inside a git repository`);
@@ -1319,8 +1340,11 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     const target = resolveLocation(template, repo, name);
     if (fs.existsSync(target)) throw conflict(`${target} already exists`);
 
-    const { base, note } = await defaultBranch(repo);
-    if (base) {
+    // Offline: whatever origin/HEAD already says locally, and HEAD when it
+    // says nothing - `git remote show origin`, the other branch of
+    // defaultBranch, goes to the network too.
+    const { base, note } = offline ? await localDefaultBranch(repo) : await defaultBranch(repo);
+    if (base && !offline) {
       try {
         await git(["fetch", "origin"], repo, FETCH_TIMEOUT);
       } catch (err) {

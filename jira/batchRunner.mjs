@@ -333,7 +333,9 @@ export function createBatchRunner({
 
     let worktree;
     try {
-      worktree = await createWorktree(batch.repo, cluster.branch, settings);
+      // No network on the way in: see createWorktree's own note on why a
+      // batch does not fetch where the single button does.
+      worktree = await createWorktree(batch.repo, cluster.branch, settings, { offline: true });
     } catch (err) {
       // A name that is taken is the common one, and it is the user's to fix:
       // the cluster stays startable and the row says why.
