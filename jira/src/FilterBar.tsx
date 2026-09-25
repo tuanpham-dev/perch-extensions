@@ -30,6 +30,7 @@ import {
 } from "./filterModel";
 import { SORT_FIELDS, sortLabel, type ListView, type SortField } from "./sortModel";
 import type { Facets } from "./types";
+import Popover from "./Popover";
 
 export interface FilterBarProps {
   filters: IssueFilters;
@@ -173,37 +174,39 @@ function FacetPopover({
   }, [onClose, ref]);
 
   return (
-    <div ref={ref} className="jira-popover jira-facets" role="dialog" style={style}>
-      <div className="jira-pop-head">
-        <span className="jira-facets-title">Filters</span>
-        <button className="jira-linkish" onClick={() => onApply(EMPTY_FILTERS)}>
-          Clear all
-        </button>
-        <button className="icon-button" title="Close" onClick={onClose}>
-          <Icon name="close" />
-        </button>
-      </div>
-      <div className="jira-facet-group">
-        <div className="jira-pop-section">Order</div>
-        <ViewControls view={view} onView={onView} compact={false} />
-      </div>
-      {groups.length === 0 && <div className="jira-empty">No filter values available.</div>}
-      {groups.map(({ facet, options }) => (
-        <div key={facet} className="jira-facet-group">
-          <div className="jira-pop-section">{FACET_TITLES[facet]}</div>
-          {options.map((option) => (
-            <label key={option.value} className="jira-facet-row">
-              <input
-                type="checkbox"
-                checked={filters[facet].includes(option.value)}
-                onChange={() => onApply(toggleValue(filters, facet, option.value))}
-              />
-              <span>{option.label}</span>
-            </label>
-          ))}
+    <Popover>
+      <div ref={ref} className="jira-popover jira-facets" role="dialog" style={style}>
+        <div className="jira-pop-head">
+          <span className="jira-facets-title">Filters</span>
+          <button className="jira-linkish" onClick={() => onApply(EMPTY_FILTERS)}>
+            Clear all
+          </button>
+          <button className="icon-button" title="Close" onClick={onClose}>
+            <Icon name="close" />
+          </button>
         </div>
-      ))}
-    </div>
+        <div className="jira-facet-group">
+          <div className="jira-pop-section">Order</div>
+          <ViewControls view={view} onView={onView} compact={false} />
+        </div>
+        {groups.length === 0 && <div className="jira-empty">No filter values available.</div>}
+        {groups.map(({ facet, options }) => (
+          <div key={facet} className="jira-facet-group">
+            <div className="jira-pop-section">{FACET_TITLES[facet]}</div>
+            {options.map((option) => (
+              <label key={option.value} className="jira-facet-row">
+                <input
+                  type="checkbox"
+                  checked={filters[facet].includes(option.value)}
+                  onChange={() => onApply(toggleValue(filters, facet, option.value))}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+    </Popover>
   );
 }
 

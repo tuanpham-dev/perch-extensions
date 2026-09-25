@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import { usePopoverPosition, type PopoverAnchor } from "./usePopoverPosition";
 import type { ProjectRow } from "./types";
+import Popover from "./Popover";
 
 export interface ProjectPickerProps {
   anchor: PopoverAnchor;
@@ -69,47 +70,49 @@ export default function ProjectPicker({
   const overridden = source ? WINS_OVER_MAPPING[source] : undefined;
 
   return (
-    <div ref={ref} className="jira-popover jira-projectpicker" role="dialog" style={style}>
-      <div className="jira-pop-head">
-        <span className="jira-facets-title">Jira project</span>
-        <button className="icon-button" title="Close" onClick={onClose}>
-          <Icon name="close" />
-        </button>
-      </div>
-      {repo && <div className="jira-location">{repo}</div>}
-
-      {overridden && (
-        <div className="jira-note">
-          {overridden} already sets {currentKey ?? "the project key"} and is read first. Your choice is saved,
-          but takes effect only once that is removed.
-        </div>
-      )}
-      {error && <div className="jira-error">{error}</div>}
-
-      <input
-        className="jira-input"
-        type="search"
-        value={query}
-        autoFocus
-        placeholder="Find a project"
-        aria-label="Find a project"
-        onChange={(e) => setQuery(e.target.value)}
-      />
-
-      <div className="jira-projectlist">
-        {projects.length === 0 && <div className="jira-empty">No projects to choose from.</div>}
-        {projects.length > 0 && matches.length === 0 && <div className="jira-empty">No project matches.</div>}
-        {matches.map((project) => (
-          <button
-            key={project.key}
-            className={`jira-projectrow${project.key === currentKey ? " current" : ""}`}
-            onClick={() => onChoose(project.key)}
-          >
-            <span className="jira-key">{project.key}</span>
-            <span className="jira-projectname">{project.name}</span>
+    <Popover>
+      <div ref={ref} className="jira-popover jira-projectpicker" role="dialog" style={style}>
+        <div className="jira-pop-head">
+          <span className="jira-facets-title">Jira project</span>
+          <button className="icon-button" title="Close" onClick={onClose}>
+            <Icon name="close" />
           </button>
-        ))}
+        </div>
+        {repo && <div className="jira-location">{repo}</div>}
+
+        {overridden && (
+          <div className="jira-note">
+            {overridden} already sets {currentKey ?? "the project key"} and is read first. Your choice is saved,
+            but takes effect only once that is removed.
+          </div>
+        )}
+        {error && <div className="jira-error">{error}</div>}
+
+        <input
+          className="jira-input"
+          type="search"
+          value={query}
+          autoFocus
+          placeholder="Find a project"
+          aria-label="Find a project"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+
+        <div className="jira-projectlist">
+          {projects.length === 0 && <div className="jira-empty">No projects to choose from.</div>}
+          {projects.length > 0 && matches.length === 0 && <div className="jira-empty">No project matches.</div>}
+          {matches.map((project) => (
+            <button
+              key={project.key}
+              className={`jira-projectrow${project.key === currentKey ? " current" : ""}`}
+              onClick={() => onChoose(project.key)}
+            >
+              <span className="jira-key">{project.key}</span>
+              <span className="jira-projectname">{project.name}</span>
+            </button>
+          ))}
+        </div>
       </div>
-    </div>
+    </Popover>
   );
 }

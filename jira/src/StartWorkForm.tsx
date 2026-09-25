@@ -10,6 +10,7 @@ import Icon from "./Icon";
 import { usePopoverPosition, type PopoverAnchor } from "./usePopoverPosition";
 import type { AgentLaunchPreset } from "./agentTarget";
 import type { IssueRow } from "./types";
+import Popover from "./Popover";
 
 export interface StartWorkFormProps {
   issues: IssueRow[];
@@ -52,73 +53,75 @@ export default function StartWorkForm({
   }, [onCancel]);
 
   return (
-    <div ref={ref} className="jira-popover jira-startform" role="dialog" style={style}>
-      <div className="jira-pop-head">
-        <span className="jira-facets-title">
-          Start work &middot; {issues.length} tickets
-        </span>
-        <button className="icon-button" title="Close" onClick={onCancel}>
-          <Icon name="close" />
-        </button>
-      </div>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          onSubmit();
-        }}
-      >
-        <label className="jira-field">
-          <span className="jira-pop-section">Branch</span>
-          <input
-            className="jira-input"
-            value={branch}
-            autoFocus
-            spellCheck={false}
-            onChange={(e) => onChange({ branch: e.target.value })}
-          />
-        </label>
-        <div className="jira-location" title={location}>
-          {location}
+    <Popover>
+      <div ref={ref} className="jira-popover jira-startform" role="dialog" style={style}>
+        <div className="jira-pop-head">
+          <span className="jira-facets-title">
+            Start work &middot; {issues.length} tickets
+          </span>
+          <button className="icon-button" title="Close" onClick={onCancel}>
+            <Icon name="close" />
+          </button>
         </div>
 
-        <label className="jira-field">
-          <span className="jira-pop-section">Agent</span>
-          <select
-            className="jira-input"
-            value={presetIndex}
-            onChange={(e) => onChange({ presetIndex: Number(e.target.value) })}
-          >
-            {presets.map((preset, i) => (
-              <option key={preset.name} value={i}>
-                {preset.name}
-              </option>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          <label className="jira-field">
+            <span className="jira-pop-section">Branch</span>
+            <input
+              className="jira-input"
+              value={branch}
+              autoFocus
+              spellCheck={false}
+              onChange={(e) => onChange({ branch: e.target.value })}
+            />
+          </label>
+          <div className="jira-location" title={location}>
+            {location}
+          </div>
+
+          <label className="jira-field">
+            <span className="jira-pop-section">Agent</span>
+            <select
+              className="jira-input"
+              value={presetIndex}
+              onChange={(e) => onChange({ presetIndex: Number(e.target.value) })}
+            >
+              {presets.map((preset, i) => (
+                <option key={preset.name} value={i}>
+                  {preset.name}
+                </option>
+              ))}
+              <option value={-1}>No agent (worktree only)</option>
+            </select>
+          </label>
+
+          <div className="jira-startkeys">
+            {issues.map((issue) => (
+              <span key={issue.key} className="jira-key">
+                {issue.key}
+              </span>
             ))}
-            <option value={-1}>No agent (worktree only)</option>
-          </select>
-        </label>
+          </div>
 
-        <div className="jira-startkeys">
-          {issues.map((issue) => (
-            <span key={issue.key} className="jira-key">
-              {issue.key}
-            </span>
-          ))}
-        </div>
+          {/* A 409 means the branch is taken, and the field holding it is right
+              there - so the form stays open rather than closing on the error. */}
+          {error && <div className="jira-error">{error}</div>}
 
-        {/* A 409 means the branch is taken, and the field holding it is right
-            there - so the form stays open rather than closing on the error. */}
-        {error && <div className="jira-error">{error}</div>}
-
-        <div className="jira-formactions">
-          <button type="button" className="jira-selaction" onClick={onCancel}>
-            Cancel
-          </button>
-          <button type="submit" className="jira-selaction primary" disabled={busy || !branch.trim()}>
-            {busy ? "Starting..." : "Start"}
-          </button>
-        </div>
-      </form>
-    </div>
+          <div className="jira-formactions">
+            <button type="button" className="jira-selaction" onClick={onCancel}>
+              Cancel
+            </button>
+            <button type="submit" className="jira-selaction primary" disabled={busy || !branch.trim()}>
+              {busy ? "Starting..." : "Start"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </Popover>
   );
 }

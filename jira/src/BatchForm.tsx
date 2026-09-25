@@ -9,6 +9,7 @@ import { useEffect, useRef } from "react";
 import Icon from "./Icon";
 import { usePopoverPosition, type PopoverAnchor } from "./usePopoverPosition";
 import type { IssueRow } from "./types";
+import Popover from "./Popover";
 
 export interface BatchFormProps {
   anchor: PopoverAnchor;
@@ -71,113 +72,115 @@ export default function BatchForm({
     : `Asking the AI to group ${count}...`;
 
   return (
-    <div ref={ref} className="jira-popover jira-batchform" role="dialog" style={style}>
-      <div className="jira-pop-head">
-        <span className="jira-facets-title">
-          {addingTo ? `Add tickets to "${addingTo}"` : "Plan batch"}
-        </span>
-        <button className="icon-button" title="Close" onClick={onCancel}>
-          <Icon name="close" />
-        </button>
-      </div>
-
-      <div className="jira-batchform-body">
-        <label className="jira-field-label" htmlFor="jira-batch-keys">
-          Tickets
-        </label>
-        {issues.length === 0 ? (
-          <div className="jira-batchform-empty">Nothing picked yet - paste some keys below.</div>
-        ) : (
-          <ul className="jira-batchform-tickets">
-            {issues.map((issue) => (
-              <li key={issue.key}>
-                <span className="jira-key">{issue.key}</span>
-                <span className="jira-batchform-summary">{issue.summary}</span>
-                <button
-                  className="icon-button"
-                  title={`Leave ${issue.key} out`}
-                  onClick={() => onRemoveIssue(issue.key)}
-                  disabled={busy}
-                >
-                  <Icon name="close" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <textarea
-          id="jira-batch-keys"
-          ref={keysRef}
-          className="jira-batchform-keys"
-          rows={2}
-          placeholder="Paste ticket keys or links: CAP-12, CAP-15, https://.../browse/OPS-41"
-          value={keysText}
-          disabled={busy}
-          onChange={(e) => onChange({ keysText: e.target.value })}
-          // Resolved when the field loses focus, so the list shows what was
-          // pasted before Analyze is pressed rather than after.
-          onBlur={() => onResolveKeys()}
-        />
-        {lookupNote && <div className="jira-batchform-note">{lookupNote}</div>}
-
-        <label className="jira-field-label" htmlFor="jira-batch-criteria">
-          How should they be split?
-        </label>
-        <textarea
-          id="jira-batch-criteria"
-          className="jira-batchform-criteria"
-          rows={4}
-          value={criteria}
-          disabled={busy}
-          onChange={(e) => onChange({ criteria: e.target.value })}
-        />
-
-        <label className={`jira-batchform-check${canReadCodebase ? "" : " disabled"}`}>
-          <input
-            type="checkbox"
-            id="jira-batch-readcode"
-            checked={readCodebase}
-            disabled={busy || !canReadCodebase}
-            onChange={(e) => onChange({ readCodebase: e.target.checked })}
-          />
-          <span>Read the codebase first</span>
-        </label>
-        <div className="jira-batchform-hint">
-          {aiHint ??
-            (readCodebase
-              ? "The AI looks at the files each ticket would touch before grouping. Slower, and much better at spotting two tickets that would collide."
-              : "Groups from the ticket text alone.")}
+    <Popover>
+      <div ref={ref} className="jira-popover jira-batchform" role="dialog" style={style}>
+        <div className="jira-pop-head">
+          <span className="jira-facets-title">
+            {addingTo ? `Add tickets to "${addingTo}"` : "Plan batch"}
+          </span>
+          <button className="icon-button" title="Close" onClick={onCancel}>
+            <Icon name="close" />
+          </button>
         </div>
 
-        {error && (
-          <div className="jira-batchform-error">
-            {error}
-            {fallback && (
-              <button className="jira-linkish" onClick={onSubmitWithoutCodebase} disabled={busy}>
-                Analyze without reading the codebase
-              </button>
-            )}
-          </div>
-        )}
-        {busy && <div className="jira-batchform-busy">{busyLabel}</div>}
-      </div>
+        <div className="jira-batchform-body">
+          <label className="jira-field-label" htmlFor="jira-batch-keys">
+            Tickets
+          </label>
+          {issues.length === 0 ? (
+            <div className="jira-batchform-empty">Nothing picked yet - paste some keys below.</div>
+          ) : (
+            <ul className="jira-batchform-tickets">
+              {issues.map((issue) => (
+                <li key={issue.key}>
+                  <span className="jira-key">{issue.key}</span>
+                  <span className="jira-batchform-summary">{issue.summary}</span>
+                  <button
+                    className="icon-button"
+                    title={`Leave ${issue.key} out`}
+                    onClick={() => onRemoveIssue(issue.key)}
+                    disabled={busy}
+                  >
+                    <Icon name="close" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
 
-      <div className="jira-pop-actions">
-        <button className="jira-selaction" onClick={onCancel} disabled={busy}>
-          Cancel
-        </button>
-        <button
-          className="jira-selaction primary"
-          onClick={onSubmit}
-          // Pasted-but-not-yet-resolved text counts: submitting resolves it,
-          // which is the whole point of resolving on submit as well as on
-          // blur. Disabling here would make that path unreachable.
-          disabled={busy || (issues.length === 0 && keysText.trim() === "")}
-        >
-          {busy ? "Analyzing..." : "Analyze"}
-        </button>
+          <textarea
+            id="jira-batch-keys"
+            ref={keysRef}
+            className="jira-batchform-keys"
+            rows={2}
+            placeholder="Paste ticket keys or links: CAP-12, CAP-15, https://.../browse/OPS-41"
+            value={keysText}
+            disabled={busy}
+            onChange={(e) => onChange({ keysText: e.target.value })}
+            // Resolved when the field loses focus, so the list shows what was
+            // pasted before Analyze is pressed rather than after.
+            onBlur={() => onResolveKeys()}
+          />
+          {lookupNote && <div className="jira-batchform-note">{lookupNote}</div>}
+
+          <label className="jira-field-label" htmlFor="jira-batch-criteria">
+            How should they be split?
+          </label>
+          <textarea
+            id="jira-batch-criteria"
+            className="jira-batchform-criteria"
+            rows={4}
+            value={criteria}
+            disabled={busy}
+            onChange={(e) => onChange({ criteria: e.target.value })}
+          />
+
+          <label className={`jira-batchform-check${canReadCodebase ? "" : " disabled"}`}>
+            <input
+              type="checkbox"
+              id="jira-batch-readcode"
+              checked={readCodebase}
+              disabled={busy || !canReadCodebase}
+              onChange={(e) => onChange({ readCodebase: e.target.checked })}
+            />
+            <span>Read the codebase first</span>
+          </label>
+          <div className="jira-batchform-hint">
+            {aiHint ??
+              (readCodebase
+                ? "The AI looks at the files each ticket would touch before grouping. Slower, and much better at spotting two tickets that would collide."
+                : "Groups from the ticket text alone.")}
+          </div>
+
+          {error && (
+            <div className="jira-batchform-error">
+              {error}
+              {fallback && (
+                <button className="jira-linkish" onClick={onSubmitWithoutCodebase} disabled={busy}>
+                  Analyze without reading the codebase
+                </button>
+              )}
+            </div>
+          )}
+          {busy && <div className="jira-batchform-busy">{busyLabel}</div>}
+        </div>
+
+        <div className="jira-pop-actions">
+          <button className="jira-selaction" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className="jira-selaction primary"
+            onClick={onSubmit}
+            // Pasted-but-not-yet-resolved text counts: submitting resolves it,
+            // which is the whole point of resolving on submit as well as on
+            // blur. Disabling here would make that path unreachable.
+            disabled={busy || (issues.length === 0 && keysText.trim() === "")}
+          >
+            {busy ? "Analyzing..." : "Analyze"}
+          </button>
+        </div>
       </div>
-    </div>
+    </Popover>
   );
 }

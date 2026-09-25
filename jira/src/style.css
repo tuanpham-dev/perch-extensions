@@ -164,7 +164,11 @@
 
 .jira-popover {
   position: fixed;
-  z-index: 40;
+  /* Core's rung for a floating card (.context-menu, .worktree-popover and
+     the status-bar popover all sit here). These render into document.body -
+     see Popover.tsx - so this ranks them against the app's own chrome rather
+     than against their siblings inside one tab. */
+  z-index: 1000;
   width: min(420px, calc(100vw - 24px));
   max-height: min(60vh, 520px);
   overflow: auto;
