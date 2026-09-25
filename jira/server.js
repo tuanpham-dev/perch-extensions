@@ -306,6 +306,20 @@ export function shortenHome(abs) {
   return abs.startsWith(`${home}/`) ? `~${abs.slice(home.length)}` : abs;
 }
 
+// git says why it failed across several lines, and the ones after the first
+// are advice for a terminal, not for a one-line note in a panel: a failed
+// fetch spends three of its four lines telling you to check your access
+// rights. The first line is the reason; keep that, capped so a pathological
+// one cannot push the rest of the note off screen.
+export function firstLine(text) {
+  const line = String(text ?? "")
+    .split("\n")
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0);
+  if (!line) return "git fetch origin failed";
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
 export function parseWorktreeList(out) {
   const rows = [];
   let current = null;
@@ -1324,12 +1338,16 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   // browser in the loop, and must land in exactly the same place with exactly
   // the same refusals as the button does.
   //
-  // `offline` is the one deliberate difference. "Start work" fetches first,
-  // because one worktree branched off a stale base is worth a moment's wait
-  // and a refusal if the network says no. A batch is N worktrees in a row:
-  // that is N fetches of the same repository, N chances to sit on a timeout
-  // or a credential prompt, and a failure there takes down a start that has
-  // nothing to do with the network.
+  // `offline` is the one deliberate difference, and it is about how much
+  // network to attempt, never about whether the worktree gets made. "Start
+  // work" is a single worktree, so it is worth a moment's wait to fetch and
+  // branch off something current. A batch is N worktrees in a row: that is N
+  // fetches of the same repository and N chances to sit on a timeout or a
+  // credential prompt, for a base that the first one already brought up to
+  // date.
+  //
+  // Neither mode lets the remote decide whether the worktree happens. See the
+  // fetch below.
   async function createWorktree(cwd, branch, settings, { offline = false } = {}) {
     const name = branch.trim();
     const repo = await repoRoot(cwd);
@@ -1345,12 +1363,22 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     // says nothing - `git remote show origin`, the other branch of
     // defaultBranch, goes to the network too.
     const { base, note } = offline ? await localDefaultBranch(repo) : await defaultBranch(repo);
+    const notes = note ? [note] : [];
     if (base && !offline) {
       try {
         await git(["fetch", "origin"], repo, FETCH_TIMEOUT);
       } catch (err) {
-        // Branching off a stale base silently is worse than saying so.
-        throw new HttpError(502, `git fetch origin failed: ${err.message}`);
+        // Best effort, not a precondition. A host that cannot reach the remote
+        // - no key deployed for it, no network, a credential prompt sitting
+        // behind the timeout - still has a perfectly serviceable local base,
+        // and refusing the worktree over a possibly stale one left "Start
+        // work" dead on exactly the machines this runs on.
+        //
+        // Branching off a stale base silently is still worse than saying so,
+        // so it is said: the same note channel the panel already shows for a
+        // fallback base, and the same bargain progressIssue makes when Jira
+        // will not answer.
+        notes.push(`Branched off ${base} as it stands locally - git fetch origin failed: ${firstLine(err.message)}`);
       }
     }
 
@@ -1366,7 +1394,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       if (/already exists/i.test(err.message)) throw conflict(err.message);
       throw new HttpError(500, err.message);
     }
-    return { path: target, branch: name, base: base ?? "HEAD", note };
+    return { path: target, branch: name, base: base ?? "HEAD", note: notes.join(" ") || null };
   }
 
   router.post("/worktree", async (req, res) => {

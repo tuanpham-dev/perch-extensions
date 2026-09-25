@@ -235,6 +235,11 @@ otherwise whatever `git remote show origin` reports - after fetching `origin`. I
 answer (a `--depth` clone, an origin added by hand, no remote at all) it falls back to the
 current HEAD and says so in the panel; `git remote set-head origin -a` fixes the common case.
 
+The fetch is best effort. When the remote cannot be reached - no key deployed for it on this
+host, no network, a credential prompt behind the timeout - the worktree is still created from
+the local base, and the panel says which base it used and what git reported. Nothing about
+starting work waits on the remote's permission.
+
 The branch name comes from `jira.branchTemplate`:
 
 | Token | Becomes |

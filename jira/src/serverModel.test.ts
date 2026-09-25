@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import { test } from "node:test";
-import { adfToMarkdown, composeJql, openClause, parseWorktreeList, readSortParams, shortenHome } from "../server.js";
+import { adfToMarkdown, composeJql, firstLine, openClause, parseWorktreeList, readSortParams, shortenHome } from "../server.js";
 
 interface Filters {
   status: string[];
@@ -333,4 +333,31 @@ test("the board lets recently finished tickets back in", () => {
 
 test("a done window of 0 keeps Done off the board", () => {
   assert.equal(openClause(true, 0), "statusCategory != Done");
+});
+
+// ---- The one line of a git failure worth showing ----
+
+// The real thing, verbatim from a host with no key for the remote: four lines,
+// three of them advice for a terminal. Only the first says what went wrong.
+test("a failed fetch is reduced to its reason", () => {
+  const err = "git@github.com: Permission denied (publickey).\r\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.";
+  assert.equal(firstLine(err), "git@github.com: Permission denied (publickey).");
+});
+
+test("leading blank lines are skipped rather than returned", () => {
+  assert.equal(firstLine("\n\n  timed out after 60000ms  \nmore"), "timed out after 60000ms");
+});
+
+// Never empty: the note reads "git fetch origin failed: <this>", and a
+// trailing colon with nothing after it looks like a truncated bug.
+test("a message with nothing in it still says something", () => {
+  assert.equal(firstLine(""), "git fetch origin failed");
+  assert.equal(firstLine(null), "git fetch origin failed");
+  assert.equal(firstLine("   \n  "), "git fetch origin failed");
+});
+
+test("a pathological line cannot push the rest of the note off screen", () => {
+  const out = firstLine("x".repeat(500));
+  assert.equal(out.length, 200);
+  assert.equal(out.endsWith("…"), true);
 });
