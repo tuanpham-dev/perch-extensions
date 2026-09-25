@@ -1257,14 +1257,24 @@ export function clearBatchNote(): void {
 }
 
 // The batches for this repo, for the Plan batch menu and the board's picker.
-function loadBatches(cwd: string | null): void {
+//
+// Returns the refreshed list rather than only parking it in state, because
+// whoever just deleted a batch has to choose what to show next and cannot read
+// that decision out of `state` until this has landed.
+function loadBatches(cwd: string | null): Promise<BatchSummary[]> {
   if (!cwd) {
     setState({ batchSummaries: [], batchArchived: [] });
-    return;
+    return Promise.resolve([]);
   }
-  void listBatches(cwd)
-    .then((res) => setState({ batchSummaries: res.batches, batchArchived: res.archived }))
-    .catch(() => setState({ batchSummaries: [], batchArchived: [] }));
+  return listBatches(cwd)
+    .then((res) => {
+      setState({ batchSummaries: res.batches, batchArchived: res.archived });
+      return res.batches;
+    })
+    .catch(() => {
+      setState({ batchSummaries: [], batchArchived: [] });
+      return [];
+    });
 }
 
 function loadSkills(cwd: string | null): void {
@@ -1871,6 +1881,30 @@ export function sendBatchFeedback(): void {
     .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
 }
 
+// What to show once the open batch is gone, whether it was deleted or
+// archived.
+//
+// `batch: null` on its own is not enough. The batch picker and the archived
+// list both live inside BatchBoard, so dropping the batch unmounts the only
+// controls that could open another one, and what is left is one line of grey
+// text telling you to pick from a list that is no longer on screen. Opening
+// the next batch keeps the view somewhere you can act from; the empty state
+// is then reserved for a repository that genuinely has no batches left.
+//
+// The view state goes with it, for the reason closeBatch resets the same
+// fields: a cluster filter or a review view belonged to the batch that just
+// went away.
+function leaveBatch(): void {
+  setState({ batch: null, batchView: "board", clusterFilter: new Set<string>(), focused: null });
+  // Ordered after the refresh, not alongside it: the summaries still hold the
+  // batch that was just removed until the list comes back, and picking a
+  // successor out of a stale list reopens the dead one and 404s.
+  void loadBatches(state.cwd).then((batches) => {
+    const next = batches[0];
+    if (next) openBatch(next.id);
+  });
+}
+
 export function archiveOpenBatch(): void {
   const batch = state.batch;
   if (!batch) return;
@@ -1879,10 +1913,7 @@ export function archiveOpenBatch(): void {
     return;
   }
   void archiveBatch(batch.id)
-    .then(() => {
-      setState({ batch: null });
-      loadBatches(state.cwd);
-    })
+    .then(() => leaveBatch())
     .catch((err) => setState({ batchError: message(err) }));
 }
 
@@ -1898,12 +1929,18 @@ export function unarchiveBatch(id: string): void {
 export function deleteOpenBatch(): void {
   const batch = state.batch;
   if (!batch) return;
+  // Asked before the dialog, the way archiving asks: the server refuses a
+  // batch with a running cluster, and finding that out only after confirming
+  // a delete reads as the delete having failed halfway.
+  if (!batch.canDelete) {
+    setState({ batchError: "A cluster is still running - close it before deleting this batch." });
+    return;
+  }
   void confirmDialog(`Delete the batch "${batch.name}"? Its worktrees and branches are left alone.`, "Delete")
     .then((go) => (go ? deleteBatch(batch.id) : null))
     .then((res) => {
       if (!res) return;
-      setState({ batch: null });
-      loadBatches(state.cwd);
+      leaveBatch();
     })
     .catch((err) => setState({ batchError: message(err) }));
 }
@@ -2897,14 +2934,41 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
   }, []);
 
 
+  // With no batch open there is no board, and the board is where the picker
+  // and the archived list live - so this has to carry its own, or deleting a
+  // batch leaves a pane with nothing on it but an instruction to use a list
+  // that went away with the board.
   if (!s.batch) {
     return (
-      <div className="jira-empty">
-        {s.batchBusy
-          ? "Loading..."
-          : s.batchSummaries.length > 0
-            ? "Pick a batch from the list, or plan a new one from a ticket selection."
-            : "No batches yet. Tick some tickets in the Table view and choose Plan batch."}
+      <div className="jira-empty jira-bempty">
+        {s.batchBusy ? (
+          "Loading..."
+        ) : s.batchSummaries.length > 0 ? (
+          <>
+            <p>Pick a batch, or plan a new one from a ticket selection.</p>
+            <div className="jira-bempty-list">
+              {s.batchSummaries.map((entry) => (
+                <button key={entry.id} className="jira-selaction" onClick={() => openBatch(entry.id)}>
+                  {entry.name}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <p>No batches yet. Tick some tickets in the Table view and choose Plan batch.</p>
+            {s.batchArchived.length > 0 && (
+              <div className="jira-bempty-list">
+                <span>Archived:</span>
+                {s.batchArchived.map((entry) => (
+                  <button key={entry.id} className="jira-linkish" onClick={() => unarchiveBatch(entry.id)}>
+                    {entry.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
         {s.batchError && <div className="jira-error">{s.batchError}</div>}
       </div>
     );

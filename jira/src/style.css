@@ -3152,3 +3152,24 @@
 .jira-skillpicker-note .warn {
   color: hsl(35 80% 55%);
 }
+
+/* The Batches pane with nothing open. It carries its own picker, because the
+   board that normally holds one is exactly what is not rendered here. */
+.jira-bempty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 12px;
+}
+
+.jira-bempty p {
+  margin: 0;
+}
+
+.jira-bempty-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
