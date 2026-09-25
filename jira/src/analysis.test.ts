@@ -3,7 +3,7 @@
 // is trusted with are the two halves of this file.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildClusterPrompt, heuristicClusters, parseClusterReply } from "../analysis.mjs";
+import { buildClusterPrompt, heuristicClusters, parseClusterReply, singleCluster } from "../analysis.mjs";
 import type { IssueDetail } from "./types.ts";
 
 function detail(patch: Partial<IssueDetail> & { key: string }): IssueDetail {
@@ -174,4 +174,32 @@ test("a ticket with none of the three is left unclustered rather than put in a j
   const result = heuristicClusters([detail({ key: "CAP-1" }), detail({ key: "CAP-2", labels: ["nav"] })]);
   assert.deepEqual(result.unclustered, ["CAP-1"]);
   assert.deepEqual(result.clusters.map((c) => c.keys), [["CAP-2"]]);
+});
+
+// ---- Split by hand ----
+
+test("one cluster by hand holds every ticket, in the order given", () => {
+  const proposal = singleCluster([
+    { key: "CAP-3", summary: "Cart drawer totals are stale" },
+    { key: "CAP-1", summary: "Header overflows" },
+  ] as never);
+  assert.equal(proposal.clusters.length, 1);
+  assert.deepEqual(proposal.clusters[0].keys, ["CAP-3", "CAP-1"]);
+  assert.deepEqual(proposal.unclustered, []);
+});
+
+test("it is named after the first ticket, the way a branch is", () => {
+  const proposal = singleCluster([{ key: "CAP-3", summary: "Cart drawer totals are stale" }] as never);
+  assert.equal(proposal.clusters[0].name, "Cart drawer totals are stale");
+});
+
+test("a ticket with no summary still names the cluster something", () => {
+  assert.equal(singleCluster([{ key: "CAP-3", summary: "" }] as never).clusters[0].name, "CAP-3");
+  assert.equal(singleCluster([] as never).clusters[0].name, "Batch");
+});
+
+test("the rationale says a person chose it, not a model", () => {
+  const why = singleCluster([{ key: "CAP-1", summary: "x" }] as never).clusters[0].rationale;
+  assert.match(why, /by hand/);
+  assert.equal(/AI|model|grouped by/i.test(why), false);
 });

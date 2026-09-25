@@ -428,6 +428,8 @@ interface BatchFormState {
   criteria: string;
   readCodebase: boolean;
   canReadCodebase: boolean;
+  // Skip the AI and keep every ticket in one cluster.
+  single: boolean;
   aiHint: string | null;
   busy: boolean;
   error: string | null;
@@ -1361,6 +1363,7 @@ export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId
       // configured AI may not be able to do.
       readCodebase: false,
       canReadCodebase: false,
+      single: false,
       aiHint: null,
       busy: false,
       error: null,
@@ -1469,7 +1472,7 @@ export async function submitBatchForm(options: { readCodebase?: boolean } = {}):
     updateBatchForm({ error: "Pick or paste at least one ticket." });
     return;
   }
-  const readCodebase = options.readCodebase ?? form.readCodebase;
+  const readCodebase = form.single ? false : (options.readCodebase ?? form.readCodebase);
   updateBatchForm({ busy: true, error: null, fallback: false, readCodebase });
   extSettings?.set(CRITERIA_KEY, form.criteria);
   try {
@@ -1478,6 +1481,7 @@ export async function submitBatchForm(options: { readCodebase?: boolean } = {}):
       keys: issues.map((issue) => issue.key),
       criteria: form.criteria,
       readCodebase,
+      single: form.single,
       batchId: form.batchId,
     });
     setState({
@@ -2439,6 +2443,7 @@ function BatchFormFor({ form }: { form: BatchFormState }) {
       lookupNote={form.lookupNote}
       criteria={form.criteria}
       readCodebase={form.readCodebase}
+      single={form.single}
       canReadCodebase={form.canReadCodebase}
       aiHint={form.aiHint}
       busy={form.busy}

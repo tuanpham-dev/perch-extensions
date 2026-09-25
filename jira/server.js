@@ -49,7 +49,7 @@ import {
   ticketCounts,
 } from "./batchModel.mjs";
 import { createBatchStore, newId } from "./batchStore.mjs";
-import { buildClusterPrompt, heuristicClusters, parseClusterReply } from "./analysis.mjs";
+import { buildClusterPrompt, heuristicClusters, parseClusterReply, singleCluster } from "./analysis.mjs";
 import { createBatchRunner } from "./batchRunner.mjs";
 import { discoverSkills, parseSkillPaths } from "./skills.mjs";
 
@@ -1670,7 +1670,11 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const repo = await repoOf(req);
       const body = req.body ?? {};
       const criteria = typeof body.criteria === "string" ? body.criteria : "";
-      const readCodebase = body.readCodebase === true;
+      // Split by hand: no AI call, everything in one cluster. The criteria
+      // and the codebase read only exist to inform a model, so neither
+      // applies.
+      const single = body.single === true;
+      const readCodebase = !single && body.readCodebase === true;
       const keys = (Array.isArray(body.keys) ? body.keys : []).filter((key) => typeof key === "string" && ISSUE_KEY.test(key)).map((key) => key.toUpperCase());
       if (keys.length === 0) throw bad("no tickets to analyze");
 
@@ -1692,11 +1696,13 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
             .map((cluster) => ({ id: cluster.id, name: cluster.name, state: clusterState(target, cluster), keys: cluster.keys, rationale: cluster.rationale }))
         : [];
 
-      const profiles = ai?.listProfiles ? await ai.listProfiles().catch(() => []) : [];
+      const profiles = single ? [] : ai?.listProfiles ? await ai.listProfiles().catch(() => []) : [];
       let proposal;
       let warnings = [];
       let heuristic = false;
-      if (profiles.length === 0) {
+      if (single) {
+        proposal = singleCluster(details);
+      } else if (profiles.length === 0) {
         // No AI at all is not an error: the fields a team already fills in
         // are a worse grouping than a model's, and a far better one than none.
         proposal = heuristicClusters(details);
@@ -1742,7 +1748,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         const name = proposal.clusters[0]?.name
           ? `${proposal.clusters[0].name}${proposal.clusters.length > 1 ? ` +${proposal.clusters.length - 1}` : ""}`
           : "Batch";
-        const batch = newBatch({ id, name, repo, criteria, readCodebase, tickets: details, now });
+        const batch = newBatch({ id, name, repo, criteria: single ? "" : criteria, readCodebase, tickets: details, now });
         const applied = applyProposal(batch, proposal, { makeId: () => newId("cls"), now });
         warnings = [...warnings, ...applied.warnings];
         draft.batches[id] = batch;

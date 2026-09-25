@@ -54,6 +54,8 @@ export function analyzeBatch(body: {
   keys: string[];
   criteria: string;
   readCodebase: boolean;
+  // Skip the AI: one cluster holding every ticket.
+  single?: boolean;
   batchId?: string | null;
 }): Promise<AnalyzeResponse> {
   return apiPost<AnalyzeResponse>("/batches/analyze", body);

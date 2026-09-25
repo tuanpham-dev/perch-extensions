@@ -17,6 +17,8 @@ export interface BatchFormProps {
   addingTo: string | null;
   issues: IssueRow[];
   keysText: string;
+  // Skip the AI and put everything in one cluster.
+  single: boolean;
   lookupNote: string | null;
   criteria: string;
   readCodebase: boolean;
@@ -25,7 +27,7 @@ export interface BatchFormProps {
   busy: boolean;
   error: string | null;
   fallback: boolean;
-  onChange: (patch: { keysText?: string; criteria?: string; readCodebase?: boolean }) => void;
+  onChange: (patch: { keysText?: string; criteria?: string; readCodebase?: boolean; single?: boolean }) => void;
   onResolveKeys: () => void;
   onRemoveIssue: (key: string) => void;
   onSubmit: () => void;
@@ -38,6 +40,7 @@ export default function BatchForm({
   addingTo,
   issues,
   keysText,
+  single,
   lookupNote,
   criteria,
   readCodebase,
@@ -123,34 +126,58 @@ export default function BatchForm({
           />
           {lookupNote && <div className="jira-batchform-note">{lookupNote}</div>}
 
-          <label className="jira-field-label" htmlFor="jira-batch-criteria">
-            How should they be split?
-          </label>
-          <textarea
-            id="jira-batch-criteria"
-            className="jira-batchform-criteria"
-            rows={4}
-            value={criteria}
-            disabled={busy}
-            onChange={(e) => onChange({ criteria: e.target.value })}
-          />
+          <span className="jira-field-label">How should they be split?</span>
 
-          <label className={`jira-batchform-check${canReadCodebase ? "" : " disabled"}`}>
+          {/* The first answer is "don't". A few tickets on one piece of work
+              need no model to group them, and this is what "Start work"
+              would do - one worktree, one agent - with the board, the
+              reports and the QA pass that only a batch gets. */}
+          <label className="jira-batchform-check">
             <input
               type="checkbox"
-              id="jira-batch-readcode"
-              checked={readCodebase}
-              disabled={busy || !canReadCodebase}
-              onChange={(e) => onChange({ readCodebase: e.target.checked })}
+              id="jira-batch-single"
+              checked={single}
+              disabled={busy}
+              onChange={(e) => onChange({ single: e.target.checked })}
             />
-            <span>Read the codebase first</span>
+            <span>Keep them together in one cluster</span>
           </label>
-          <div className="jira-batchform-hint">
-            {aiHint ??
-              (readCodebase
-                ? "The AI looks at the files each ticket would touch before grouping. Slower, and much better at spotting two tickets that would collide."
-                : "Groups from the ticket text alone.")}
-          </div>
+
+          {single ? (
+            <div className="jira-batchform-hint">
+              One worktree and one agent for all {issues.length === 1 ? "1 ticket" : `${issues.length} tickets`}, worked in
+              the order above. No AI call, so this is immediate - and you can still split it in the review.
+            </div>
+          ) : (
+            <>
+              <textarea
+                id="jira-batch-criteria"
+                className="jira-batchform-criteria"
+                aria-label="How should they be split?"
+                rows={4}
+                value={criteria}
+                disabled={busy}
+                onChange={(e) => onChange({ criteria: e.target.value })}
+              />
+
+              <label className={`jira-batchform-check${canReadCodebase ? "" : " disabled"}`}>
+                <input
+                  type="checkbox"
+                  id="jira-batch-readcode"
+                  checked={readCodebase}
+                  disabled={busy || !canReadCodebase}
+                  onChange={(e) => onChange({ readCodebase: e.target.checked })}
+                />
+                <span>Read the codebase first</span>
+              </label>
+              <div className="jira-batchform-hint">
+                {aiHint ??
+                  (readCodebase
+                    ? "The AI looks at the files each ticket would touch before grouping. Slower, and much better at spotting two tickets that would collide."
+                    : "Groups from the ticket text alone.")}
+              </div>
+            </>
+          )}
 
           {error && (
             <div className="jira-batchform-error">
@@ -177,7 +204,7 @@ export default function BatchForm({
             // blur. Disabling here would make that path unreachable.
             disabled={busy || (issues.length === 0 && keysText.trim() === "")}
           >
-            {busy ? "Analyzing..." : "Analyze"}
+            {busy ? (single ? "Creating..." : "Analyzing...") : single ? "Create batch" : "Analyze"}
           </button>
         </div>
       </div>

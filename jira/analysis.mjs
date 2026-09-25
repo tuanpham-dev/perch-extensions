@@ -170,6 +170,33 @@ export function parseClusterReply(text, { allowedKeys, existing = [] } = {}) {
   return { ok: true, proposal: { clusters, unclustered }, warnings };
 }
 
+// ---- Split by hand ----
+//
+// One cluster holding everything, for when the grouping is not in question:
+// a few tickets on the same piece of work, which "Start work" would already
+// put in one worktree. Going through a batch instead is what buys the
+// kanban, the `jira-batch` reports and the QA pass - so this is that same
+// choice, with the tracking.
+//
+// No AI call at all. There is nothing for a model to decide, and waiting a
+// minute to be told what you already said is the wrong trade.
+export function singleCluster(details) {
+  const first = details[0];
+  const name = ((first?.summary ?? "").trim() || first?.key || "Batch").slice(0, MAX_NAME);
+  return {
+    clusters: [
+      {
+        id: null,
+        name,
+        rationale: "Kept together by hand - one worktree and one agent for all of them.",
+        files: [],
+        keys: details.map((detail) => detail.key),
+      },
+    ],
+    unclustered: [],
+  };
+}
+
 // ---- No AI configured ----
 //
 // Epic, then component, then label: the fields a team already uses to say
