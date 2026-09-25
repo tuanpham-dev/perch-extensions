@@ -190,7 +190,7 @@ export default function ColumnEditor({ anchor, config, statuses, onSave, onCance
           ))}
         </ol>
 
-        <button className="jira-selaction" onClick={() => edit((d) => addColumn(d, "New column"))}>
+        <button className="jira-selaction with-icon" onClick={() => edit((d) => addColumn(d, "New column"))}>
           <Icon name="add" /> Add column
         </button>
 

@@ -832,6 +832,25 @@
   cursor: pointer;
 }
 
+/* A button carrying a codicon. The glyph is 16px by default, which beside
+   an 11px label reads as an icon that wandered in from a bigger control,
+   and inline layout drops it on the text baseline instead of centring it -
+   so it sat a pixel high and touching the word.
+
+   A modifier rather than a change to every .jira-selaction: the two in the
+   sidebar's action grid truncate with text-overflow, which an inline-flex
+   box cannot do. */
+.jira-selaction.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.jira-selaction .codicon {
+  font-size: 13px;
+  line-height: 1;
+}
+
 .jira-selaction:hover:not(:disabled) {
   border-color: var(--focus-border, #4a9eff);
   color: var(--fg-bright, #eee);

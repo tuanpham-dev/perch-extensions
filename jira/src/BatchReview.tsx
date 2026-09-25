@@ -299,7 +299,7 @@ export default function BatchReview({
     <div className="jira-batchreview">
       <div className="jira-breview-bar">
         <span className="jira-breview-title">{batch.name}</span>
-        <button className="jira-selaction" disabled={busy} onClick={() => setCriteriaOpen(!criteriaOpen)}>
+        <button className="jira-selaction with-icon" disabled={busy} onClick={() => setCriteriaOpen(!criteriaOpen)}>
           Criteria
           <Icon name={criteriaOpen ? "chevron-up" : "chevron-down"} />
         </button>
