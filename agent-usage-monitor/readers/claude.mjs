@@ -21,6 +21,7 @@ import path from "node:path";
 import { blocksFor, parseUsageLines } from "../usageModel.mjs";
 import { readCostState, readTail, spendFrom } from "../costState.mjs";
 import { readWindows } from "./claudeConfig.mjs";
+import { refreshFromCli } from "./claudeCli.mjs";
 
 const CLAUDE_DIR = path.join(homedir(), ".claude");
 const PROJECTS_DIR = path.join(CLAUDE_DIR, "projects");
@@ -127,7 +128,12 @@ async function mtimeOf(file) {
 // CLI's own cached account limits, which lag by minutes but carry the
 // per-model weeks - and carry the session and week too, on a machine whose
 // status line doesn't write that file at all.
+//
+// Both only move while a CLI runs, so the CLI is asked to run first: once a
+// minute `claude -p /usage` rewrites them (see ./claudeCli.mjs), and the
+// read that asked waits for it, so it sees the fresh files.
 async function readLimits(now) {
+  await refreshFromCli();
   const limits = await readStatuslineLimits(now);
   for (const window of await readWindows(now)) {
     if (!limits.some((l) => l.label === window.label)) limits.push(window);

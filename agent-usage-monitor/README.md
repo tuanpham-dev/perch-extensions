@@ -1,6 +1,6 @@
 # Agent Usage Monitor
 
-How much each coding agent has burned, in the status bar. Everything shown is read from files the agents already write on this machine, or asked of the agent's own CLI; the extension writes nothing and sends nothing anywhere.
+How much each coding agent has burned, in the status bar. Everything shown is read from files the agents already write on this machine, or asked of the agent's own CLI (`claude -p /usage` and `codex app-server`, each once a minute); the extension writes nothing and sends nothing anywhere.
 
 ## What you get
 
@@ -28,6 +28,7 @@ An agent with no readable usage never appears, so nothing sits empty in the bar.
 - `~/.claude/projects/**/*.jsonl` - token usage per message (subagent runs included), and each session's `cost-state` summary line. Only transcripts touched inside the window on screen are read line by line; the rest are read as a tail for their cost line, so a 500 MB folder costs a fraction of a second.
 - `~/.claude/rate-limit-state.json` - the limit percentages Claude Code records for itself.
 - `~/.claude.json` - Claude Code's cached copy of the account's limits, which is where the per-model weekly cap lives.
+- `claude -p /usage` - run once a minute while a client is polling, because the two files above only move while a Claude Code session is running. The run prints the account's limits and exits, rewriting both files on the way out; its output is discarded and the files are read as before. It leaves no transcript (session persistence is off) and starts no MCP servers. A machine without `claude` on the server's PATH pays one failed spawn a minute and shows whatever the files say.
 - `~/.claude/sessions/<pid>.json` - which Claude session runs in which pane, for the model item.
 - `~/.codex/sessions/**/rollout-*.jsonl` - cumulative token counts per turn, plus Codex's own limit block. The running `codex` process holds its rollout open, which is how its terminal is matched to a session.
 - `codex app-server` - asked for the account's current limits, plan and today's token count, the same numbers Codex's own UI shows. Its answer wins over the rollout files, which stopped carrying usage; the files remain the fallback when it doesn't answer. The account token stays inside Codex's process.
