@@ -3275,6 +3275,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
 
   const [layout, chooseLayout] = useLayoutChoice();
   const split = useSplitResize(layout);
+  const showing = layout ?? split.direction;
   const busy = s.busyKey !== null;
 
   // The actions live on the right of the scope bar, always in the same place:
@@ -3421,19 +3422,21 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         {!gate && (
           // Side by side or top and bottom. Until one is picked the tab
           // decides by its width; the highlighted button is whichever layout
-          // is showing now, chosen or not.
+          // is showing now, chosen or not. The choice comes first: on the
+          // Batches view the split being governed is that area's, not this
+          // one's, and this one has nothing to measure there.
           <div className="jira-layout-toggle" role="group" aria-label="Layout">
             <button
-              className={`icon-button${split.direction === "row" ? " active" : ""}`}
-              aria-pressed={split.direction === "row"}
+              className={`icon-button${showing === "row" ? " active" : ""}`}
+              aria-pressed={showing === "row"}
               title="Details beside the list"
               onClick={() => chooseLayout("row")}
             >
               <Icon name="layout-sidebar-right" />
             </button>
             <button
-              className={`icon-button${split.direction === "column" ? " active" : ""}`}
-              aria-pressed={split.direction === "column"}
+              className={`icon-button${showing === "column" ? " active" : ""}`}
+              aria-pressed={showing === "column"}
               title="Details below the list"
               onClick={() => chooseLayout("column")}
             >

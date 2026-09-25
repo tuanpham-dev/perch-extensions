@@ -17,7 +17,7 @@
 // Remembered per direction in localStorage - a width that suits a desktop
 // tab is meaningless as a height on a phone, and a pane size is a per-screen
 // convenience, not something to sync across devices through settings.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 
 const MIN_DETAIL = 220;
@@ -31,24 +31,50 @@ export type Direction = "row" | "column";
 // The user's layout choice: side by side ("row"), top and bottom
 // ("column"), or null for automatic - side by side unless the tab is too
 // narrow for it. Remembered per browser like the size, for the same reason.
+//
+// One value for the whole extension, not one per component: the toggle sits
+// in the tab's header while the split it governs may be the Batches area's,
+// a different component with its own call to this hook. Each holding its own
+// copy of the choice meant the Batches split only learnt of a change when it
+// was remounted - by leaving for the table and coming back.
+function readLayout(): Direction | null {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    return raw === "row" || raw === "column" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+let layoutChoice: Direction | null | undefined;
+const layoutListeners = new Set<() => void>();
+
+function currentLayout(): Direction | null {
+  if (layoutChoice === undefined) layoutChoice = readLayout();
+  return layoutChoice;
+}
+
+function subscribeLayout(cb: () => void): () => void {
+  layoutListeners.add(cb);
+  return () => {
+    layoutListeners.delete(cb);
+  };
+}
+
+function chooseLayout(next: Direction): void {
+  if (next === layoutChoice) return;
+  layoutChoice = next;
+  try {
+    localStorage.setItem(LAYOUT_KEY, next);
+  } catch {
+    // Blocked storage: the choice still holds for this session.
+  }
+  for (const cb of layoutListeners) cb();
+}
+
 export function useLayoutChoice(): [Direction | null, (next: Direction) => void] {
-  const [layout, setLayout] = useState<Direction | null>(() => {
-    try {
-      const raw = localStorage.getItem(LAYOUT_KEY);
-      return raw === "row" || raw === "column" ? raw : null;
-    } catch {
-      return null;
-    }
-  });
-  const choose = useCallback((next: Direction) => {
-    setLayout(next);
-    try {
-      localStorage.setItem(LAYOUT_KEY, next);
-    } catch {
-      // Blocked storage: the choice still holds for this session.
-    }
-  }, []);
-  return [layout, choose];
+  const layout = useSyncExternalStore(subscribeLayout, currentLayout, currentLayout);
+  return [layout, chooseLayout];
 }
 
 function readSize(direction: Direction): number | null {
