@@ -2242,19 +2242,52 @@ function IssueList({
             // The row's cells sit inside one button so the whole row is a
             // single click target, as in the sidebar; display: contents
             // lets them take their own columns on the row's grid.
-            <button className="jira-row-main jira-cells" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
-              <span className="jira-key">{issue.key}</span>
-              <span className="jira-title">{issue.summary}</span>
-              <span>
-                <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
-                  {issue.status}
+            <>
+              {/* The key opens the ticket, in select mode too. Picking a
+                  dozen rows and still wanting to read one of them is the
+                  ordinary case, and once selection is on the row's own click
+                  is spoken for. Its own element beside the row's button
+                  rather than a span inside it: one tab stop with a name, and
+                  no control nested in a control. The grid places it by
+                  position, so the column order is unchanged.
+
+                  A real <a href> to Jira, not a button: that is what makes
+                  ctrl-click open the ticket in a new tab, and middle-click,
+                  and "Copy link address" - all of it the browser's, none of
+                  it ours to reimplement. A plain click is the only one we
+                  take, for the detail pane beside the list. */}
+              <a
+                className="jira-key jira-keyopen"
+                href={issue.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`${issue.key} - click to read it here, ctrl-click to open it in Jira`}
+                onClick={(e) => {
+                  // Never the row's business, whichever way it was clicked.
+                  e.stopPropagation();
+                  // A modified click belongs to the browser: ctrl or cmd for
+                  // a new tab, shift for a window. Middle-click never reaches
+                  // onClick at all, and needs nothing from us.
+                  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  focusIssue(issue);
+                }}
+              >
+                {issue.key}
+              </a>
+              <button className="jira-row-main jira-cells" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
+                <span className="jira-title">{issue.summary}</span>
+                <span>
+                  <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
+                    {issue.status}
+                  </span>
                 </span>
-              </span>
-              <span className="jira-cell-muted jira-col-optional">{issue.assignee ?? "Unassigned"}</span>
-              <span className="jira-cell-muted jira-col-optional">{issue.type}</span>
-              <span className="jira-cell-muted jira-col-optional">{issue.priority ?? ""}</span>
-              <span className="jira-age">{relativeTime(issue.updated)}</span>
-            </button>
+                <span className="jira-cell-muted jira-col-optional">{issue.assignee ?? "Unassigned"}</span>
+                <span className="jira-cell-muted jira-col-optional">{issue.type}</span>
+                <span className="jira-cell-muted jira-col-optional">{issue.priority ?? ""}</span>
+                <span className="jira-age">{relativeTime(issue.updated)}</span>
+              </button>
+            </>
           ) : (
             <button className="jira-row-main" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
               <span className="jira-title">{issue.summary}</span>
@@ -2303,6 +2336,11 @@ function IssueList({
   // rest stays as quiet as it was.
   const showBoxes = selectMode || selection.size > 0;
 
+  // How much of THIS list is ticked - the rows on screen, not the whole
+  // selection, which can hold tickets from the other pane too.
+  const allPicked = issues.length > 0 && issues.every((issue) => selection.has(issue.key));
+  const somePicked = !allPicked && issues.some((issue) => selection.has(issue.key));
+
   return (
     <div className="jira-listwrap" ref={listRef} onMouseDown={onMarqueeMouseDown}>
     <ul className={`jira-list jira-list-${variant}${showBoxes ? " picking" : ""}`}>
@@ -2313,7 +2351,26 @@ function IssueList({
         // flips the direction. The spans stay the grid cells (the narrow-list
         // rules hide cells by position), with the button inside.
         <li className="jira-row jira-thead">
-          <span />
+          {/* The table's own select-all, where a table keeps it. It carries
+              three states rather than two: none, some (indeterminate) and
+              all, so it reports what is ticked as well as changing it -
+              which the two links in the toolbar could never do. */}
+          <span>
+            <input
+              type="checkbox"
+              className="jira-check"
+              checked={allPicked}
+              ref={(el) => {
+                // Indeterminate is a property, not an attribute: there is no
+                // JSX prop for it, and it is what makes "some are ticked"
+                // legible at a glance.
+                if (el) el.indeterminate = somePicked && !allPicked;
+              }}
+              onChange={() => (allPicked ? clearSelection() : selectAll(list))}
+              aria-label={allPicked ? `Deselect all ${issues.length}` : `Select all ${issues.length}`}
+              title={allPicked ? "Deselect all" : `Select the ${issues.length} tickets in this list`}
+            />
+          </span>
           <SortHead list={list} field="key" label="Key" view={view} />
           <SortHead list={list} field="summary" label="Summary" view={view} />
           <SortHead list={list} field="status" label="Status" view={view} />
@@ -2908,14 +2965,20 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
     actions = (
       <>
         <span className="jira-head-target">{s.selection.size} selected</span>
-        {s.selection.size < issues.length && (
+        {/* Only where there is no table header to put them in. The table
+            has its own tri-state checkbox in the first column, which is
+            where anyone looks for it; the board's cards have no such row,
+            so these stay for it. */}
+        {onBoard && s.selection.size < issues.length && (
           <button className="jira-linkish" onClick={() => selectAll("tab")} title={`Select the ${issues.length} tickets in this list`}>
             Select all
           </button>
         )}
-        <button className="jira-linkish" disabled={nothingPicked} onClick={clearSelection}>
-          Deselect all
-        </button>
+        {onBoard && (
+          <button className="jira-linkish" disabled={nothingPicked} onClick={clearSelection}>
+            Deselect all
+          </button>
+        )}
         <button
           className="jira-selaction"
           disabled={busy || nothingPicked}
@@ -3091,11 +3154,12 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
               <IssueList issues={issues} list={list} showMenu={showMenu} variant="table" />
             )}
           </div>
-          {/* Stacked (a phone, or top-and-bottom chosen) with no ticket
-              open, the details pane is left out rather than holding almost
-              half the height to say "select a ticket". Side by side it stays,
-              since there the hint costs the list nothing but width. */}
-          {(s.focused || split.direction === "row") && (
+          {/* Only with a ticket open, whichever way the split runs. Side by
+              side it used to stay for the sake of a hint telling you to
+              select a ticket - and width is exactly what the table wants,
+              since the summary column is the one that gets squeezed to pay
+              for it. */}
+          {s.focused && (
           <>
           <div className={`jira-splitter ${split.direction}`} {...split.handleProps} />
           <aside className="jira-split-detail" aria-label="Ticket details" style={split.detailStyle}>
@@ -3125,9 +3189,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
                 </div>
                 <DetailBody detail={s.focused.detail} error={s.focused.error} />
               </>
-            ) : (
-              <div className="jira-empty">Select a ticket to read it here.</div>
-            )}
+            ) : null}
           </aside>
           </>
           )}

@@ -114,6 +114,39 @@
   opacity: 0.8;
 }
 
+/* The key as its own control in the table: a grid cell rather than a child
+   of the row's button, so it needs the cell's own clipping back, and enough
+   of a hover to say it does something the rest of the row does not. It is an
+   <a> to Jira, so the underline a link would otherwise carry is held back
+   until hover - a table of thirteen underlined keys reads as noise. */
+.jira-keyopen {
+  text-decoration: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.jira-keyopen:hover {
+  color: var(--fg-accent, var(--accent, #1085ff));
+  text-decoration: underline;
+  opacity: 1;
+}
+
+.jira-keyopen:focus-visible {
+  outline: 1px solid var(--focus-border, #0078d4);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
 /* Status chip. Coloured from Jira's statusCategory, not the status NAME —
    names are per-workflow ("Feedback", "Client Review"), the three categories
    are not. Colours come from the theme's own tokens so they survive a theme
