@@ -2565,7 +2565,10 @@ function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
           onView={(view) => applyView("mine", view)}
         />
       )}
-      {picked && <SelectionBarFor showMenu={showMenu} origin="mine" />}
+      {/* Turning selection on is itself a request to act on several tickets,
+          so the bar comes with it: "Select all" was otherwise unreachable
+          until you had already ticked one by hand. */}
+      {(s.selectMode || picked) && <SelectionBarFor showMenu={showMenu} origin="mine" />}
       {s.startError && <div className="jira-error">{s.startError}</div>}
       {s.note && <div className="jira-note">{s.note}</div>}
       {gate ? (
@@ -2603,7 +2606,10 @@ function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
           onView={(view) => applyView("project", view)}
         />
       )}
-      {picked && <SelectionBarFor showMenu={showMenu} origin="project" />}
+      {/* Turning selection on is itself a request to act on several tickets,
+          so the bar comes with it: "Select all" was otherwise unreachable
+          until you had already ticked one by hand. */}
+      {(s.selectMode || picked) && <SelectionBarFor showMenu={showMenu} origin="project" />}
       {gate ? (
         <Gate message={gate} />
       ) : !hasProject(s) ? (
@@ -2891,8 +2897,9 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
   // for the selection when anything is ticked, otherwise for the one ticket
   // open in the detail pane. Ticking rows turns this same slot into the
   // selection's actions, rather than stacking a second bar above the list.
+  const nothingPicked = s.selection.size === 0;
   let actions: ReactNode = null;
-  if (s.selection.size > 0) {
+  if (s.selectMode || s.selection.size > 0) {
     actions = (
       <>
         <span className="jira-head-target">{s.selection.size} selected</span>
@@ -2901,12 +2908,12 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
             Select all
           </button>
         )}
-        <button className="jira-linkish" onClick={clearSelection}>
+        <button className="jira-linkish" disabled={nothingPicked} onClick={clearSelection}>
           Deselect all
         </button>
         <button
           className="jira-selaction"
-          disabled={busy}
+          disabled={busy || nothingPicked}
           title="Hand these tickets to a worktree that already exists"
           onClick={(e) => addSelectionToWorktree(showMenu, e.clientX, e.clientY)}
         >
@@ -2914,7 +2921,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         </button>
         <button
           className="jira-selaction"
-          disabled={busy}
+          disabled={busy || nothingPicked}
           title="Split these tickets into clusters and work them in parallel"
           onClick={(e) => planBatchWithPicker(anchorOf(e.currentTarget), showMenu, e.clientX, e.clientY, "tab")}
         >
@@ -2922,7 +2929,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         </button>
         <button
           className="jira-selaction primary"
-          disabled={busy}
+          disabled={busy || nothingPicked}
           title="Create one worktree for these tickets"
           onClick={(e) => void openStartForm(anchorOf(e.currentTarget), "tab")}
         >

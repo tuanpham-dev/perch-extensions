@@ -51,14 +51,18 @@ export default function SelectionBar({
             Select all
           </button>
         )}
-        <button className="jira-linkish" onClick={onClear}>
+        {/* Offered even at zero, since the bar now appears with selection
+            mode rather than with the first tick - but it cannot do anything
+            yet, and a live-looking control that no-ops is worse than a
+            dimmed one. */}
+        <button className="jira-linkish" disabled={count === 0} onClick={onClear}>
           Deselect all
         </button>
       </div>
       <div className="jira-selactions">
         <button
           className="jira-selaction"
-          disabled={busy}
+          disabled={busy || count === 0}
           title="Hand these tickets to a worktree that already exists"
           onClick={(e) => onAdd(e.clientX, e.clientY)}
         >
@@ -66,7 +70,7 @@ export default function SelectionBar({
         </button>
         <button
           className="jira-selaction primary"
-          disabled={busy}
+          disabled={busy || count === 0}
           title="Create one worktree for these tickets"
           onClick={(e) => onStart(anchorOf(e.currentTarget))}
         >
@@ -79,7 +83,7 @@ export default function SelectionBar({
       <div className="jira-selactions">
         <button
           className="jira-selaction"
-          disabled={busy}
+          disabled={busy || count === 0}
           title="Split these tickets into clusters and work them in parallel"
           onClick={(e) => onPlanBatch(anchorOf(e.currentTarget), e.clientX, e.clientY)}
         >
