@@ -85,6 +85,9 @@ export interface TicketState {
   reason: string;
   feedbackDraft: string;
   feedback: SentFeedback[];
+  // Where it stands on the batch's QA branch. Absent on a batch written
+  // before QA branches existed.
+  integration?: TicketIntegration;
   qa: QaReport | null;
   qaHistory: QaReport[];
 }
@@ -171,6 +174,9 @@ export interface Batch {
   ticketStates: Record<string, TicketState>;
   unclustered: string[];
   pendingProposal: Proposal | null;
+  // The QA branch and the agent that owns it. Null until Start QA; absent on
+  // a batch written before it existed.
+  qa?: BatchQa | null;
   counts: Record<TicketStateName, number>;
   pendingFeedback: number;
   canArchive: boolean;
@@ -234,9 +240,49 @@ export interface SkillSummary {
   origin: string;
 }
 
+export type QaRunState = "idle" | "running" | "shipped";
+export type IntegrationState = "none" | "merging" | "merged" | "fixing" | "approved" | "excluded" | "conflicted";
+
+export interface BatchQa {
+  branch: string;
+  productionBranch: string;
+  worktreePath: string;
+  sessionName: string;
+  windowId: string;
+  state: QaRunState;
+  startedAt: number | null;
+  shippedAt: number | null;
+  shippedInto: string;
+  previewUrl: string;
+  lastError: string;
+  awaiting: string | null;
+  notes: { text: string; at: number }[];
+}
+
+export interface TicketIntegration {
+  state: IntegrationState;
+  commit: string;
+  change: string;
+  fixed: string;
+  note: string;
+  refinedNote: string;
+  postedNote: string;
+  why: string;
+  files: string[];
+  handoff: { url: string; ok: boolean; error: string; at: number } | null;
+  at: number | null;
+}
+
+export interface QaStartResponse extends BatchResponse {
+  alreadyRunning: boolean;
+  sessionName: string;
+  windowId: string;
+  branch?: string;
+}
+
 export interface SkillsResponse {
   skills: SkillSummary[];
-  defaults: { execution: string; qa: string };
+  defaults: { execution: string; qa: string; integration: string };
 }
 
 // GET /ai-profiles. Only a CLI agent can read the repository, so the form's

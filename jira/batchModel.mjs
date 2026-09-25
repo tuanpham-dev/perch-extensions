@@ -108,6 +108,7 @@ function normalizeBatch(id, raw, now) {
     ticketStates,
     unclustered: Array.isArray(raw.unclustered) ? raw.unclustered.filter((k) => typeof k === "string") : [],
     pendingProposal: isObject(raw.pendingProposal) ? raw.pendingProposal : null,
+    qa: normalizeQa(raw.qa),
   };
 }
 
@@ -207,6 +208,8 @@ export function newBatch({ id, name, repo, criteria, readCodebase, tickets, now 
     ticketStates: {},
     unclustered: tickets.map((row) => row.key),
     pendingProposal: null,
+    // The QA branch and the agent that owns it, once one has been started.
+    qa: null,
   };
 }
 
@@ -254,6 +257,10 @@ function newTicketState(clusterId, now) {
     // re-reported keeps its first verdict rather than overwriting the record
     // of what it looked like before the feedback.
     qaHistory: [],
+    // Where it stands on the QA branch. A field beside `state` rather than a
+    // state of its own: "merged" is orthogonal to the ticket's own machine,
+    // which already means something, and approving is what moves that one.
+    integration: newIntegration(),
   };
 }
 
@@ -332,6 +339,7 @@ export function normalizeTicketState(raw) {
     ...raw,
     qa: isObject(raw.qa) ? raw.qa : null,
     qaHistory: Array.isArray(raw.qaHistory) ? raw.qaHistory.filter(isObject) : [],
+    integration: normalizeIntegration(raw.integration),
   };
 }
 
@@ -975,6 +983,368 @@ export function remainingTickets(batch, cluster) {
 // by value rather than by an updatedAt every mutator would have to remember
 // to bump: a missed bump is a board that silently stops updating, and a batch
 // document is small enough that this costs nothing.
+
+// ---- The QA branch ----
+//
+// One QA agent per batch, in a worktree of its own, cherry-picking each ticket
+// onto a branch cut from production so the user can verify it running before
+// it ships. The agent does every git and dev-server action; what lives here is
+// the record of where each ticket stands and the rules about what may happen
+// next. A reload, or a dead agent, must lose none of it.
+
+export const QA_STATES = ["idle", "running", "shipped"];
+export const INTEGRATION_STATES = ["none", "merging", "merged", "fixing", "approved", "excluded", "conflicted"];
+
+// Jira's priorities are names, and the order of names is not the order of
+// urgency. Anything not listed sorts after all of these rather than being
+// guessed at: a custom "Blocker" is at least visible at the end.
+const PRIORITY_RANK = { highest: 0, high: 1, medium: 2, low: 3, lowest: 4 };
+function priorityRank(label) {
+  const rank = PRIORITY_RANK[str(label).trim().toLowerCase()];
+  return rank === undefined ? Object.keys(PRIORITY_RANK).length : rank;
+}
+
+// The states that stand between a batch and its production merge: a ticket
+// mid-pick, one on the branch nobody has passed judgement on, one with a fix
+// not yet committed, or one that would not apply at all.
+const SHIP_BLOCKING = new Set(["merging", "merged", "fixing", "conflicted"]);
+
+function newIntegration() {
+  return {
+    state: "none",
+    // The squashed commit on the QA branch, once there is one. Kept through
+    // exclusion so the drop instruction can name what to drop.
+    commit: "",
+    // What the user asked to change, verbatim, while the fix is uncommitted -
+    // and, separately, what the agent says it did about it. Two fields
+    // because they are two voices: the card labels one "you asked for" and
+    // the other "changed", and mixing them put words in the reviewer's mouth.
+    change: "",
+    fixed: "",
+    // The approval note three ways: as typed, as refined, and as posted. The
+    // posted one is what reaches Jira and is what the user chose - refined,
+    // edited, or their own words.
+    note: "",
+    refinedNote: "",
+    postedNote: "",
+    // Why it was excluded, or why the pick would not apply.
+    why: "",
+    files: [],
+    // The Jira hand-off's outcome, null until attempted. Kept per ticket so a
+    // retry touches only the ones that failed.
+    handoff: null,
+    at: null,
+  };
+}
+
+function normalizeIntegration(raw) {
+  const base = newIntegration();
+  if (!isObject(raw)) return base;
+  return {
+    ...base,
+    state: INTEGRATION_STATES.includes(raw.state) ? raw.state : "none",
+    commit: str(raw.commit),
+    change: str(raw.change),
+    fixed: str(raw.fixed),
+    note: str(raw.note),
+    refinedNote: str(raw.refinedNote),
+    postedNote: str(raw.postedNote),
+    why: str(raw.why),
+    files: Array.isArray(raw.files) ? raw.files.filter((f) => typeof f === "string") : [],
+    handoff: isObject(raw.handoff)
+      ? { url: str(raw.handoff.url), ok: raw.handoff.ok === true, error: str(raw.handoff.error), at: num(raw.handoff.at) }
+      : null,
+    at: typeof raw.at === "number" ? raw.at : null,
+  };
+}
+
+function normalizeQa(raw) {
+  if (!isObject(raw)) return null;
+  return {
+    branch: str(raw.branch),
+    productionBranch: str(raw.productionBranch),
+    worktreePath: str(raw.worktreePath),
+    sessionName: str(raw.sessionName),
+    windowId: str(raw.windowId),
+    state: QA_STATES.includes(raw.state) ? raw.state : "idle",
+    startedAt: typeof raw.startedAt === "number" ? raw.startedAt : null,
+    shippedAt: typeof raw.shippedAt === "number" ? raw.shippedAt : null,
+    shippedInto: str(raw.shippedInto),
+    previewUrl: str(raw.previewUrl),
+    lastError: str(raw.lastError),
+    // What the QA agent is blocked on, the same way a cluster's `awaiting`
+    // works: a permission prompt, or a turn that ended without a report.
+    awaiting: str(raw.awaiting) || null,
+    // What it has said, in its own words - a refusal to ship with the reason,
+    // a server it could not take over. The first live run had no way to
+    // leave one and its explanation existed only in its terminal.
+    notes: Array.isArray(raw.notes) ? raw.notes.filter(isObject).slice(-MAX_NOTES) : [],
+  };
+}
+
+export function addQaNote(batch, text, now) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  batch.qa.notes.push({ text: str(text), at: now });
+  if (batch.qa.notes.length > MAX_NOTES) batch.qa.notes.splice(0, batch.qa.notes.length - MAX_NOTES);
+  batch.qa.awaiting = null;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+function integrationOf(batch, key) {
+  const ticket = batch.ticketStates[key];
+  if (!ticket) return null;
+  if (!ticket.integration) ticket.integration = newIntegration();
+  return ticket.integration;
+}
+
+function requireQa(batch) {
+  if (!batch.qa) return { ok: false, error: "QA has not been started for this batch" };
+  return null;
+}
+
+export function startQa(batch, { branch, productionBranch, worktreePath, now }) {
+  if (batch.qa && batch.qa.state === "running") {
+    return { ok: false, error: `QA is already running on ${batch.qa.branch}` };
+  }
+  if (qaQueue(batch).length === 0 && !batch.qa) {
+    return { ok: false, error: "nothing is in review yet - there would be nothing to merge" };
+  }
+  batch.qa = normalizeQa({
+    ...(batch.qa ?? {}),
+    branch: str(branch),
+    productionBranch: str(productionBranch),
+    worktreePath: str(worktreePath),
+    state: "running",
+    startedAt: now,
+    lastError: "",
+    awaiting: null,
+  });
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// The agent's terminal, once it exists. Separate from startQa because the
+// worktree is made before the session is, and a failure between the two must
+// leave a record that says which half happened.
+export function markQaAgent(batch, { sessionName, windowId, now }) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  batch.qa.sessionName = str(sessionName);
+  batch.qa.windowId = str(windowId);
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function markQaFailed(batch, error, now) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  batch.qa.state = "idle";
+  batch.qa.lastError = str(error);
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function setQaPreviewUrl(batch, url, now) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  batch.qa.previewUrl = str(url);
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// A reviewed ticket not yet touched by the QA run, highest priority first.
+// The order is a suggestion the user can ignore by merging any of them.
+export function qaQueue(batch) {
+  return Object.keys(batch.ticketStates)
+    .filter((key) => {
+      const ticket = batch.ticketStates[key];
+      return ticket.state === "review" && (ticket.integration?.state ?? "none") === "none";
+    })
+    .sort((a, b) => {
+      const byPriority = priorityRank(batch.tickets[a]?.priority) - priorityRank(batch.tickets[b]?.priority);
+      return byPriority !== 0 ? byPriority : a.localeCompare(b);
+    });
+}
+
+export function shipBlockers(batch) {
+  return Object.keys(batch.ticketStates).filter((key) => SHIP_BLOCKING.has(batch.ticketStates[key].integration?.state ?? "none"));
+}
+
+// Whether a ticket may be picked now: reviewed, and either untouched or
+// excluded and wanted back.
+function mergeable(batch, key) {
+  const ticket = batch.ticketStates[key];
+  if (!ticket) return `${key} is not being worked`;
+  if (ticket.state !== "review") return `${key} is ${ticket.state} - only a reviewed ticket can be merged`;
+  const state = ticket.integration?.state ?? "none";
+  if (state !== "none" && state !== "excluded" && state !== "conflicted") return `${key} is already ${state}`;
+  return null;
+}
+
+export function markQaMerging(batch, key, now) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  const refusal = mergeable(batch, key);
+  if (refusal) return { ok: false, error: refusal };
+  const integration = integrationOf(batch, key);
+  integration.state = "merging";
+  integration.commit = "";
+  integration.change = "";
+  integration.fixed = "";
+  integration.why = "";
+  integration.files = [];
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// Reported by the agent. Accepted from `merging` and, for a fix amended in,
+// from `fixing` and `approved` - the sha changes when the commit is rewritten.
+export function markQaMerged(batch, key, commit, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (!["merging", "fixing", "approved"].includes(integration.state)) {
+    return { ok: false, error: `${key} is ${integration.state}, so "merged" does not apply to it` };
+  }
+  if (integration.state !== "approved") integration.state = "merged";
+  integration.commit = str(commit);
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true, state: integration.state };
+}
+
+// The agent's side of a change request: it made the edit and says what it
+// did. The reviewer's words are left exactly as they were.
+export function markQaFixed(batch, key, what, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state !== "merged" && integration.state !== "fixing") {
+    return { ok: false, error: `${key} is ${integration.state} - there is no change in progress` };
+  }
+  integration.state = "fixing";
+  const text = str(what).trim();
+  if (text) integration.fixed = integration.fixed ? `${integration.fixed}\n${text}` : text;
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function markQaFixing(batch, key, change, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state !== "merged" && integration.state !== "fixing") {
+    return { ok: false, error: `${key} is ${integration.state} - only a merged ticket can be changed` };
+  }
+  integration.state = "fixing";
+  // A second request before the first is approved is one more thing to do,
+  // not a replacement: both land in the same uncommitted edit.
+  const text = str(change).trim();
+  if (text) integration.change = integration.change ? `${integration.change}\n${text}` : text;
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// The user's verdict. Marks the ticket done through the same accept() the
+// board's Accept uses, so "done" keeps one meaning; the difference is that
+// this one also fixes the note that will reach Jira.
+export function approveQa(batch, key, { note = "", refinedNote = "", postedNote = "" } = {}, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state !== "merged" && integration.state !== "fixing") {
+    return { ok: false, error: `${key} is ${integration.state} - only a merged ticket can be approved` };
+  }
+  const accepted = accept(batch, key, now);
+  if (!accepted.ok) return accepted;
+  integration.state = "approved";
+  integration.note = str(note);
+  integration.refinedNote = str(refinedNote);
+  integration.postedNote = str(postedNote) || str(note);
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function excludeFromQa(batch, key, why, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state === "approved") {
+    return { ok: false, error: `${key} is already approved - excluding it now would mean un-approving it` };
+  }
+  const wasOnBranch = ["merged", "fixing", "merging"].includes(integration.state) && Boolean(integration.commit);
+  integration.state = "excluded";
+  integration.why = str(why);
+  integration.at = now;
+  batch.updatedAt = now;
+  // The commit is kept on the record so the caller can tell the agent to drop
+  // exactly it; the caller decides whether a drop instruction is needed.
+  return { ok: true, dropCommit: wasOnBranch ? integration.commit : "" };
+}
+
+export function markQaConflict(batch, key, { files = [], why = "" }, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  integration.state = "conflicted";
+  integration.files = files.filter((f) => typeof f === "string");
+  integration.why = str(why);
+  integration.commit = "";
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function markQaShipped(batch, into, now) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  const blockers = shipBlockers(batch);
+  if (blockers.length > 0) {
+    return { ok: false, error: `not everything is approved: ${blockers.join(", ")}` };
+  }
+  batch.qa.state = "shipped";
+  batch.qa.shippedAt = now;
+  batch.qa.shippedInto = str(into);
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function markHandedOff(batch, key, { url = "", ok = false, error = "" }, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  integration.handoff = { url: str(url), ok: ok === true, error: str(error), at: now };
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// The approved tickets still owed a successful hand-off - the whole set the
+// first time, only the failures on a retry.
+export function handoffPending(batch) {
+  return Object.keys(batch.ticketStates).filter((key) => {
+    const integration = batch.ticketStates[key].integration;
+    return integration?.state === "approved" && !integration.handoff?.ok;
+  });
+}
+
+// The QA agent's window gets the same four hook events a cluster's does, and
+// clusterByWindow drops them - so without this a QA agent stuck on a
+// permission prompt would look exactly like one that is working.
+export function qaHookEvent(batch, windowId, event, now) {
+  if (!batch.qa || !windowId || batch.qa.windowId !== windowId) return { ok: false, error: "not the QA agent's window" };
+  if (event === "permission") batch.qa.awaiting = "waiting on a permission prompt";
+  else if (event === "stop") batch.qa.awaiting = shipBlockers(batch).length > 0 ? "the turn ended without a report" : null;
+  else if (event === "prompt-submit") batch.qa.awaiting = null;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function qaSeen(batch, now) {
+  if (!batch.qa) return { ok: false, error: "QA has not been started" };
+  batch.qa.awaiting = null;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
 export function diffEvents(before, after) {
   const ids = new Set([...Object.keys(before?.batches ?? {}), ...Object.keys(after?.batches ?? {})]);
   const events = [];

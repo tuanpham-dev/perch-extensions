@@ -36,6 +36,22 @@ import {
   ticketReport,
   renameBatch,
   renameCluster,
+  startQa,
+  markQaAgent,
+  qaQueue,
+  shipBlockers,
+  markQaMerging,
+  markQaMerged,
+  markQaFixing,
+  markQaFixed,
+  approveQa,
+  excludeFromQa,
+  markQaConflict,
+  markQaShipped,
+  markHandedOff,
+  handoffPending,
+  qaHookEvent,
+  addQaNote,
 } from "../batchModel.mjs";
 import { createBatchStore } from "../batchStore.mjs";
 
@@ -775,4 +791,216 @@ test("a repair made while loading uses the store's clock, not the wall clock", a
   assert.equal(repaired.state, "queued");
   assert.equal(repaired.since, NOW);
   assert.deepEqual(repaired.history, [{ state: "queued", at: NOW, note: "" }]);
+});
+
+
+// ---- The QA branch ----
+
+// A batch with one running cluster whose tickets are all reviewed, which is
+// the state a QA run starts from.
+function reviewed(...keys: string[]) {
+  const batch = running(...keys);
+  const clusterId = batch.clusters[0].id;
+  for (const key of keys) {
+    ticketReport(batch, clusterId, key, "start", { now: NOW + 1 });
+    ticketReport(batch, clusterId, key, "done", { summary: `did ${key}`, now: NOW + 2 });
+  }
+  return batch;
+}
+
+function withPriority(batch: ReturnType<typeof reviewed>, priorities: Record<string, string>) {
+  for (const [key, priority] of Object.entries(priorities)) batch.tickets[key].priority = priority;
+  return batch;
+}
+
+function qaStarted(...keys: string[]) {
+  const batch = reviewed(...keys);
+  startQa(batch, { branch: "qa/batch", productionBranch: "main", worktreePath: "/repo/.worktrees/qa-batch", now: NOW + 3 });
+  markQaAgent(batch, { sessionName: "qa-batch", windowId: "win-qa", now: NOW + 3 });
+  return batch;
+}
+
+test("a document from before QA branches existed loads with none, and every ticket untouched", () => {
+  const batch = running("CAP-1");
+  delete (batch as { qa?: unknown }).qa;
+  delete (batch.ticketStates["CAP-1"] as { integration?: unknown }).integration;
+  const doc = normalizeDocument(JSON.parse(JSON.stringify({ version: 1, batches: { bat_1: batch } })), NOW);
+  assert.equal(doc.batches.bat_1.qa, null);
+  assert.equal(doc.batches.bat_1.ticketStates["CAP-1"].integration.state, "none");
+  const again = normalizeDocument(JSON.parse(JSON.stringify(doc)), NOW + 99);
+  assert.deepEqual(again, doc, "normalizing its own output changes nothing");
+});
+
+test("the queue is every reviewed, untouched ticket, highest priority first, then by key", () => {
+  const batch = withPriority(reviewed("CAP-1", "CAP-2", "CAP-3", "CAP-4"), {
+    "CAP-1": "Low",
+    "CAP-2": "Highest",
+    "CAP-3": "Blocker",
+    "CAP-4": "Highest",
+  });
+  assert.deepEqual(qaQueue(batch), ["CAP-2", "CAP-4", "CAP-1", "CAP-3"], "an unknown priority sorts last, not first");
+});
+
+test("QA cannot start with nothing in review, and cannot start twice", () => {
+  const empty = running("CAP-1");
+  assert.equal(startQa(empty, { branch: "qa/b", productionBranch: "main", worktreePath: "/w", now: NOW }).ok, false);
+  const batch = qaStarted("CAP-1");
+  const second = startQa(batch, { branch: "qa/b", productionBranch: "main", worktreePath: "/w", now: NOW + 9 });
+  assert.equal(second.ok, false);
+  assert.match(second.error, /already running/);
+});
+
+test("merging takes a ticket out of the queue and into the blockers", () => {
+  const batch = qaStarted("CAP-1", "CAP-2");
+  assert.equal(markQaMerging(batch, "CAP-1", NOW + 4).ok, true);
+  assert.deepEqual(qaQueue(batch), ["CAP-2"]);
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"]);
+  assert.equal(markQaMerged(batch, "CAP-1", "abc123", NOW + 5).ok, true);
+  assert.equal(batch.ticketStates["CAP-1"].integration.state, "merged");
+  assert.equal(batch.ticketStates["CAP-1"].integration.commit, "abc123");
+});
+
+test("only a reviewed ticket can be merged", () => {
+  // CAP-2 is in the cluster but its agent has not reported it: still queued.
+  const batch = running("CAP-1", "CAP-2");
+  const clusterId = batch.clusters[0].id;
+  ticketReport(batch, clusterId, "CAP-1", "start", { now: NOW + 1 });
+  ticketReport(batch, clusterId, "CAP-1", "done", { summary: "did it", now: NOW + 2 });
+  startQa(batch, { branch: "qa/batch", productionBranch: "main", worktreePath: "/w", now: NOW + 3 });
+  assert.equal(batch.ticketStates["CAP-2"].state, "queued");
+  const out = markQaMerging(batch, "CAP-2", NOW + 4);
+  assert.equal(out.ok, false);
+  assert.match(out.error, /queued/);
+  assert.deepEqual(qaQueue(batch), ["CAP-1"], "and it is not in the queue either");
+});
+
+test("approving marks the ticket done and keeps its commit; a second approval is refused", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "abc123", NOW + 5);
+  const out = approveQa(batch, "CAP-1", { note: "img is FPO", refinedNote: "The image is a placeholder.", postedNote: "The image is a placeholder." }, NOW + 6);
+  assert.equal(out.ok, true);
+  const ticket = batch.ticketStates["CAP-1"];
+  assert.equal(ticket.state, "done");
+  assert.equal(ticket.integration.state, "approved");
+  assert.equal(ticket.integration.commit, "abc123");
+  assert.equal(ticket.integration.postedNote, "The image is a placeholder.");
+  assert.equal(approveQa(batch, "CAP-1", {}, NOW + 7).ok, false);
+  assert.deepEqual(shipBlockers(batch), []);
+});
+
+test("a change request holds the ticket in fixing, and a second one adds to the first", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "abc123", NOW + 5);
+  assert.equal(markQaFixing(batch, "CAP-1", "do not resize on hover", NOW + 6).ok, true);
+  assert.equal(markQaFixing(batch, "CAP-1", "and close the grey gap", NOW + 7).ok, true);
+  assert.equal(batch.ticketStates["CAP-1"].integration.change, "do not resize on hover\nand close the grey gap");
+  // The agent's report of what it did is its own field; the reviewer's words
+  // are never touched by it.
+  markQaFixed(batch, "CAP-1", "hover image no longer resizes", NOW + 8);
+  assert.equal(batch.ticketStates["CAP-1"].integration.change, "do not resize on hover\nand close the grey gap");
+  assert.equal(batch.ticketStates["CAP-1"].integration.fixed, "hover image no longer resizes");
+  markQaFixed(batch, "CAP-1", "", NOW + 8);
+  assert.equal(batch.ticketStates["CAP-1"].integration.fixed, "hover image no longer resizes", "an empty report adds nothing");
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"], "an uncommitted fix blocks shipping");
+  // Approving from fixing is the amend landing; the sha moves, the state stays approved.
+  assert.equal(approveQa(batch, "CAP-1", {}, NOW + 9).ok, true);
+  assert.equal(markQaMerged(batch, "CAP-1", "def456", NOW + 10).ok, true);
+  assert.equal(batch.ticketStates["CAP-1"].integration.state, "approved");
+  assert.equal(batch.ticketStates["CAP-1"].integration.commit, "def456");
+});
+
+test("excluding removes a ticket from the queue and the blockers, and names the commit to drop when it had one", () => {
+  const batch = qaStarted("CAP-1", "CAP-2");
+  // Queued: nothing on the branch to drop.
+  const queued = excludeFromQa(batch, "CAP-2", "assigned to someone else", NOW + 4);
+  assert.equal(queued.ok, true);
+  assert.equal(queued.dropCommit, "");
+  assert.deepEqual(qaQueue(batch), ["CAP-1"]);
+  // Merged: the record says which commit has to go.
+  markQaMerging(batch, "CAP-1", NOW + 5);
+  markQaMerged(batch, "CAP-1", "abc123", NOW + 6);
+  const merged = excludeFromQa(batch, "CAP-1", "out of scope", NOW + 7);
+  assert.equal(merged.dropCommit, "abc123");
+  assert.deepEqual(shipBlockers(batch), []);
+  assert.deepEqual(qaQueue(batch), []);
+  // Wanted back: it merges again as a fresh pick.
+  assert.equal(markQaMerging(batch, "CAP-1", NOW + 8).ok, true);
+  assert.equal(batch.ticketStates["CAP-1"].integration.commit, "", "the old sha does not survive a re-pick");
+});
+
+test("an approved ticket cannot be excluded", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "abc", NOW + 5);
+  approveQa(batch, "CAP-1", {}, NOW + 6);
+  assert.equal(excludeFromQa(batch, "CAP-1", "changed my mind", NOW + 7).ok, false);
+});
+
+test("a conflict blocks shipping and names its files", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  assert.equal(markQaConflict(batch, "CAP-1", { files: ["sections/cart.liquid"], why: "two rules disagree" }, NOW + 5).ok, true);
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"]);
+  assert.deepEqual(batch.ticketStates["CAP-1"].integration.files, ["sections/cart.liquid"]);
+  // A conflicted ticket may be picked again once the agent has sorted it.
+  assert.equal(markQaMerging(batch, "CAP-1", NOW + 6).ok, true);
+});
+
+test("shipping is refused while anything is merged but unapproved, naming the tickets", () => {
+  const batch = qaStarted("CAP-1", "CAP-2", "CAP-3");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  approveQa(batch, "CAP-1", {}, NOW + 6);
+  markQaMerging(batch, "CAP-2", NOW + 7);
+  markQaMerged(batch, "CAP-2", "b", NOW + 8);
+  excludeFromQa(batch, "CAP-3", "later", NOW + 9);
+  const refused = markQaShipped(batch, "main", NOW + 10);
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /CAP-2/);
+  assert.doesNotMatch(refused.error, /CAP-3/, "an excluded ticket blocks nothing");
+  approveQa(batch, "CAP-2", {}, NOW + 11);
+  assert.equal(markQaShipped(batch, "main", NOW + 12).ok, true);
+  assert.equal(batch.qa!.state, "shipped");
+  assert.equal(batch.qa!.shippedInto, "main");
+});
+
+test("the hand-off is owed to every approved ticket, then only to the ones that failed", () => {
+  const batch = qaStarted("CAP-1", "CAP-2", "CAP-3");
+  for (const key of ["CAP-1", "CAP-2"]) {
+    markQaMerging(batch, key, NOW + 4);
+    markQaMerged(batch, key, key, NOW + 5);
+    approveQa(batch, key, {}, NOW + 6);
+  }
+  excludeFromQa(batch, "CAP-3", "not mine", NOW + 7);
+  assert.deepEqual(handoffPending(batch), ["CAP-1", "CAP-2"]);
+  markHandedOff(batch, "CAP-1", { url: "https://x/p", ok: true }, NOW + 8);
+  markHandedOff(batch, "CAP-2", { url: "https://x/p", ok: false, error: "no transition to QA" }, NOW + 8);
+  assert.deepEqual(handoffPending(batch), ["CAP-2"], "a success is never retried");
+});
+
+test("the QA agent's own window sets and clears awaiting, and a cluster's window does not touch it", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  assert.equal(qaHookEvent(batch, "win-qa", "permission", NOW + 5).ok, true);
+  assert.equal(batch.qa!.awaiting, "waiting on a permission prompt");
+  assert.equal(qaHookEvent(batch, "win-qa", "prompt-submit", NOW + 6).ok, true);
+  assert.equal(batch.qa!.awaiting, null);
+  // A stop with work outstanding is a wait; with nothing outstanding it is just quiet.
+  qaHookEvent(batch, "win-qa", "stop", NOW + 7);
+  assert.equal(batch.qa!.awaiting, "the turn ended without a report");
+  assert.equal(qaHookEvent(batch, "win-1", "permission", NOW + 8).ok, false, "the cluster's window is not ours");
+});
+
+
+// The first live QA agent refused to ship - rightly - and had no way to say
+// so on the board: `note` was a cluster's verb. Its notes live on the run.
+test("the QA agent can leave a note, and it clears a wait", () => {
+  const batch = qaStarted("CAP-1");
+  qaHookEvent(batch, "win-qa", "permission", NOW + 4);
+  assert.equal(addQaNote(batch, "Nothing to ship: the branch equals main.", NOW + 5).ok, true);
+  assert.equal(batch.qa!.notes.length, 1);
+  assert.equal(batch.qa!.awaiting, null);
+  assert.equal(addQaNote(running("CAP-9"), "x", NOW).ok, false, "no QA run, no note");
 });

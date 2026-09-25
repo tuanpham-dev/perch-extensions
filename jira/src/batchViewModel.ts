@@ -5,7 +5,7 @@
 // Pure, so src/batchViewModel.test.ts can pin the rules that are easy to get
 // subtly wrong - a filter that hides a cluster added after it was set, a
 // column that disappears when it empties, a card ordered by the wrong clock.
-import type { Batch, Cluster, ClusterStateName, SkillRecord, TicketStateName } from "./batchTypes";
+import type { IntegrationState, Batch, Cluster, ClusterStateName, SkillRecord, TicketStateName } from "./batchTypes";
 
 // Always all seven, in this order, however empty: a board whose columns come
 // and go cannot be scanned, and "nothing in Needs you" is information.
@@ -173,4 +173,102 @@ export function skillsLabel(skills: Cluster["skills"] | null | undefined): strin
   const execution = slotLabel(skills.execution, skills.execFallback ? "the brief's own steps" : "the agent's judgement");
   const qa = slotLabel(skills.qa, "no QA skill");
   return `Skills: ${execution} + ${qa}`;
+}
+
+
+// ---- The QA branch ----
+//
+// Mirrors batchModel.mjs's qaQueue and shipBlockers exactly, so the board can
+// draw the queue and the ship button from the batch it already holds. The
+// server is still what decides; this only predicts what it will say.
+
+const PRIORITY_RANK: Record<string, number> = { highest: 0, high: 1, medium: 2, low: 3, lowest: 4 };
+function priorityRank(label: string | undefined): number {
+  const rank = PRIORITY_RANK[(label ?? "").trim().toLowerCase()];
+  return rank === undefined ? Object.keys(PRIORITY_RANK).length : rank;
+}
+
+export function integrationOf(batch: Batch, key: string): IntegrationState {
+  return batch.ticketStates[key]?.integration?.state ?? "none";
+}
+
+export function qaQueue(batch: Batch): string[] {
+  return Object.keys(batch.ticketStates)
+    .filter((key) => batch.ticketStates[key].state === "review" && integrationOf(batch, key) === "none")
+    .sort((a, b) => {
+      const byPriority = priorityRank(batch.tickets[a]?.priority) - priorityRank(batch.tickets[b]?.priority);
+      return byPriority !== 0 ? byPriority : a.localeCompare(b);
+    });
+}
+
+const SHIP_BLOCKING = new Set<IntegrationState>(["merging", "merged", "fixing", "conflicted"]);
+
+export function shipBlockers(batch: Batch): string[] {
+  return Object.keys(batch.ticketStates).filter((key) => SHIP_BLOCKING.has(integrationOf(batch, key)));
+}
+
+// The approved tickets still owed a successful hand-off.
+export function handoffPending(batch: Batch): string[] {
+  return Object.keys(batch.ticketStates).filter((key) => {
+    const integration = batch.ticketStates[key].integration;
+    return integration?.state === "approved" && !integration.handoff?.ok;
+  });
+}
+
+export interface QaCard {
+  key: string;
+  summary: string;
+  clusterName: string;
+  color: number;
+  integration: IntegrationState;
+  priority: string;
+  // Shown on the card: the change being fixed, the reason excluded, the files in conflict.
+  detail: string;
+}
+
+export interface QaColumn {
+  id: "waiting" | "queue" | "verifying" | "approved" | "excluded" | "conflicted";
+  label: string;
+  cards: QaCard[];
+}
+
+// The board once QA is running. Every ticket lands in exactly one column, so
+// nothing the batch holds goes missing from view: a ticket still being worked
+// is "waiting", not absent.
+export function qaColumns(batch: Batch): QaColumn[] {
+  const card = (key: string): QaCard => {
+    const ticket = batch.ticketStates[key];
+    const cluster = batch.clusters.find((entry) => entry.keys.includes(key));
+    const integration = ticket.integration;
+    const state = integration?.state ?? "none";
+    const detail =
+      state === "fixing" ? integration?.change ?? ""
+      : state === "excluded" ? integration?.why ?? ""
+      : state === "conflicted" ? [...(integration?.files ?? []), integration?.why ?? ""].filter(Boolean).join(" - ")
+      : state === "approved" ? integration?.postedNote ?? ""
+      : "";
+    return {
+      key,
+      summary: batch.tickets[key]?.summary ?? "",
+      clusterName: cluster?.name ?? "",
+      color: cluster?.color ?? -1,
+      integration: state,
+      priority: batch.tickets[key]?.priority ?? "",
+      detail,
+    };
+  };
+  const queue = qaQueue(batch);
+  const by = (states: IntegrationState[]) =>
+    Object.keys(batch.ticketStates).filter((key) => states.includes(integrationOf(batch, key)) && !queue.includes(key));
+  const waiting = Object.keys(batch.ticketStates).filter(
+    (key) => integrationOf(batch, key) === "none" && !queue.includes(key),
+  );
+  return [
+    { id: "waiting", label: "Not yet reviewed", cards: waiting.map(card) },
+    { id: "queue", label: "Queue", cards: queue.map(card) },
+    { id: "verifying", label: "Verifying", cards: by(["merging", "merged", "fixing"]).map(card) },
+    { id: "approved", label: "Approved", cards: by(["approved"]).map(card) },
+    { id: "excluded", label: "Excluded", cards: by(["excluded"]).map(card) },
+    { id: "conflicted", label: "Conflicted", cards: by(["conflicted"]).map(card) },
+  ];
 }

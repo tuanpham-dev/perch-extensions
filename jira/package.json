@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "displayName": "Jira",
   "description": "A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with a \"Start work\" action that creates a worktree session for one - and batches, which split a pile of tickets into clusters, give each its own worktree and coding agent, track every ticket on a kanban filtered by cluster, and send review feedback back to the agent that wrote it. Backed by the Jira Cloud REST API; the API token is held in the host's per-extension secret store, never in a setting.",
   "icon": "./icon.svg",
@@ -40,6 +40,11 @@
           "type": "string",
           "default": "{}",
           "description": "Project key per repository path, as JSON."
+        },
+        "jira.projectSettings": {
+          "type": "string",
+          "default": "{}",
+          "description": "Settings overridden per Jira project, as JSON: {\"CAP\": {\"jira.productionBranch\": \"main\"}}. The editor below writes it."
         },
         "jira.jql": {
           "type": "string",
@@ -95,6 +100,41 @@
           "type": "string",
           "default": "",
           "description": "Which skill a cluster's agent checks its work with, as a path - chosen with the picker below, which writes this same field. Empty uses the extension's own jira-batch-qa; \"none\" leaves it to the agent."
+        },
+        "jira.integrationSkill": {
+          "type": "string",
+          "default": "",
+          "description": "Which skill the batch's QA agent merges and ships with, as a path - chosen with the picker in the Batches review, which writes this same field. Empty uses the extension's own jira-batch-merge; \"none\" leaves it to the agent."
+        },
+        "jira.productionBranch": {
+          "type": "string",
+          "default": "",
+          "description": "The branch a batch's QA branch is cut from and merged back into. Empty uses the repository's default branch (origin/HEAD)."
+        },
+        "jira.qaBranchTemplate": {
+          "type": "string",
+          "default": "qa/{batch}",
+          "description": "How a batch's QA branch is named - {batch} is the batch name as a slug, {date} is today as YYYYMMDD."
+        },
+        "jira.startQaOnFirstReview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start a batch's QA agent by itself the moment its first ticket reaches Review. Off, QA starts from the Start QA button."
+        },
+        "jira.qaStatus": {
+          "type": "string",
+          "default": "QA",
+          "description": "The Jira status a ticket is moved to when the batch is handed off after the production merge, matched by name."
+        },
+        "jira.qaAssignee": {
+          "type": "string",
+          "default": "",
+          "description": "Who handed-off tickets are assigned to: a display name, an email, or an account id. Empty leaves the assignee alone. A name matching nobody, or several people, stops the hand-off before anything is written."
+        },
+        "jira.previewUrlTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "The URL a handed-off ticket's comment says it can be checked at, for example the store's preview-theme link. Empty leaves the URL out of the comment."
         },
         "jira.skillPaths": {
           "type": "string",

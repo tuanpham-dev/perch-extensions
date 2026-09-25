@@ -34,6 +34,24 @@ import {
   markQaArtifacts,
   markWorktreeRemoved,
   recordQa,
+  qaSeen,
+  setQaPreviewUrl,
+  markQaMerged,
+  markQaFixing,
+  markQaFixed,
+  excludeFromQa,
+  markQaConflict,
+  markQaShipped,
+  markHandedOff,
+  addQaNote,
+  startQa,
+  markQaAgent,
+  markQaFailed,
+  markQaMerging,
+  approveQa,
+  qaQueue,
+  shipBlockers,
+  qaHookEvent,
   specReady,
   remainingTickets,
   sendableFeedback,
@@ -45,6 +63,13 @@ import {
   buildClusterBriefLine,
   buildFeedbackMessage,
   buildResumeMessage,
+  buildQaBriefLine,
+  buildQaMergeMessage,
+  buildQaFixMessage,
+  buildQaApproveMessage,
+  buildQaDropMessage,
+  buildQaShipMessage,
+  buildQaConflictMessage,
 } from "./brief.mjs";
 import { createControlServer } from "./batchControl.mjs";
 import { writeAndRender } from "./qaSpec.mjs";
@@ -98,6 +123,11 @@ class RunnerError extends Error {
 export function createBatchRunner({
   host,
   getSettings,
+  // The settings as the repo's Jira project sees them (jira.projectSettings
+  // laid over the global document). Every read that has a repo in hand goes
+  // through this, so a project's production branch, statuses and skills are
+  // its own. Falls back to the global document when the server predates it.
+  settingsForRepo = () => getSettings(),
   store,
   readConfig,
   issueDetail,
@@ -174,10 +204,12 @@ export function createBatchRunner({
   // ---- The skills a cluster runs with ----
 
   const BUNDLED_QA_SKILL = "jira-batch-qa";
+  const BUNDLED_INTEGRATION_SKILL = "jira-batch-merge";
   const DEFAULT_EXECUTION_SKILL = "execute-jira-ticket";
-  // Where the bundled skill is written inside a cluster's worktree. Relative,
-  // because it is also the exact line added to info/exclude.
-  const BUNDLED_REL = path.join(".claude", "skills", BUNDLED_QA_SKILL);
+  // Where a bundled skill is written inside a worktree. Relative, because it
+  // is also the exact line added to info/exclude.
+  const bundledRel = (name) => path.join(".claude", "skills", name);
+  const BUNDLED_REL = bundledRel(BUNDLED_QA_SKILL);
 
   function git(args, cwd) {
     return new Promise((resolve, reject) => {
@@ -218,13 +250,14 @@ export function createBatchRunner({
 
   // Written only when the bundled skill is the one in use. Rewritten on every
   // start and resume, so an updated extension updates it.
-  async function installBundledSkill(worktreePath, repo) {
-    const source = path.join(here, "skills", BUNDLED_QA_SKILL, "SKILL.md");
-    const target = path.join(worktreePath, BUNDLED_REL, "SKILL.md");
+  async function installBundledSkill(worktreePath, repo, name = BUNDLED_QA_SKILL) {
+    const rel = bundledRel(name);
+    const source = path.join(here, "skills", name, "SKILL.md");
+    const target = path.join(worktreePath, rel, "SKILL.md");
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, await readFile(source, "utf8"));
-    await excludePath(repo, BUNDLED_REL);
-    return path.join(worktreePath, BUNDLED_REL);
+    await excludePath(repo, rel);
+    return path.join(worktreePath, rel);
   }
 
   // Copying the bundled skill into the user's own directory, so they can own
@@ -256,7 +289,7 @@ export function createBatchRunner({
   // Both slots, resolved against what is installed plus this cluster's own
   // overrides. The extension locates a skill and names it; it never reads one.
   async function resolveSkills({ repo, overrides = {} }) {
-    const settings = await getSettings();
+    const settings = await settingsForRepo(repo);
     const discovered = await discoverSkills({
       repo,
       extraPaths: parseSkillPaths(settings["jira.skillPaths"]),
@@ -266,10 +299,12 @@ export function createBatchRunner({
 
     const execution = pick(overrides.execution, settings["jira.executionSkill"], DEFAULT_EXECUTION_SKILL);
     const qa = pick(overrides.qa, settings["jira.qaSkill"], BUNDLED_QA_SKILL);
+    const integration = pick(overrides.integration, settings["jira.integrationSkill"], BUNDLED_INTEGRATION_SKILL);
     return {
       discovered,
       execution,
       qa,
+      integration,
       // No execution skill and no explicit "none" means the brief carries a
       // short procedure itself rather than delegating to nothing.
       execFallback: !execution.skill && !execution.explicitNone,
@@ -279,6 +314,9 @@ export function createBatchRunner({
   // An empty QA slot nobody chose falls to the extension's own skill.
   function usesBundledQa(resolved) {
     return !resolved.qa.skill && !resolved.qa.explicitNone && !resolved.qa.missing;
+  }
+  function usesBundledIntegration(resolved) {
+    return !resolved.integration.skill && !resolved.integration.explicitNone && !resolved.integration.missing;
   }
 
   function skillRecord(resolved) {
@@ -329,7 +367,7 @@ export function createBatchRunner({
     const doc = await store.get();
     const batch = doc.batches[batchId];
     const cluster = clusterOf(batch, clusterId);
-    const settings = await getSettings();
+    const settings = await settingsForRepo(batch.repo);
 
     let worktree;
     try {
@@ -442,11 +480,11 @@ export function createBatchRunner({
     const cluster = batch ? clusterOf(batch, clusterId) : null;
     if (!cluster) throw new RunnerError(404, `no cluster ${clusterId}`);
     if (!cluster.windowId) throw new RunnerError(409, `"${cluster.name}" has no terminal to hand tickets to`);
-    const cfg = await readConfig();
+    const cfg = await readConfig(batch.repo);
     const ticketDetails = await details(cfg, keys);
     await sendToWindow(cluster.windowId, asPaste(buildAdditionalTicketsMessage({ clusterName: cluster.name, details: ticketDetails })));
 
-    const settings = await getSettings();
+    const settings = cfg.settings;
     if (settings["jira.updateIssueOnStartWork"] === true) {
       for (const key of keys) {
         try {
@@ -619,6 +657,9 @@ export function createBatchRunner({
 
     for (const batch of Object.values(doc.batches)) {
       if (batch.archivedAt) continue;
+      if (batch.qa?.state === "running" && batch.qa.windowId && !live.has(batch.qa.windowId)) {
+        await store.update((d) => markQaFailed(d.batches[batch.id], "its terminal window is gone", Date.now()));
+      }
       for (const cluster of batch.clusters) {
         if (cluster.state !== "running" || !cluster.windowId) continue;
         if (live.has(cluster.windowId)) continue;
@@ -724,6 +765,202 @@ export function createBatchRunner({
     return { ext };
   }
 
+  // ---- The QA agent ----
+  //
+  // One per batch, in a worktree of its own on a branch cut from production.
+  // Cluster-shaped in every mechanical respect - a worktree, a session, a
+  // brief on the launch line, the control socket - and unlike a cluster in
+  // that it produces no ticket work of its own: it consumes the clusters'.
+
+  const QA_BRANCH_DEFAULT = "qa/{batch}";
+
+  function branchSlug(text) {
+    return (
+      String(text ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 40) || "batch"
+    );
+  }
+
+  function yyyymmdd(now) {
+    const d = new Date(now);
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  // The setting when there is one; otherwise origin/HEAD read locally, and
+  // failing that the primary worktree's current branch. Never the network.
+  async function productionBranchFor(repo, settings) {
+    const configured = String(settings["jira.productionBranch"] ?? "").trim();
+    if (configured) return configured;
+    try {
+      const ref = (await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo)).trim();
+      if (ref) return ref.replace(/^origin\//, "");
+    } catch {
+      // Not set locally.
+    }
+    return (await git(["rev-parse", "--abbrev-ref", "HEAD"], repo)).trim();
+  }
+
+  async function startQaAgent(batchId, { agentId: wantedAgent = "", overrides = {} } = {}) {
+    requireHost();
+    const before = await store.get();
+    const batch = before.batches[batchId];
+    if (!batch) throw new RunnerError(404, `no batch ${batchId}`);
+    if (batch.qa?.state === "running") {
+      // Already there: the caller opens its terminal rather than making another.
+      return { alreadyRunning: true, sessionName: batch.qa.sessionName, windowId: batch.qa.windowId };
+    }
+
+    const agentId = wantedAgent || batch.agentId;
+    if (!agentId) throw new RunnerError(400, "an agent is required - start a cluster first, or pick one");
+    const launch = await host.agents.launchCommand(agentId);
+    if (!launch) throw new RunnerError(400, `"${agentId}" is not an agent this perch can launch`);
+
+    const settings = await settingsForRepo(batch.repo);
+    const resolved = await resolveSkills({ repo: batch.repo, overrides });
+    const skills = {
+      execution: null,
+      qa: null,
+      integration: usesBundledIntegration(resolved)
+        ? { name: BUNDLED_INTEGRATION_SKILL, dir: "", origin: "the extension's default", missing: false }
+        : skillRecord(resolved.integration),
+      execFallback: false,
+    };
+
+    const production = await productionBranchFor(batch.repo, settings);
+    const template = String(settings["jira.qaBranchTemplate"] ?? "").trim() || QA_BRANCH_DEFAULT;
+    const branch = template.replace("{batch}", branchSlug(batch.name)).replace("{date}", yyyymmdd(Date.now()));
+
+    // Recorded before anything is made, so a failure part way leaves a row
+    // that says so rather than a worktree nobody can see.
+    const prepared = await store.update((doc) => {
+      const draft = doc.batches[batchId];
+      if (!draft) return { ok: false, error: `no batch ${batchId}` };
+      return startQa(draft, { branch, productionBranch: production, worktreePath: "", now: Date.now() });
+    });
+    if (!prepared.ok) throw new RunnerError(409, prepared.error);
+
+    // A restart after the agent died finds its worktree and branch already
+    // there, with every commit so far on them. Reuse them: recreating would
+    // refuse on the existing path, and starting over would lose the merges.
+    let worktree;
+    const previous = batch.qa?.worktreePath && batch.qa.branch === branch ? batch.qa.worktreePath : "";
+    if (previous && (await exists(previous))) {
+      worktree = { path: previous, branch, resumed: true };
+    } else {
+      try {
+        worktree = await createWorktree(batch.repo, branch, settings, { offline: true, base: production });
+      } catch (err) {
+        await store.update((d) => markQaFailed(d.batches[batchId], err.message, Date.now()));
+        throw new RunnerError(typeof err?.status === "number" ? err.status : 500, err.message);
+      }
+    }
+    await store.update((d) => {
+      d.batches[batchId].qa.worktreePath = worktree.path;
+      return { ok: true };
+    });
+
+    if (usesBundledIntegration(resolved)) {
+      try {
+        await installBundledSkill(worktree.path, batch.repo, BUNDLED_INTEGRATION_SKILL);
+      } catch (err) {
+        log(`could not write the bundled integration skill: ${err.message}`);
+      }
+    }
+
+    let session;
+    let pane;
+    try {
+      // exactCwd, or the session re-roots to the git root and the agent
+      // lands in the primary worktree instead of this one.
+      session = await host.sessions.create(sessionNameFor(branch), worktree.path, true);
+      const panes = await host.sessions.listPanes(session.name);
+      pane = panes[0];
+      if (!pane) throw new Error(`session ${session.name} has no window`);
+    } catch (err) {
+      await store.update((d) => markQaFailed(d.batches[batchId], err.message, Date.now()));
+      throw new RunnerError(500, err.message);
+    }
+    await store.update((d) => markQaAgent(d.batches[batchId], { sessionName: session.name, windowId: pane.id, now: Date.now() }));
+
+    // Every reviewed ticket with the cluster branch its commits live on, so the
+    // agent can find them when the panel asks for one.
+    const fresh = (await store.get()).batches[batchId];
+    const branchOf = (key) => fresh.clusters.find((cluster) => cluster.keys.includes(key))?.branch ?? "";
+    const tickets = qaQueue(fresh).map((key) => ({ key, summary: fresh.tickets[key]?.summary ?? "", branch: branchOf(key) }));
+    const briefLine = buildQaBriefLine({ batchName: fresh.name, branch, productionBranch: production, tickets, skills, resumed: worktree.resumed === true });
+    const line =
+      `export JB_SOCK=${shellQuote(socketPath)} JB_BATCH_ID=${shellQuote(batchId)}; ` +
+      `export PATH=${shellQuote(binDir)}:"$PATH"; ${launch} ${shellQuote(briefLine)}`;
+    try {
+      await sendToWindow(pane.id, line);
+    } catch (err) {
+      await store.update((d) => markQaFailed(d.batches[batchId], `could not reach its terminal: ${err.message}`, Date.now()));
+      throw new RunnerError(500, err.message);
+    }
+    return { alreadyRunning: false, sessionName: session.name, windowId: pane.id, branch, worktreePath: worktree.path };
+  }
+
+  // What the panel types at the QA agent. Each records intent first, so a
+  // send that fails still leaves the board saying what was asked.
+  async function tellQaAgent(batchId, text) {
+    const batch = (await store.get()).batches[batchId];
+    if (!batch?.qa?.windowId) throw new RunnerError(409, "the QA agent has no terminal - start QA first");
+    await sendToWindow(batch.qa.windowId, asPaste(text));
+  }
+
+  async function qaMerge(batchId, key) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return markQaMerging(batch, key, Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
+    const batch = (await store.get()).batches[batchId];
+    const sourceBranch = batch.clusters.find((cluster) => cluster.keys.includes(key))?.branch ?? "";
+    await tellQaAgent(batchId, buildQaMergeMessage({ key, summary: batch.tickets[key]?.summary ?? "", sourceBranch }));
+  }
+
+  async function qaChange(batchId, key, change) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return markQaFixing(batch, key, change, Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
+    await tellQaAgent(batchId, buildQaFixMessage({ key, change }));
+  }
+
+  async function qaApprove(batchId, key, notes) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return approveQa(batch, key, notes, Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
+    await tellQaAgent(batchId, buildQaApproveMessage({ key }));
+  }
+
+  async function qaExclude(batchId, key, why) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return excludeFromQa(batch, key, why, Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
+    await tellQaAgent(batchId, buildQaDropMessage({ key, commit: result.dropCommit, why }));
+  }
+
+  async function qaShip(batchId) {
+    const batch = (await store.get()).batches[batchId];
+    if (!batch?.qa) throw new RunnerError(409, "QA has not been started for this batch");
+    const blockers = shipBlockers(batch);
+    if (blockers.length > 0) throw new RunnerError(409, `not everything is approved: ${blockers.join(", ")}`);
+    await tellQaAgent(batchId, buildQaShipMessage({ into: batch.qa.productionBranch, branch: batch.qa.branch }));
+  }
+
   // ---- The cluster's report ----
   //
   // Built by the extension from the per-ticket reports rather than by the
@@ -740,7 +977,7 @@ export function createBatchRunner({
     // improvements reach batch runs; the vendored copy only otherwise.
     const discovered = await discoverSkills({
       repo: batch.repo,
-      extraPaths: parseSkillPaths((await getSettings())["jira.skillPaths"]),
+      extraPaths: parseSkillPaths((await settingsForRepo(batch.repo))["jira.skillPaths"]),
     });
     // Their skill having the script is not the same as their skill existing:
     // an older copy of execute-jira-ticket has no scripts/ at all, and
@@ -783,6 +1020,30 @@ export function createBatchRunner({
       if (!batchId || !clusterId) throw new RunnerError(400, "this shell is not inside a batch cluster");
       return fn(batchId, clusterId);
     };
+    // The QA agent has a batch and no cluster. Its verbs refuse a key the
+    // batch does not hold, exactly as a cluster's refuse one the cluster does
+    // not, and every one of them is a sign of life that clears `awaiting`.
+    const withBatch = async (body, fn) => {
+      const batchId = String(body.batchId ?? "");
+      if (!batchId) throw new RunnerError(400, "this shell is not inside a batch's QA worktree");
+      return fn(batchId);
+    };
+    const qaVerb = (mutate) => (body) =>
+      withBatch(body, async (batchId) => {
+        const key = String(body.key ?? "").toUpperCase();
+        const result = await store.update((doc) => {
+          const batch = doc.batches[batchId];
+          if (!batch) return { ok: false, error: `no batch ${batchId}` };
+          if (key && !batch.ticketStates[key]) {
+            return { ok: false, error: `${key} is not in this batch - it holds ${Object.keys(batch.ticketStates).join(", ") || "nothing"}` };
+          }
+          if (!batch.qa) return { ok: false, error: "QA has not been started for this batch" };
+          qaSeen(batch, Date.now());
+          return mutate(batch, key, body, Date.now());
+        });
+        if (!result.ok) throw new RunnerError(409, result.error);
+        return { key, ...result };
+      });
 
     const report = (verb) => (body) =>
       withCluster(body, async (batchId, clusterId) => {
@@ -799,6 +1060,16 @@ export function createBatchRunner({
         if (!result.ok) throw new RunnerError(409, result.error);
         // done and fail are the reports that can settle the last ticket.
         await maybeBuildReport(batchId, clusterId);
+        // The first ticket to reach review may be the cue to start QA. Only
+        // when nothing has ever been started for this batch - a run that
+        // failed or was shipped is not restarted from here.
+        if (verb === "done" && result.state === "review") {
+          const batch = (await store.get()).batches[batchId];
+          const settings = await settingsForRepo(batch?.repo);
+          if (settings["jira.startQaOnFirstReview"] === true && batch && !batch.qa) {
+            startQaAgent(batchId).catch((err) => log(`could not start QA by itself: ${err.message}`));
+          }
+        }
         return { key, state: result.state };
       });
 
@@ -843,7 +1114,73 @@ export function createBatchRunner({
           return { key, status: result.status };
         }),
 
+      "qa-start": qaVerb((batch, _key, body, now) => (body.url ? setQaPreviewUrl(batch, String(body.url), now) : { ok: true })),
+      "qa-merged": qaVerb((batch, key, body, now) => markQaMerged(batch, key, String(body.commit ?? ""), now)),
+      "qa-fixing": qaVerb((batch, key, body, now) => markQaFixed(batch, key, String(body.what ?? ""), now)),
+      // The agent's "approved" is the amend landing: the user approved first,
+      // through the panel, and this records the sha the branch now carries.
+      "qa-approved": qaVerb((batch, key, body, now) => markQaMerged(batch, key, String(body.commit ?? ""), now)),
+      "qa-excluded": qaVerb((batch, key, body, now) => excludeFromQa(batch, key, String(body.why ?? ""), now)),
+      "qa-conflict": async (body) => {
+        const out = await qaVerb((batch, key, b, now) =>
+          markQaConflict(batch, key, { files: Array.isArray(b.files) ? b.files : [], why: String(b.why ?? "") }, now),
+        )(body);
+        // The ticket's own agent is told, the way feedback reaches it. A
+        // cluster with no window (closed, or its worktree removed) is left
+        // for the reviewer to see on the board; nothing else can be done.
+        const key = out.key;
+        const batch = (await store.get()).batches[String(body.batchId ?? "")];
+        const cluster = batch?.clusters.find((entry) => entry.keys.includes(key));
+        if (cluster?.windowId && batch.qa) {
+          try {
+            await sendToWindow(
+              cluster.windowId,
+              asPaste(
+                buildQaConflictMessage({
+                  key,
+                  summary: batch.tickets[key]?.summary ?? "",
+                  qaBranch: batch.qa.branch,
+                  files: Array.isArray(body.files) ? body.files : [],
+                  why: String(body.why ?? ""),
+                }),
+              ),
+            );
+          } catch (err) {
+            log(`could not tell ${cluster.name} about ${key}'s conflict: ${err.message}`);
+          }
+        }
+        return out;
+      },
+      "qa-shipped": qaVerb((batch, _key, body, now) => markQaShipped(batch, String(body.into ?? ""), now)),
+      "qa-handed": qaVerb((batch, key, body, now) =>
+        markHandedOff(batch, key, { url: String(body.url ?? ""), ok: !body.error, error: String(body.error ?? "") }, now),
+      ),
+
+      // A cluster's agent notes against its cluster; the QA agent, which has
+      // a batch and no cluster, against the QA run. Same verb, so the skill
+      // can say "jira-batch note" and mean it in both.
       note: (body) =>
+        body.clusterId
+          ? withCluster(body, async (batchId, clusterId) => {
+              const result = await store.update((doc) => {
+                const batch = doc.batches[batchId];
+                if (!batch) return { ok: false, error: `no batch ${batchId}` };
+                return addNote(batch, clusterId, String(body.text ?? ""), Date.now());
+              });
+              if (!result.ok) throw new RunnerError(409, result.error);
+              return { noted: true };
+            })
+          : withBatch(body, async (batchId) => {
+              const result = await store.update((doc) => {
+                const batch = doc.batches[batchId];
+                if (!batch) return { ok: false, error: `no batch ${batchId}` };
+                return addQaNote(batch, String(body.text ?? ""), Date.now());
+              });
+              if (!result.ok) throw new RunnerError(409, result.error);
+              return { noted: true };
+            }),
+
+      "note-cluster": (body) =>
         withCluster(body, async (batchId, clusterId) => {
           const result = await store.update((doc) => {
             const batch = doc.batches[batchId];
@@ -920,6 +1257,8 @@ export function createBatchRunner({
                 if (batch.archivedAt) continue;
                 const result = hookEvent(batch, event.paneId, event.event, Date.now());
                 if (result.ok) return result;
+                const qa = qaHookEvent(batch, event.paneId, event.event, Date.now());
+                if (qa.ok) return qa;
               }
               return { ok: false };
             })
@@ -973,5 +1312,12 @@ export function createBatchRunner({
     cliPath,
     evidenceDir,
     buildClusterReport,
+    startQaAgent,
+    qaMerge,
+    qaChange,
+    qaApprove,
+    qaExclude,
+    qaShip,
+    tellQaAgent,
   };
 }

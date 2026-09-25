@@ -7,6 +7,7 @@
 // soon as the write lands.
 import { useCallback, useEffect, useState } from "react";
 import ProjectMapTable from "./ProjectMapTable";
+import ProjectSettingsEditor from "./ProjectSettingsEditor";
 import type { ProjectRow } from "./types";
 
 type Fetcher = (path: string, init?: RequestInit) => Promise<Response>;
@@ -27,6 +28,8 @@ export interface SettingsBridge {
   // The MAIN worktree of the active window's repository, once /status has
   // reported it. Null before that, or outside a repository.
   getActiveRepo(): string | null;
+  // The Jira project that repository resolved to, once /status has said.
+  getActiveProject(): string | null;
   // Fires whenever either of the above could have changed.
   subscribe(cb: () => void): () => void;
 }
@@ -190,6 +193,23 @@ export default function SettingsPanel() {
 // The project-mapping table, registered as its own settings component so it
 // can sit directly under the jira.projectMap field it edits while the token
 // field sits under jira.email - see client.tsx's registrations.
+export function ProjectSettingsSetting() {
+  const tick = useBridge();
+  const { projects, error } = useProjects(tick);
+  if (!bridge) return null;
+  const current = bridge;
+  return (
+    <ProjectSettingsEditor
+      raw={current.getSetting("jira.projectSettings")}
+      globals={(key) => current.getSetting(key)}
+      projects={projects}
+      projectsError={error}
+      activeProject={current.getActiveProject()}
+      onChange={(value) => current.setSetting("jira.projectSettings", value)}
+    />
+  );
+}
+
 export function ProjectMapSettings() {
   const tick = useBridge();
   const { projects, error } = useProjects(tick);

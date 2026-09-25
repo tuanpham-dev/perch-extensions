@@ -12,6 +12,11 @@ import SkillPicker from "./SkillPicker";
 // Said wherever the QA slot is chosen, so the two pickers agree.
 export const QA_DEFAULT_NOTE =
   "The extension's own QA skill. Install it from the command palette to make it yours and edit it.";
+// The batch's QA agent runs this: it owns the QA branch, the dev server and
+// the merge to production, so "make it yours" here means owning the release
+// procedure, not one ticket's checks.
+export const INTEGRATION_DEFAULT_NOTE =
+  "The extension's own merge procedure for the batch's QA branch. Install it from the command palette to make it yours and edit it.";
 import { skillsLabel } from "./batchViewModel";
 import type { Batch, Cluster, ClusterStateName, SkillsResponse } from "./batchTypes";
 import type { MenuItem } from "./types";
@@ -29,7 +34,8 @@ export interface BatchReviewProps {
   skills: SkillsResponse | null;
   executionSkill: string;
   qaSkill: string;
-  onSkill: (slot: "execution" | "qa", value: string) => void;
+  integrationSkill: string;
+  onSkill: (slot: "execution" | "qa" | "integration", value: string) => void;
   branchTemplate: string;
   worktreeLocation: (branch: string) => string;
   showMenu?: (x: number, y: number, items: MenuItem[]) => void;
@@ -82,6 +88,7 @@ export default function BatchReview({
   skills,
   executionSkill,
   qaSkill,
+  integrationSkill,
   onSkill,
   branchTemplate,
   worktreeLocation,
@@ -404,6 +411,18 @@ export default function BatchReview({
                 disabled={busy}
                 compact
                   onChange={(value) => onSkill("qa", value)}
+                />
+              </label>
+              <label className="jira-breview-agent">
+                <span>Integrates with</span>
+              <SkillPicker
+                value={integrationSkill}
+                skills={skills.skills}
+                defaultLabel={skills.defaults.integration}
+                defaultDescription={INTEGRATION_DEFAULT_NOTE}
+                disabled={busy}
+                compact
+                  onChange={(value) => onSkill("integration", value)}
                 />
               </label>
             </>

@@ -44,6 +44,25 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
   note <text>
       Anything worth recording against this cluster. Does not change a
       ticket's state.
+
+  The QA agent's verbs - the one working the batch's QA branch:
+  qa-start [--url <preview url>]
+      The branch is cut and the dev server is serving the QA worktree.
+  qa-merged <KEY> --commit <sha>
+      The ticket's commits are squashed onto the branch and the server is
+      up again. Say it again with the new sha after amending a fix in.
+  qa-fixing <KEY> [--what <text>]
+      A requested change is made in the worktree and NOT committed.
+  qa-approved <KEY> --commit <sha>
+      The fix is amended into the ticket's commit; this is the final sha.
+  qa-excluded <KEY> --why <text>
+      Left out of this run, and its commit dropped if it had one.
+  qa-conflict <KEY> --files <path>... --why <text>
+      The pick would not apply and the resolution is a judgement call.
+  qa-shipped --into <branch>
+      The QA branch is merged into the production branch. Never pushed.
+  qa-handed <KEY> --url <preview> [--error <text>]
+      Jira has been told, or could not be.
   brief
       Print your cluster's brief again: its tickets, in order, and the rules.
   status
@@ -97,6 +116,7 @@ shift
 
 case "$verb" in
   start | done | fail | qa | note | brief | status) ;;
+  qa-start | qa-merged | qa-fixing | qa-approved | qa-excluded | qa-conflict | qa-shipped | qa-handed) ;;
   *) die "unknown verb \"$verb\" - run: jira-batch help" 2 ;;
 esac
 
@@ -166,7 +186,7 @@ absolute_path() {
 # agent types without being told twice. Uppercased here so a lowercased key
 # never reads as a ticket this cluster does not hold.
 case "$verb" in
-  start | done | fail | qa)
+  start | done | fail | qa | qa-merged | qa-fixing | qa-approved | qa-excluded | qa-conflict | qa-handed)
     [ $# -gt 0 ] || die "$verb needs a ticket key, e.g. jira-batch $verb CAP-12" 2
     case "$1" in
       --*) die "$verb needs a ticket key before any flags, e.g. jira-batch $verb CAP-12" 2 ;;

@@ -2,7 +2,7 @@
 // cluster filter does (and does not) hide, and the order cards sit in.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clusterChips, columns, feedbackPending, sinceLabel, skillsLabel, COLUMNS } from "./batchViewModel.ts";
+import { clusterChips, columns, feedbackPending, sinceLabel, skillsLabel, COLUMNS, qaColumns, qaQueue, shipBlockers } from "./batchViewModel.ts";
 import type { Batch, Cluster, SkillRecord, TicketState, TicketStateName } from "./batchTypes.ts";
 
 const NOW = 1_700_000_000_000;
@@ -244,4 +244,72 @@ test("QA left to the agent is said, not left blank", () => {
     skillsLabel({ execution: skill({ name: "execute-jira-ticket" }), qa: null, execFallback: false }),
     "Skills: execute-jira-ticket (yours) + no QA skill",
   );
+});
+
+
+// ---- The QA branch, as the board draws it ----
+
+function qaBatch(): Batch {
+  const ticket = (key: string, state: string, integration: string, extra: Record<string, unknown> = {}) => ({
+    state,
+    clusterId: "cls_1",
+    since: 1,
+    history: [],
+    summary: "",
+    reason: "",
+    feedbackDraft: "",
+    feedback: [],
+    qa: null,
+    qaHistory: [],
+    integration: { state: integration, commit: "", change: "", fixed: "", note: "", refinedNote: "", postedNote: "", why: "", files: [], handoff: null, at: null, ...extra },
+  });
+  return {
+    id: "bat_1",
+    name: "B",
+    tickets: {
+      "CAP-1": { key: "CAP-1", summary: "one", priority: "Low", type: "", url: "", projectKey: "CAP" },
+      "CAP-2": { key: "CAP-2", summary: "two", priority: "Highest", type: "", url: "", projectKey: "CAP" },
+      "CAP-3": { key: "CAP-3", summary: "three", priority: "Weird", type: "", url: "", projectKey: "CAP" },
+      "CAP-4": { key: "CAP-4", summary: "four", priority: "High", type: "", url: "", projectKey: "CAP" },
+      "CAP-5": { key: "CAP-5", summary: "five", priority: "High", type: "", url: "", projectKey: "CAP" },
+      "CAP-6": { key: "CAP-6", summary: "six", priority: "High", type: "", url: "", projectKey: "CAP" },
+    },
+    clusters: [{ id: "cls_1", name: "One", color: 2, keys: ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6"], state: "running" }],
+    ticketStates: {
+      "CAP-1": ticket("CAP-1", "review", "none"),
+      "CAP-2": ticket("CAP-2", "review", "none"),
+      "CAP-3": ticket("CAP-3", "review", "none"),
+      "CAP-4": ticket("CAP-4", "review", "fixing", { change: "hover resize" }),
+      "CAP-5": ticket("CAP-5", "done", "approved", { postedNote: "image is FPO" }),
+      "CAP-6": ticket("CAP-6", "in-progress", "none"),
+    },
+    qa: { state: "running", branch: "qa/b" },
+  } as unknown as Batch;
+}
+
+test("the queue matches the server's order: priority rank, then key, unknown priorities last", () => {
+  assert.deepEqual(qaQueue(qaBatch()), ["CAP-2", "CAP-1", "CAP-3"]);
+});
+
+test("ship blockers are the tickets on the branch nobody has passed judgement on", () => {
+  assert.deepEqual(shipBlockers(qaBatch()), ["CAP-4"]);
+});
+
+test("every ticket lands in exactly one QA column, and a working one is 'not yet reviewed' rather than missing", () => {
+  const columns = qaColumns(qaBatch());
+  const placed = columns.flatMap((column) => column.cards.map((card) => card.key)).sort();
+  assert.deepEqual(placed, ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6"]);
+  const by = Object.fromEntries(columns.map((column) => [column.id, column.cards.map((card) => card.key)]));
+  assert.deepEqual(by.waiting, ["CAP-6"]);
+  assert.deepEqual(by.queue, ["CAP-2", "CAP-1", "CAP-3"]);
+  assert.deepEqual(by.verifying, ["CAP-4"]);
+  assert.deepEqual(by.approved, ["CAP-5"]);
+});
+
+test("a card carries the detail its column needs: the change being fixed, the note that was posted", () => {
+  const columns = qaColumns(qaBatch());
+  const fixing = columns.find((column) => column.id === "verifying")!.cards[0];
+  assert.equal(fixing.detail, "hover resize");
+  const approved = columns.find((column) => column.id === "approved")!.cards[0];
+  assert.equal(approved.detail, "image is FPO");
 });

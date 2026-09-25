@@ -50,7 +50,11 @@ import {
   setBranch,
   setFeedbackDraft,
   ticketCounts,
+  handoffPending,
+  markHandedOff,
 } from "./batchModel.mjs";
+import { settingsForProject } from "./projectSettings.mjs";
+import { buildHandoffComment, buildQaRefinePrompt } from "./brief.mjs";
 import { createBatchStore, newId } from "./batchStore.mjs";
 import { buildClusterPrompt, heuristicClusters, parseClusterReply, singleCluster } from "./analysis.mjs";
 import { createBatchRunner } from "./batchRunner.mjs";
@@ -607,8 +611,19 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   }
   // ---- Config ----
 
-  async function readConfig() {
+  // The settings as the project a repository belongs to sees them: the
+  // global document with that project's jira.projectSettings block laid over
+  // it. Without a cwd, the global document - for what is the same whichever
+  // repo you are in, such as the site's project list.
+  async function projectSettingsFor(cwd) {
     const settings = await getSettings();
+    if (typeof cwd !== "string" || !cwd) return settings;
+    const { key } = await resolveProjectKey(settings, cwd);
+    return settingsForProject(settings, key);
+  }
+
+  async function readConfig(cwd) {
+    const settings = await projectSettingsFor(cwd);
     const rawSite = typeof settings["jira.siteUrl"] === "string" ? settings["jira.siteUrl"].trim() : "";
     const email = typeof settings["jira.email"] === "string" ? settings["jira.email"].trim() : "";
     const apiToken = await store.get(TOKEN_NAME);
@@ -860,7 +875,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   router.get("/status", async (req, res) => {
     const cwd = requireCwd(req, res);
     if (!cwd) return;
-    const cfg = await readConfig();
+    const cfg = await readConfig(cwd);
     const hasToken = !!cfg.apiToken;
     const configured = !!(cfg.siteUrl && cfg.email && hasToken);
     const { key, source } = await resolveProjectKey(cfg.settings, cwd);
@@ -914,7 +929,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       res.status(400).json({ error: 'scope must be "mine" or "project"' });
       return;
     }
-    const cfg = await readConfig();
+    const cfg = await readConfig(cwd);
     if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) {
       res.status(400).json({ error: "jira is not configured" });
       return;
@@ -981,7 +996,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   router.get("/facets", async (req, res) => {
     const cwd = requireCwd(req, res);
     if (!cwd) return;
-    const cfg = await readConfig();
+    const cfg = await readConfig(cwd);
     if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) {
       res.status(400).json({ error: "jira is not configured" });
       return;
@@ -1249,7 +1264,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       res.status(400).json({ error: "key must be an issue key like CAP-123" });
       return;
     }
-    const cfg = await readConfig();
+    const cfg = await readConfig(typeof req.query.cwd === "string" ? req.query.cwd : undefined);
     if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) {
       res.status(400).json({ error: "jira is not configured" });
       return;
@@ -1350,7 +1365,10 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   //
   // Neither mode lets the remote decide whether the worktree happens. See the
   // fetch below.
-  async function createWorktree(cwd, branch, settings, { offline = false } = {}) {
+  // `base` names the branch to cut from when the caller knows better than
+  // origin/HEAD - a batch's QA branch comes off the configured production
+  // branch. It must already exist locally: this never fetches to find it.
+  async function createWorktree(cwd, branch, settings, { offline = false, base: wantedBase = "" } = {}) {
     const name = branch.trim();
     const repo = await repoRoot(cwd);
     if (!repo) throw bad(`${cwd} is not inside a git repository`);
@@ -1364,7 +1382,18 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     // Offline: whatever origin/HEAD already says locally, and HEAD when it
     // says nothing - `git remote show origin`, the other branch of
     // defaultBranch, goes to the network too.
-    const { base, note } = offline ? await localDefaultBranch(repo) : await defaultBranch(repo);
+    let base;
+    let note = null;
+    if (wantedBase) {
+      try {
+        await git(["rev-parse", "--verify", "--quiet", `${wantedBase}^{commit}`], repo);
+      } catch {
+        throw bad(`branch "${wantedBase}" does not exist locally`);
+      }
+      base = wantedBase;
+    } else {
+      ({ base, note } = offline ? await localDefaultBranch(repo) : await defaultBranch(repo));
+    }
     const notes = note ? [note] : [];
     if (base && !offline) {
       try {
@@ -1406,11 +1435,66 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       return;
     }
     try {
-      res.json(await createWorktree(cwd, branch, await getSettings()));
+      res.json(await createWorktree(cwd, branch, await projectSettingsFor(cwd)));
     } catch (err) {
       res.status(typeof err?.status === "number" ? err.status : 500).json({ error: err.message });
     }
   });
+
+  // ---- The hand-off ----
+  //
+  // After the production merge, every approved ticket is moved to the QA
+  // status, assigned to the reviewer, and given one comment saying where to
+  // look and what to check. Three writes other people see, so the parts that
+  // can refuse - the assignee, the status - are resolved BEFORE the first
+  // ticket is touched, and each ticket's outcome is recorded on its own.
+
+  // A display name, an email or an account id, against the project's
+  // assignable users. One match or nothing: a name that could be two people
+  // is refused rather than guessed, because the assignment is visible to
+  // both of them.
+  async function resolveAssignee(cfg, projectKey, wanted) {
+    const text = String(wanted ?? "").trim();
+    if (!text) return null;
+    if (/^[0-9a-f]+:[0-9a-f-]{8,}$/i.test(text) || /^[0-9a-f]{24}$/i.test(text)) return { accountId: text, displayName: text };
+    const body = await jiraFetch(
+      cfg,
+      `/rest/api/3/user/assignable/search?project=${encodeURIComponent(projectKey)}&query=${encodeURIComponent(text)}&maxResults=50`,
+    );
+    const users = (Array.isArray(body) ? body : []).filter((u) => typeof u?.accountId === "string");
+    const lower = text.toLowerCase();
+    const exact = users.filter((u) => String(u.displayName ?? "").toLowerCase() === lower || String(u.emailAddress ?? "").toLowerCase() === lower);
+    const found = exact.length > 0 ? exact : users.filter((u) => String(u.displayName ?? "").toLowerCase().includes(lower));
+    if (found.length === 1) return { accountId: found[0].accountId, displayName: found[0].displayName ?? found[0].accountId };
+    if (found.length === 0) throw bad(`jira.qaAssignee "${text}" matches nobody who can be assigned in ${projectKey}`);
+    throw bad(`jira.qaAssignee "${text}" matches ${found.length} people (${found.map((u) => u.displayName).join(", ")}) - set it to an account id`);
+  }
+
+  async function transitionTo(cfg, key, wanted) {
+    const body = await jiraFetch(cfg, `/rest/api/3/issue/${key}/transitions`);
+    const transitions = Array.isArray(body?.transitions) ? body.transitions : [];
+    const match = transitions.find((t) => typeof t?.to?.name === "string" && t.to.name.toLowerCase() === wanted.toLowerCase());
+    if (!match) throw new Error(`no transition to "${wanted}" from this issue's current status`);
+    await jiraFetch(cfg, `/rest/api/3/issue/${key}/transitions`, { method: "POST", body: JSON.stringify({ transition: { id: match.id } }) });
+  }
+
+  // Plain lines to ADF: one paragraph per line, blank lines as paragraph
+  // breaks. Jira's editor does the rest.
+  function adf(text) {
+    const paragraphs = String(text).split("\n").map((line) => ({
+      type: "paragraph",
+      content: line ? [{ type: "text", text: line }] : [],
+    }));
+    return { type: "doc", version: 1, content: paragraphs };
+  }
+
+  async function handOffIssue(cfg, key, { status, assignee, comment }) {
+    await transitionTo(cfg, key, status);
+    if (assignee) {
+      await jiraFetch(cfg, `/rest/api/3/issue/${key}/assignee`, { method: "PUT", body: JSON.stringify({ accountId: assignee.accountId }) });
+    }
+    await jiraFetch(cfg, `/rest/api/3/issue/${key}/comment`, { method: "POST", body: JSON.stringify({ body: adf(comment) }) });
+  }
 
   // Always 200, even when a step fails: the worktree already exists by the
   // time this runs, so a 500 here would read as "Start work failed" for
@@ -1472,7 +1556,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       res.status(400).json({ error: "key must be an issue key like CAP-123" });
       return;
     }
-    res.json(await progressIssue(await readConfig(), key));
+    res.json(await progressIssue(await readConfig(typeof req.body?.cwd === "string" ? req.body.cwd : undefined), key));
   });
 
   // ---- Batches ----
@@ -1487,6 +1571,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   const runner = createBatchRunner({
     host,
     getSettings,
+    settingsForRepo: projectSettingsFor,
     store: batches,
     readConfig,
     issueDetail,
@@ -1680,7 +1765,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         const cwd = raw === "~" || raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(1)) : raw;
         repo = await repoRoot(cwd);
       }
-      const settings = await getSettings();
+      const settings = await projectSettingsFor(repo);
       const skills = await discoverSkills({ repo, extraPaths: parseSkillPaths(settings["jira.skillPaths"]) });
       res.json({
         skills: skills.map(({ dir, name, description, origin }) => ({ dir, name, description, origin })),
@@ -1688,7 +1773,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         // actually answer, rather than the word "default" alone. Plain names:
         // the label goes inside "Default (...)", so anything parenthesised
         // here nests a second bracket and overflows the select.
-        defaults: { execution: "execute-jira-ticket", qa: "jira-batch-qa" },
+        defaults: { execution: "execute-jira-ticket", qa: "jira-batch-qa", integration: "jira-batch-merge" },
       });
     }),
   );
@@ -1772,7 +1857,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         heuristic = true;
       } else {
         const prompt = buildClusterPrompt({ criteria, readCodebase, repo, tickets: details, existing });
-        const settings = await getSettings();
+        const settings = await projectSettingsFor(repo);
         const seconds = Number(settings["jira.batchAnalysisTimeoutSeconds"]);
         const timeoutMs = readCodebase ? Math.min(900, Math.max(60, Number.isFinite(seconds) ? seconds : 600)) * 1000 : undefined;
         let reply;
@@ -1981,6 +2066,130 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       });
       const doc = await batches.get();
       res.json({ batch: decorate(batchOr404(doc, id)), ...outcome });
+    }),
+  );
+
+  // ---- The QA branch ----
+  //
+  // Each records the user's decision in the document and then types one
+  // instruction at the QA agent. The agent reports back over the control
+  // socket; nothing here waits for it.
+
+  router.post(
+    "/batches/:id/qa/start",
+    route(async (req, res) => {
+      const id = req.params.id;
+      batchOr404(await batches.get(), id);
+      const body = req.body ?? {};
+      const started = await runner.startQaAgent(id, {
+        agentId: typeof body.agentId === "string" ? body.agentId : "",
+        overrides: { integration: typeof body.integrationSkill === "string" ? body.integrationSkill : undefined },
+      });
+      res.json({ batch: decorate((await batches.get()).batches[id]), ...started });
+    }),
+  );
+
+  const qaAction = (name, run) =>
+    router.post(
+      `/batches/:id/qa/${name}`,
+      route(async (req, res) => {
+        const id = req.params.id;
+        batchOr404(await batches.get(), id);
+        const body = req.body ?? {};
+        const key = typeof body.key === "string" ? body.key.toUpperCase() : "";
+        await run(id, key, body);
+        res.json({ batch: decorate((await batches.get()).batches[id]) });
+      }),
+    );
+
+  qaAction("merge", async (id, key) => {
+    if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+    await runner.qaMerge(id, key);
+  });
+  qaAction("change", async (id, key, body) => {
+    if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+    const change = typeof body.change === "string" ? body.change.trim() : "";
+    if (!change) throw bad("say what should change");
+    await runner.qaChange(id, key, change);
+  });
+  qaAction("approve", async (id, key, body) => {
+    if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+    await runner.qaApprove(id, key, {
+      note: typeof body.note === "string" ? body.note : "",
+      refinedNote: typeof body.refinedNote === "string" ? body.refinedNote : "",
+      postedNote: typeof body.postedNote === "string" ? body.postedNote : "",
+    });
+  });
+  qaAction("exclude", async (id, key, body) => {
+    if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+    await runner.qaExclude(id, key, typeof body.why === "string" ? body.why.trim() : "");
+  });
+  qaAction("ship", async (id) => {
+    await runner.qaShip(id);
+  });
+
+  router.post(
+    "/batches/:id/qa/handoff",
+    route(async (req, res) => {
+      const id = req.params.id;
+      const batch = batchOr404(await batches.get(), id);
+      if (!batch.qa || batch.qa.state !== "shipped") throw conflict("merge to production first - the hand-off says the work is on the main branch");
+      const cfg = await readConfig(batch.repo);
+      if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) throw bad("jira is not configured");
+      const settings = cfg.settings;
+      const status = String(settings["jira.qaStatus"] ?? "").trim() || "QA";
+      const urlTemplate = String(settings["jira.previewUrlTemplate"] ?? "").trim();
+      const pending = handoffPending(batch);
+      if (pending.length === 0) throw conflict("every approved ticket has already been handed off");
+      // Resolved once, before anything is written: a bad name stops the
+      // whole hand-off rather than half of it.
+      const projectKey = batch.tickets[pending[0]]?.projectKey || cfg.projectKey || pending[0].split("-")[0];
+      const assignee = await resolveAssignee(cfg, projectKey, settings["jira.qaAssignee"]);
+
+      const results = [];
+      for (const key of pending) {
+        const ticket = batch.ticketStates[key];
+        const url = urlTemplate.replace("{key}", key);
+        const comment = buildHandoffComment({ url, qa: ticket.qa, note: ticket.integration?.postedNote ?? "" });
+        let ok = true;
+        let error = "";
+        try {
+          await handOffIssue(cfg, key, { status, assignee, comment });
+        } catch (err) {
+          ok = false;
+          error = scrub(err.message, cfg.apiToken);
+        }
+        await batches.update((draft) => markHandedOff(batchOr404(draft, id), key, { url, ok, error }, Date.now()));
+        results.push({ key, ok, error });
+      }
+      res.json({ batch: decorate((await batches.get()).batches[id]), results, assignee: assignee?.displayName ?? "", status });
+    }),
+  );
+
+  // The note as a teammate will read it, before it is posted anywhere. The
+  // model is the extension's own rather than the QA agent, so the answer is
+  // back in seconds and shown to the user before the approval is final - an
+  // agent round trip would have meant approving first and reading after.
+  router.post(
+    "/batches/:id/qa/refine-note",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const body = req.body ?? {};
+      const key = typeof body.key === "string" ? body.key.toUpperCase() : "";
+      const note = typeof body.note === "string" ? body.note.trim() : "";
+      if (!note) throw bad("nothing to refine");
+      const summary = batch.tickets[key]?.summary ?? key;
+      let reply = "";
+      try {
+        reply = String(await ai.run(buildQaRefinePrompt({ key, summary, note }), { timeoutMs: 60_000 })).trim();
+      } catch (err) {
+        // No model, or a slow one: the note goes as written rather than the
+        // approval waiting on it.
+        res.json({ refined: note, asWritten: true, note: `Could not refine the note: ${err.message}` });
+        return;
+      }
+      const asWritten = !reply || /^AS-WRITTEN\.?$/i.test(reply);
+      res.json({ refined: asWritten ? note : reply, asWritten });
     }),
   );
 

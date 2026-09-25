@@ -47,6 +47,7 @@ const STATUSES = [
   { name: "To Do", category: "new" },
   { name: "In Progress", category: "indeterminate" },
   { name: "In Review", category: "indeterminate" },
+  { name: "QA", category: "indeterminate" },
   { name: "Done", category: "done" },
 ];
 const TYPES = ["Task", "Bug", "Story", "Epic"];
@@ -238,6 +239,15 @@ async function handle(req, res, url) {
   }
 
   const comment = p.match(/^\/rest\/api\/3\/issue\/([A-Z][A-Z0-9_]*-\d+)\/comment$/i);
+  if (comment && req.method === "POST") {
+    const key = comment[1].toUpperCase();
+    if (!ISSUES.has(key)) return send(res, 404, { errorMessages: [`Issue ${key} does not exist`] });
+    const body = await readBody(req);
+    // Flatten the ADF back to lines so a test can read what was posted.
+    const text = (body?.body?.content ?? []).map((p) => (p.content ?? []).map((t) => t.text ?? "").join("")).join("\n");
+    (COMMENTS[key] ??= []).push([ME.displayName, new Date().toISOString(), text]);
+    return send(res, 201, { id: String((COMMENTS[key] ?? []).length), body: body?.body ?? null });
+  }
   if (comment) {
     const rows = (COMMENTS[comment[1].toUpperCase()] ?? []).map(([author, created, text]) => ({
       author: { displayName: author },
@@ -267,7 +277,11 @@ async function handle(req, res, url) {
   if (assignee) {
     const issue = ISSUES.get(assignee[1].toUpperCase());
     if (!issue) return send(res, 404, { errorMessages: ["no such issue"] });
-    issue.assignee = ME;
+    const body = await readBody(req);
+    // Honour the requested account, the way Jira does; ME only when the body
+    // names nobody, which is what the older "assign to me" path sends.
+    const wanted = body?.accountId;
+    issue.assignee = wanted === OTHER.accountId ? OTHER : wanted && wanted !== ME.accountId ? { accountId: wanted, displayName: wanted } : ME;
     return send(res, 204, null);
   }
 

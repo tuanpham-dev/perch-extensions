@@ -16,7 +16,7 @@ import type {
   Proposal,
   SkillsResponse,
   StartResponse,
-} from "./batchTypes";
+ QaStartResponse } from "./batchTypes";
 import type { LookupResponse } from "./batchTypes";
 
 export function lookupIssues(keys: string[] | string): Promise<LookupResponse> {
@@ -87,6 +87,46 @@ export function addCluster(id: string, name: string): Promise<BatchResponse> {
 
 export function removeCluster(id: string, clusterId: string): Promise<BatchResponse> {
   return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/clusters/${encodeURIComponent(clusterId)}/remove`, {});
+}
+
+// ---- The QA branch ----
+
+export function startQa(id: string, agentId?: string): Promise<QaStartResponse> {
+  return apiPost<QaStartResponse>(`/batches/${encodeURIComponent(id)}/qa/start`, agentId ? { agentId } : {});
+}
+
+export function qaMerge(id: string, key: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/merge`, { key });
+}
+
+export function qaChange(id: string, key: string, change: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/change`, { key, change });
+}
+
+export function qaApprove(
+  id: string,
+  key: string,
+  notes: { note: string; refinedNote: string; postedNote: string },
+): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/approve`, { key, ...notes });
+}
+
+export function qaExclude(id: string, key: string, why: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/exclude`, { key, why });
+}
+
+export function qaShip(id: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/ship`, {});
+}
+
+// The note as a teammate will read it. `asWritten` means the model could not
+// restate it without guessing, so the original is offered back unchanged.
+export function qaRefineNote(id: string, key: string, note: string): Promise<{ refined: string; asWritten: boolean }> {
+  return apiPost<{ refined: string; asWritten: boolean }>(`/batches/${encodeURIComponent(id)}/qa/refine-note`, { key, note });
+}
+
+export function qaHandoff(id: string): Promise<BatchResponse & { results: { key: string; ok: boolean; error: string }[] }> {
+  return apiPost(`/batches/${encodeURIComponent(id)}/qa/handoff`, {});
 }
 
 export function moveTicket(id: string, key: string, clusterId: string | null, index: number): Promise<BatchResponse> {

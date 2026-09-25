@@ -42,6 +42,14 @@ import {
   unarchiveBatch as unarchive,
   deleteBatch,
   subscribeBatchEvents,
+  startQa,
+  qaMerge,
+  qaChange,
+  qaApprove,
+  qaExclude,
+  qaShip,
+  qaRefineNote,
+  qaHandoff,
 } from "./batchApi";
 import type { Batch, BatchSummary, ClusterAction, SkillsResponse } from "./batchTypes";
 import Icon from "./Icon";
@@ -53,14 +61,15 @@ import {
   sendToAgent,
   type AgentLaunchPreset,
 } from "./agentTarget";
-import SettingsPanel, { ProjectMapSettings, onTokenChange, setFetcher, setSettingsBridge } from "./SettingsPanel";
+import SettingsPanel, { ProjectMapSettings, ProjectSettingsSetting, onTokenChange, setFetcher, setSettingsBridge } from "./SettingsPanel";
+import { overridesFor } from "../projectSettings.mjs";
 import FilterBar from "./FilterBar";
 import Markdown, { setMarkdownAssetUrl } from "./Markdown";
 import SelectionBar from "./SelectionBar";
 import StartWorkForm from "./StartWorkForm";
 import BatchForm from "./BatchForm";
 import KeyPasteForm from "./KeyPasteForm";
-import BatchReview, { QA_DEFAULT_NOTE } from "./BatchReview";
+import BatchReview, { INTEGRATION_DEFAULT_NOTE, QA_DEFAULT_NOTE } from "./BatchReview";
 import BatchBoard from "./BatchBoard";
 import BatchDetail from "./BatchDetail";
 import SkillPicker from "./SkillPicker";
@@ -263,7 +272,23 @@ function useAgentPresets(): AgentLaunchPreset[] {
   return presets;
 }
 
+// A setting as the active window's project sees it: its jira.projectSettings
+// override when it has one, the global value otherwise. Every read of a
+// setting that can differ per project goes through here; the server does the
+// same for the repo each request names, so the two agree.
+export function readSettingValue(key: string): unknown {
+  const overrides = overridesFor(extSettings?.get("jira.projectSettings"), state.status?.projectKey ?? null);
+  return Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : extSettings?.get(key);
+}
+
 export function readSetting(key: string): string {
+  const value = readSettingValue(key);
+  return typeof value === "string" ? value : "";
+}
+
+// The stored default itself, whatever the active project overrides: what the
+// pickers in Settings show and write, since that is the field they sit under.
+function readGlobalSetting(key: string): string {
   const value = extSettings?.get(key);
   return typeof value === "string" ? value : "";
 }
@@ -421,6 +446,7 @@ interface JiraState {
   // overridden per cluster in the review bar, for that run only.
   executionSkill: string;
   qaSkill: string;
+  integrationSkill: string;
 }
 
 type TabView = "table" | "board" | "batches";
@@ -517,6 +543,7 @@ let state: JiraState = {
   skills: null,
   executionSkill: "",
   qaSkill: "",
+  integrationSkill: "",
 };
 
 const listeners = new Set<() => void>();
@@ -689,7 +716,7 @@ const DETAIL_CACHE_MAX = 200;
 const DETAIL_SWEEP_MS = 60_000;
 
 function detailTtlMs(): number {
-  const raw = extSettings?.get("jira.detailCacheSeconds");
+  const raw = readSettingValue("jira.detailCacheSeconds");
   const seconds = typeof raw === "number" && Number.isFinite(raw) ? raw : 300;
   return Math.min(3600, Math.max(0, seconds)) * 1000;
 }
@@ -852,10 +879,10 @@ function addNote(text: string | null): void {
 // One call per ticket, since /progress transitions a single issue - and one
 // ticket failing leaves the rest moved rather than abandoning the batch.
 async function runProgress(issues: IssueRow[]): Promise<void> {
-  if (extSettings?.get("jira.updateIssueOnStartWork") !== true) return;
+  if (readSettingValue("jira.updateIssueOnStartWork") !== true) return;
   for (const issue of issues) {
     try {
-      const progress = await apiPost<ProgressResponse>("/progress", { key: issue.key });
+      const progress = await apiPost<ProgressResponse>("/progress", { key: issue.key, cwd: state.cwd });
       // Its status (and maybe its assignee) just changed in Jira, so the
       // cached copy is wrong now whatever its age.
       detailCache.delete(issue.key);
@@ -890,7 +917,7 @@ async function handOver(target: HandOverTarget, issues: IssueRow[]): Promise<voi
   await sendToAgent(
     sessionName,
     asPaste(buildCombinedBrief(details)),
-    extSettings?.get("jira.sendAutoSubmit") === true,
+    readSettingValue("jira.sendAutoSubmit") === true,
     { retries: 6, retryDelayMs: 400, windowIndex },
   );
 }
@@ -1289,6 +1316,7 @@ function loadSkills(cwd: string | null): void {
         // override them for one cluster.
         executionSkill: readSetting("jira.executionSkill"),
         qaSkill: readSetting("jira.qaSkill"),
+        integrationSkill: readSetting("jira.integrationSkill"),
       }),
     )
     .catch(() => setState({ skills: null }));
@@ -1321,8 +1349,10 @@ export async function installQaSkill(): Promise<void> {
   }
 }
 
-export function setSkillSlot(slot: "execution" | "qa", value: string): void {
-  setState(slot === "execution" ? { executionSkill: value } : { qaSkill: value });
+export type SkillSlot = "execution" | "qa" | "integration";
+
+export function setSkillSlot(slot: SkillSlot, value: string): void {
+  setState(slot === "execution" ? { executionSkill: value } : slot === "qa" ? { qaSkill: value } : { integrationSkill: value });
 }
 
 export function refreshBadge(): void {
@@ -1935,6 +1965,64 @@ export function unarchiveBatch(id: string): void {
       loadBatches(state.cwd);
     })
     .catch((err) => setState({ batchError: message(err) }));
+}
+
+// ---- The QA branch ----
+
+export function startQaRun(): void {
+  const batch = state.batch;
+  if (!batch) return;
+  const agentId = batch.agentId || cachedPresets[0]?.id || "";
+  setState({ batchBusy: true, batchError: null });
+  void startQa(batch.id, agentId)
+    .then((res) => {
+      holdBatch(res.batch);
+      // The agent's terminal, whether it was just made or was already there.
+      if (res.sessionName) openSessionWindow?.(res.sessionName);
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function openQaTerminal(): void {
+  const name = state.batch?.qa?.sessionName;
+  if (name) openSessionWindow?.(name);
+}
+
+export function mergeIntoQa(key: string): void {
+  if (!state.batch) return;
+  batchEdit(() => qaMerge(state.batch!.id, key));
+}
+
+export function requestQaChange(key: string, change: string): void {
+  if (!state.batch) return;
+  batchEdit(() => qaChange(state.batch!.id, key, change));
+}
+
+export function approveInQa(key: string, notes: { note: string; refinedNote: string; postedNote: string }): void {
+  if (!state.batch) return;
+  batchEdit(() => qaApprove(state.batch!.id, key, notes));
+}
+
+export function excludeFromQaRun(key: string, why: string): void {
+  if (!state.batch) return;
+  batchEdit(() => qaExclude(state.batch!.id, key, why));
+}
+
+export function shipQaBranch(): void {
+  if (!state.batch) return;
+  batchEdit(() => qaShip(state.batch!.id));
+}
+
+export function handOffQa(): void {
+  if (!state.batch) return;
+  batchEdit(() => qaHandoff(state.batch!.id));
+}
+
+// Not a batch edit: the answer is text for the panel to show, and the
+// document does not change until the reviewer approves with it.
+export function refineQaNote(key: string, note: string): Promise<{ refined: string; asWritten: boolean }> {
+  if (!state.batch) return Promise.resolve({ refined: note, asWritten: true });
+  return qaRefineNote(state.batch.id, key, note);
 }
 
 export function deleteOpenBatch(): void {
@@ -3010,6 +3098,7 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
           skills={s.skills}
           executionSkill={s.executionSkill}
           qaSkill={s.qaSkill}
+          integrationSkill={s.integrationSkill}
           onSkill={setSkillSlot}
           branchTemplate={readSetting("jira.clusterBranchTemplate") || "{cluster}"}
           worktreeLocation={worktreeLocationFor}
@@ -3060,6 +3149,11 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
               onPlanMore={() => void openBatchForm({ top: 96, bottom: 96, left: 300, right: 300 }, "tab", batch.id)}
               onOpenReport={(reportPath) => openFileTab?.(reportPath)}
               onRebuildReport={rebuildClusterReport}
+              onStartQa={startQaRun}
+              onMergeTicket={mergeIntoQa}
+              onShipQa={shipQaBranch}
+              onHandoff={handOffQa}
+              onOpenQaTerminal={openQaTerminal}
             />
           </div>
           {/* Only with a ticket open. It used to render beside the board
@@ -3085,6 +3179,11 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
                     onAccept={acceptBatchTicket}
                     onOpenTerminal={(clusterId) => runClusterAction(clusterId, "open")}
                     onOpenShot={(key, which, opener) => openShot(key, which, opener)}
+                    onMergeTicket={mergeIntoQa}
+                    onRequestChange={requestQaChange}
+                    onApproveQa={approveInQa}
+                    onExcludeQa={excludeFromQaRun}
+                    onRefineNote={refineQaNote}
                     onOpenReport={(reportPath) => openFileTab?.(reportPath)}
                   />
                   <DetailBody detail={s.focused.detail} error={s.focused.error} />
@@ -3444,20 +3543,20 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
 // The Jira mark in the status bar; a click opens the editor tab. The count of
 // tickets assigned to you rides in the tooltip rather than on the bar, which
 // keeps the item one glyph wide on a phone's compact bar.
-// The two slots in Settings. They read the same list the review bar does and
-// write the stored default, which every new cluster starts from.
-function SkillSetting({ slot }: { slot: "execution" | "qa" }) {
+// The three slots in Settings. They read the same list the review bar does and
+// write the stored default, which every new cluster - or QA agent - starts from.
+function SkillSetting({ slot }: { slot: SkillSlot }) {
   const s = useJira();
   const [, rerender] = useState(0);
   useEffect(() => extSettings?.onDidChange(() => rerender((n) => n + 1)), []);
-  const key = slot === "execution" ? "jira.executionSkill" : "jira.qaSkill";
+  const key = slot === "execution" ? "jira.executionSkill" : slot === "qa" ? "jira.qaSkill" : "jira.integrationSkill";
   if (!s.skills) return <div className="jira-skillpicker-note">Open a repository to list the skills it can see.</div>;
   return (
     <SkillPicker
-      value={readSetting(key)}
+      value={readGlobalSetting(key)}
       skills={s.skills.skills}
-      defaultLabel={slot === "execution" ? s.skills.defaults.execution : s.skills.defaults.qa}
-      defaultDescription={slot === "qa" ? QA_DEFAULT_NOTE : undefined}
+      defaultLabel={s.skills.defaults[slot]}
+      defaultDescription={slot === "qa" ? QA_DEFAULT_NOTE : slot === "integration" ? INTEGRATION_DEFAULT_NOTE : undefined}
       onChange={(value) => {
         extSettings?.set(key, value);
         setSkillSlot(slot, value);
@@ -3474,11 +3573,15 @@ function QaSkillSetting() {
   return <SkillSetting slot="qa" />;
 }
 
+function IntegrationSkillSetting() {
+  return <SkillSetting slot="integration" />;
+}
+
 function JiraStatusItem() {
   const s = useJira();
   const [, rerender] = useState(0);
   useEffect(() => extSettings?.onDidChange(() => rerender((n) => n + 1)), []);
-  if (extSettings?.get("jira.showStatusBarIcon") === false) return null;
+  if (readSettingValue("jira.showStatusBarIcon") === false) return null;
   const assigned = s.status?.authed ? ` - ${s.mine.length} assigned to you` : "";
   // The batch count is what is back with YOU: an agent blocked on a prompt,
   // or work waiting to be reviewed. Worth the tooltip's second line, since a
@@ -3511,6 +3614,7 @@ const REFRESH_KEYS = [
   "jira.projectKeyFile",
   "jira.projectKeyEnv",
   "jira.projectMap",
+  "jira.projectSettings",
   "jira.jql",
   "jira.projectJql",
   "jira.maxResults",
@@ -3639,6 +3743,7 @@ export function activate(ctx: ExtensionContext): void {
     getSetting: (key) => ctx.settings.get(key),
     setSetting: (key, value) => ctx.settings.set(key, value),
     getActiveRepo: () => state.status?.repo ?? null,
+    getActiveProject: () => state.status?.projectKey ?? null,
     subscribe: (cb) => {
       listeners.add(cb);
       return () => {
@@ -3746,7 +3851,9 @@ export function activate(ctx: ExtensionContext): void {
   // a per-run override.
   ctx.registerSettingsComponent({ id: "jira-execution-skill", component: ExecutionSkillSetting, after: "jira.executionSkill" });
   ctx.registerSettingsComponent({ id: "jira-qa-skill", component: QaSkillSetting, after: "jira.qaSkill" });
+  ctx.registerSettingsComponent({ id: "jira-integration-skill", component: IntegrationSkillSetting, after: "jira.integrationSkill" });
   ctx.registerSettingsComponent({ id: "jira-project-map", component: ProjectMapSettings, after: "jira.projectMap" });
+  ctx.registerSettingsComponent({ id: "jira-project-settings", component: ProjectSettingsSetting, after: "jira.projectSettings" });
 
   // extensions: [] - the tab is never matched to a file; it is reached only
   // through openViewerTab, from the panes' open-in-tab button or the command

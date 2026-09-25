@@ -3266,3 +3266,172 @@
     right: 4px;
   }
 }
+
+
+/* ---- The QA branch ---- */
+
+/* Under the bar once QA is running: which branch, from where, and the page. */
+.jira-bqa-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 4px 12px 6px;
+  font-size: 11.5px;
+  color: var(--fg-inactive, #999);
+  border-bottom: 1px solid var(--jira-hairline);
+}
+.jira-bqa-sep { opacity: 0.8; }
+.jira-bqa-preview { color: var(--accent, #4fb3b0); text-decoration: none; }
+.jira-bqa-preview:hover { text-decoration: underline; }
+.jira-bqa-awaiting { color: hsl(35 80% 55%); }
+.jira-bqa-shipped { color: var(--good, #5cc48b); }
+
+/* The QA columns reuse the board's column and card styling; only the merge
+   button under a queued card is new. */
+.jira-bbcards li { position: relative; }
+/* The key link floats over the placeholder inside the button: same font,
+   same spot (the card's border plus its padding), so nothing moves and only
+   the key is the link. The placeholder stays in the button's text for its
+   accessible name, invisible on screen. */
+.jira-bbcard-key {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  z-index: 1;
+  line-height: inherit;
+}
+.jira-bbcard-keyph { opacity: 0; }
+.jira-bqa-merge {
+  margin: -2px 0 6px;
+  width: 100%;
+  justify-content: center;
+}
+.jira-bbcard-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* The verdicts, on the card. */
+.jira-qav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--jira-hairline);
+  border-left: 3px solid var(--accent, #4fb3b0);
+  border-radius: 6px;
+  background: var(--jira-elevated);
+}
+.jira-qav.qa-approved { border-left-color: var(--good, #5cc48b); }
+.jira-qav.qa-conflicted { border-left-color: var(--error, #f48771); }
+.jira-qav.qa-excluded { border-left-color: var(--fg-inactive, #999); }
+.jira-qav-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.jira-qav-state {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--jira-sunken);
+  color: var(--fg-inactive, #999);
+}
+.jira-qav-state.is-merged, .jira-qav-state.is-fixing, .jira-qav-state.is-merging { color: hsl(35 80% 55%); }
+.jira-qav-state.is-approved { color: var(--good, #5cc48b); }
+.jira-qav-state.is-conflicted { color: var(--error, #f48771); }
+.jira-qav-commit { font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-qav-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.jira-qav-spacer { flex: 1; }
+.jira-qav-hint { font-size: 12px; color: var(--fg-inactive, #999); }
+.jira-qav-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.jira-qav-field > b {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+}
+.jira-qav-change {
+  margin: 0;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  background: var(--jira-sunken);
+  border-radius: 4px;
+}
+.jira-qav-note { white-space: pre-wrap; }
+.jira-qav-form { display: flex; flex-direction: column; gap: 6px; }
+.jira-qav-label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--fg-inactive, #999); }
+.jira-bfeedback-box.refined { border-color: var(--accent, #4fb3b0); }
+
+.jira-handoff {
+  margin: 6px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 6px;
+  background: var(--jira-elevated);
+  font-size: 12px;
+}
+.jira-handoff-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.jira-handoff-rows { list-style: none; margin: 0; padding: 0; }
+.jira-handoff-rows li { display: grid; grid-template-columns: 5.5rem 1.2rem 1fr; gap: 6px; padding: 3px 0; align-items: baseline; }
+.jira-handoff-mark { text-align: center; font-weight: 600; }
+.jira-handoff-rows li.ok .jira-handoff-mark { color: var(--good, #5cc48b); }
+.jira-handoff-rows li.failed .jira-handoff-mark, .jira-handoff-rows li.failed .jira-handoff-text { color: var(--error, #f48771); }
+.jira-handoff-rows li.pending .jira-handoff-text { color: var(--fg-inactive, #999); }
+.jira-bqa-note { color: var(--fg, #ddd); max-width: 48ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Per-project settings form, under jira.projectSettings. */
+.jira-pset-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 10px;
+}
+.jira-pset-pick label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.jira-pset-pick select { max-width: 28rem; }
+.jira-pset-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 13rem) minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 4px 0;
+  border-top: 1px solid var(--jira-hairline);
+}
+.jira-pset-label {
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* An override that is set reads as one: the label carries the accent. */
+.jira-pset-row.set .jira-pset-label {
+  color: var(--fg-accent, var(--accent, #1085ff));
+  font-weight: 600;
+}
+.jira-pset-row .jira-input { width: 100%; box-sizing: border-box; font: inherit; }
+.jira-pset-row textarea.jira-input { resize: vertical; min-height: 2.4em; }
+.jira-pset-desc {
+  grid-column: 2;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+}
+@media (max-width: 560px) {
+  .jira-pset-row { grid-template-columns: minmax(0, 1fr); }
+  .jira-pset-desc { grid-column: 1; }
+}

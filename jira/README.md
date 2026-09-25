@@ -63,6 +63,31 @@ Setting **`jira.projectJql` bypasses this entirely** - the query replaces the pr
 outright and no key is resolved. The Project pane is captioned `Custom query` instead of the key
 when that happens, so the bypass is visible.
 
+### Settings per project
+
+Most of what the extension is told is about one project: which branch is production, what the
+QA status is called, who takes handed-off tickets, which skills a cluster runs with. With more than
+one project those answers differ, so any setting except the site, the account and the four that
+decide which project a repository belongs to can be overridden per project in
+`jira.projectSettings`, JSON keyed by project key:
+
+```json
+{ "CAP": { "jira.productionBranch": "main", "jira.qaStatus": "Ready for QA" } }
+```
+
+A key in a project's block wins over the global value; one absent from it inherits. **Settings →
+Jira** shows the same overrides as a form under the JSON field: pick a project (the active window's
+is picked for you), and every overridable setting is a row whose empty state shows the global value
+it inherits. Text is saved when you leave the field or press Enter; clearing a field goes back to
+inheriting. Editing the JSON or the form updates the other, and a JSON the form cannot read is left
+alone rather than replaced.
+
+Which project's values apply is decided the way the project key is: by the repository of the window
+you are in, or of the batch being run. The server resolves it for every request that names a
+repository, and the batch runner for the batch's own repository, so a batch on a second project
+gets that project's production branch, statuses and skills even while another project's window
+is active.
+
 ## Filters
 
 Each list has a search box, a funnel, and a toggle for picking several tickets at once.
@@ -359,6 +384,53 @@ cluster's terminal, and those tickets move to **Rework**. A cluster whose agent 
 keeps its drafts rather than losing them to a send that went nowhere, and says so.
 **Accept** moves a reviewed (or failed) ticket to Done. Nothing here touches Jira.
 
+### The QA branch
+
+Once tickets are in **Review**, **Start QA** on the board cuts a branch from the production
+branch (`jira.productionBranch`, or the repository's default branch when it is empty), makes a
+worktree for it, and starts one more agent there: the batch's **QA agent**. It owns that branch
+and the dev server for the rest of the batch. Every git and dev-server action is its own - the
+extension never runs a merge and never signals a process - and everything Shopify-specific
+lives in its skill, so a different stack is a different skill, not a different extension.
+
+The board then shows the **queue** instead of the cluster columns: every reviewed ticket,
+highest Jira priority first, with a **Merge** on each. Merging one asks the QA agent to squash
+that ticket's `[KEY]` commits into one commit on the QA branch and restart the server. Open the
+card to verify it and give a verdict:
+
+| Verdict | What happens |
+| --- | --- |
+| **Approve** | The ticket is done and its commit stays. A note you add is refined into something a teammate can act on, shown to you first, and kept for the Jira comment. |
+| **Request a change** | The QA agent edits the QA worktree and does **not** commit. Look again; approving then amends the fix into that ticket's commit. One ticket stays one commit however many rounds it takes. |
+| **Exclude** | Left out of this run, with a reason. If it was already merged its commit is dropped. |
+
+A pick that will not apply cleanly is the QA agent's to resolve when the conflict is
+mechanical; when it is a judgement about what the ticket meant, the ticket shows **conflicted**
+and its cluster's agent is told, the same way feedback reaches it. Feedback on a ticket that is
+on the QA branch goes to the QA agent, never back to its cluster.
+
+**Merge to production** is offered once nothing is merged-but-unapproved or conflicted; it
+names what is blocking it until then. The QA agent rebases onto the production branch if it
+has moved, merges with `--no-ff`, and stops. **Nothing is ever pushed** - that is yours.
+
+**Hand off to Jira** runs after that, from the extension itself: every approved ticket is moved
+to `jira.qaStatus`, assigned to `jira.qaAssignee` (a display name, an email or an account id,
+resolved against the project's assignable users - a name that matches nobody or several people
+stops the hand-off before anything is written), and given one comment: the preview URL from
+`jira.previewUrlTemplate`, then the QA report's problem, fix and how to QA, then your note.
+It is reported per ticket, and running it again touches only the ones that failed.
+
+If the QA agent dies, the board says so and **Start QA again** reuses its worktree and branch -
+every merge so far is on disk - and tells the new agent to read `git status` first, since a fix
+may be sitting uncommitted. With `jira.startQaOnFirstReview` on, QA starts by itself when the
+batch's first ticket reaches Review.
+
+The QA agent reports with its own `jira-batch` verbs (`qa-start`, `qa-merged`, `qa-fixing`,
+`qa-approved`, `qa-excluded`, `qa-conflict`, `qa-shipped`), listed under
+[The `jira-batch` command](#the-jira-batch-command). Its procedure is the **Integrates with**
+skill, chosen beside the other two: the extension's own `jira-batch-merge` by default, or
+yours.
+
 ### The two skills a cluster runs with
 
 The extension decides **what** a cluster's agent must report and through which verbs. It
@@ -369,6 +441,13 @@ a skill's business, and each cluster runs with two of them:
 | --- | --- | --- |
 | Implements with | `execute-jira-ticket` if it is installed; otherwise the brief carries a short procedure of its own | `jira.executionSkill` |
 | QA with | the extension's own `jira-batch-qa` | `jira.qaSkill` |
+| `jira.integrationSkill` | `` | The skill the batch's QA agent merges and ships with. Empty uses the extension's own `jira-batch-merge`; `none` leaves it to the agent |
+| `jira.productionBranch` | `` | Where a QA branch is cut from and merged back into. Empty uses the repository's default branch |
+| `jira.qaBranchTemplate` | `qa/{batch}` | How a QA branch is named - `{batch}` the batch name as a slug, `{date}` today as YYYYMMDD |
+| `jira.startQaOnFirstReview` | `false` | Start the QA agent by itself when the batch's first ticket reaches Review |
+| `jira.qaStatus` | `QA` | The Jira status handed-off tickets are moved to, matched by name |
+| `jira.qaAssignee` | `` | Who handed-off tickets are assigned to: a display name, an email or an account id. Empty leaves the assignee alone |
+| `jira.previewUrlTemplate` | `` | The URL a handed-off ticket's comment points at; `{key}` is replaced by the ticket key |
 
 Both are pickers - in Settings for every cluster, and in the review bar to override them
 for the clusters you are about to start. Each lists what it found in `~/.claude/skills`,
@@ -470,6 +549,13 @@ line, with the batch and cluster ids in its environment. POSIX `sh` around
 | `jira-batch done <KEY> --summary <text>` | Say it is finished; the summary is what the reviewer reads first |
 | `jira-batch fail <KEY> --reason <text>` | Say it cannot be done, and carry on |
 | `jira-batch qa <KEY> --status pass\|fail\|partial\|blocked` | File the QA report: `--problem`, `--fix`, `--steps` (repeatable), `--notes`, `--files`, `--before <path>`, `--after <path>`, `--shot <path>[:<caption>]` (repeatable) |
+| `jira-batch qa-start [--url <preview>]` | QA agent: the branch is cut and the server is serving the QA worktree |
+| `jira-batch qa-merged <KEY> --commit <sha>` | QA agent: the ticket is squashed onto the branch; again with the new sha after amending a fix in |
+| `jira-batch qa-fixing <KEY> [--what <text>]` | QA agent: a requested change is made in the worktree and not committed |
+| `jira-batch qa-approved <KEY> --commit <sha>` | QA agent: the fix is amended into the ticket's commit |
+| `jira-batch qa-excluded <KEY> --why <text>` | QA agent: left out, and its commit dropped if it had one |
+| `jira-batch qa-conflict <KEY> --files <path>... --why <text>` | QA agent: the pick would not apply and the resolution is a judgement call |
+| `jira-batch qa-shipped --into <branch>` | QA agent: the QA branch is merged into the production branch, never pushed |
 | `jira-batch note <text>` | Record something against the cluster |
 | `jira-batch brief` | Print the cluster's full brief: every ticket, its comments, the rules |
 | `jira-batch status` | This cluster and where each of its tickets stands |
@@ -513,6 +599,7 @@ report on a batch, exactly as it could run the agent itself.
 | `jira.projectKeyFile` | `.jira-project` | Repo-root file whose contents are the project key - the first source consulted |
 | `jira.projectKeyEnv` | `JIRA_PROJECT_KEY` | Environment variable read for the project key |
 | `jira.projectMap` | `{}` | JSON object mapping a repo root path to a project key |
+| `jira.projectSettings` | `{}` | JSON object of per-project overrides, keyed by project key - see [Settings per project](#settings-per-project) |
 | `jira.jql` | `""` | Replaces the "assigned to me" query. Empty means `assignee = currentUser() AND statusCategory != Done` |
 | `jira.projectJql` | `""` | Replaces the project query, bypassing the project-key chain |
 | `jira.maxResults` | `30` | How many issues each section fetches |

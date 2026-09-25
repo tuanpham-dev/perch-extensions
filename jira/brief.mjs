@@ -234,3 +234,137 @@ export function buildResumeMessage({ clusterName, remaining }) {
   lines.push("", "Run `jira-batch brief` for the full brief and the rules.");
   return lines.join("\n").trimEnd();
 }
+
+
+// ---- The QA agent ----
+//
+// One agent per batch, in a worktree on the QA branch. It is briefed once on
+// the launch line, then instructed one action at a time as the reviewer
+// decides: each instruction below is what the panel types into its terminal.
+// They are short and imperative because the procedure itself lives in the
+// skill; these only say which ticket, and which cluster branch to take it
+// from.
+
+const QA_RULES = [
+  "Never push anything.",
+  "One squashed commit per ticket on this branch, its subject starting with the ticket key in brackets.",
+  "A change the reviewer asks for is made in the worktree and NOT committed until they approve; approval amends it into that ticket's commit.",
+  "Report every step with the `jira-batch qa-*` verbs, or the board cannot show it.",
+  "Do nothing to a ticket the panel has not asked about.",
+];
+
+export function buildQaBriefLine({ batchName, branch, productionBranch, tickets, skills = null, resumed = false }) {
+  const keys = tickets.map((ticket) => ticket.key);
+  let list = tickets.map((ticket) => `${ticket.key} (${ticket.branch})`).join(", ");
+  if (list.length > LINE_MAX) list = `${list.slice(0, LINE_MAX)}...`;
+  return [
+    `You are the QA agent for the Jira batch "${oneLine(batchName)}", working in this worktree on the branch ${branch}, cut from ${productionBranch}.`,
+    `You will merge these tickets onto it one at a time as the panel asks, each from the cluster branch named beside it: ${list}.`,
+    `Reviewed tickets, in priority order: ${keys.join(", ")}.`,
+    ...skillLines(skills).map((line) => oneLine(line)),
+    `Rules: ${QA_RULES.map((rule, i) => `(${i + 1}) ${rule}`).join(" ")}`,
+    resumed
+      ? "You are replacing an agent that died mid-run: read `git status` and `git log --oneline -10` first, since a fix may be sitting uncommitted, then take over the dev server, report `jira-batch qa-start`, and wait for the panel."
+      : "Start by taking over the dev server and reporting `jira-batch qa-start`, then wait for the panel.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function buildQaMergeMessage({ key, summary, sourceBranch }) {
+  return [
+    `Merge ${key} - ${oneLine(summary)}`,
+    "",
+    `Its commits are the ones whose subject starts with \`[${key}]\` on \`${sourceBranch}\`. Squash them into one commit on this branch, restart the server, then run \`jira-batch qa-merged ${key} --commit <sha>\`.`,
+  ].join("\n");
+}
+
+export function buildQaFixMessage({ key, change }) {
+  return [
+    `Change ${key}:`,
+    "",
+    change.trim(),
+    "",
+    `Make it in this worktree and do not commit. Restart the server, then run \`jira-batch qa-fixing ${key} --what "..."\`.`,
+  ].join("\n");
+}
+
+export function buildQaApproveMessage({ key }) {
+  return `Approve ${key}. If the tree carries an uncommitted fix, amend it into ${key}'s commit; then run \`jira-batch qa-approved ${key} --commit <sha>\`.`;
+}
+
+export function buildQaDropMessage({ key, commit, why }) {
+  const reason = why ? ` (${oneLine(why)})` : "";
+  return commit
+    ? `Exclude ${key}${reason}. Drop its commit ${commit} from this branch, restart the server, then run \`jira-batch qa-excluded ${key} --why "..."\`.`
+    : `Exclude ${key}${reason}. It was never merged, so there is nothing to drop; run \`jira-batch qa-excluded ${key} --why "..."\`.`;
+}
+
+export function buildQaShipMessage({ into, branch }) {
+  return `Ship into ${into}. Every merged ticket is approved. Rebase ${branch} onto ${into} if it has moved, then in the primary worktree merge ${branch} into ${into} with --no-ff. Do not push. Run \`jira-batch qa-shipped --into ${into}\`.`;
+}
+
+// The wording that reaches the note-refining call. Kept here with the other
+// prompts so the rule that matters most - keep every claim exactly as strong
+// as it was - is written once.
+export function buildQaRefinePrompt({ key, summary, note }) {
+  return [
+    `A reviewer approved Jira ticket ${key} ("${oneLine(summary)}") with this note, typed in shorthand while looking at the page:`,
+    "",
+    note.trim(),
+    "",
+    "Rewrite it as one to three plain sentences a teammate who was not present can act on. Expand shorthand and say what each number refers to. Keep every claim exactly as strong as it was: a possibility stays a possibility, a guess stays a guess, and nothing is added. If you cannot restate it without guessing what was meant, answer with exactly the text AS-WRITTEN and nothing else.",
+    "",
+    "Answer with the rewritten note only, no preamble.",
+  ].join("\n");
+}
+
+
+// The Jira comment a handed-off ticket gets. Built from what the batch
+// already holds - the QA report's problem, fix and steps, and the note the
+// reviewer approved with - so a reviewer who was not here can check the work
+// without opening the code. Lines, not markup: the caller wraps them in ADF.
+export function buildHandoffComment({ url = "", qa = null, note = "" }) {
+  const lines = [];
+  lines.push(url ? `Ready for QA on the main theme: ${url}` : "Ready for QA on the main theme.");
+  const list = (title, items) => {
+    if (!items || items.length === 0) return;
+    lines.push("", title);
+    for (const item of items) lines.push(`- ${item}`);
+  };
+  const steps = (title, items) => {
+    if (!items || items.length === 0) return;
+    lines.push("", title);
+    items.forEach((item, i) => lines.push(`${i + 1}. ${item}`));
+  };
+  if (qa) {
+    list("Problem", qa.problem);
+    list("Fix", qa.fix);
+    steps("How to QA", qa.steps);
+  } else {
+    lines.push("", "No QA report was filed for this ticket by its agent.");
+  }
+  if (note && note.trim()) {
+    lines.push("", "Notes", note.trim());
+  }
+  return lines.join("\n");
+}
+
+
+// Told to the cluster whose ticket would not apply onto the QA branch: the
+// QA agent could not resolve it without deciding what the ticket meant, and
+// that decision is its author's. Same shape as feedback, because that is the
+// message this agent already knows how to act on.
+export function buildQaConflictMessage({ key, summary, qaBranch, files = [], why = "" }) {
+  return [
+    `${key} - ${oneLine(summary)} would not apply onto the QA branch ${qaBranch}.`,
+    "",
+    files.length > 0 ? `Conflict in: ${files.join(", ")}` : "",
+    why ? `The QA agent says: ${why.trim()}` : "",
+    "",
+    `Rebase or rework your \`[${key}]\` commit so it applies cleanly onto ${qaBranch}, then run \`jira-batch done ${key} --summary "..."\` again so it can be merged.`,
+  ]
+    .filter((line, i, all) => line !== "" || (i > 0 && all[i - 1] !== ""))
+    .join("\n")
+    .trimEnd();
+}

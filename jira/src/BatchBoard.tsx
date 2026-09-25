@@ -6,9 +6,11 @@
 // "show me only that cluster" are the same question asked twice, and a
 // separate filter control beside a separate status row would have said the
 // same thing in two places.
+import HandoffPanel from "./HandoffPanel";
+import KeyLink from "./KeyLink";
 import { useEffect, useState } from "react";
 import Icon from "./Icon";
-import { clusterChips, columns, feedbackPending, missingQa, sinceLabel, skillsLabel } from "./batchViewModel";
+import { clusterChips, columns, feedbackPending, missingQa, sinceLabel, skillsLabel, qaColumns, qaQueue, shipBlockers, handoffPending } from "./batchViewModel";
 import type { Batch, BatchSummary, ClusterAction, ClusterStateName } from "./batchTypes";
 import type { MenuItem } from "./types";
 
@@ -37,6 +39,13 @@ export interface BatchBoardProps {
   onPlanMore: () => void;
   onOpenReport: (path: string) => void;
   onRebuildReport: (clusterId: string) => void;
+  // The QA branch: start its agent, merge one ticket onto it, ship it, hand
+  // the batch to Jira, and reach the agent's terminal.
+  onStartQa: () => void;
+  onMergeTicket: (key: string) => void;
+  onShipQa: () => void;
+  onHandoff: () => void;
+  onOpenQaTerminal: () => void;
 }
 
 const STATE_LABEL: Record<ClusterStateName, string> = {
@@ -80,6 +89,11 @@ export default function BatchBoard({
   onPlanMore,
   onOpenReport,
   onRebuildReport,
+  onStartQa,
+  onMergeTicket,
+  onShipQa,
+  onHandoff,
+  onOpenQaTerminal,
 }: BatchBoardProps) {
   // Only so the "6 min" on a card keeps up; every real change arrives on the
   // event stream, so this ticks slowly and never fetches anything.
@@ -92,6 +106,16 @@ export default function BatchBoard({
   const [showArchived, setShowArchived] = useState(false);
   const chips = clusterChips(batch);
   const board = columns(batch, clusterFilter);
+  // Once QA is running the board shows the queue instead of the cluster
+  // columns: by then every ticket is reviewed or nearly so, and the question
+  // is no longer "what is each agent on" but "what have I looked at".
+  const qa = batch.qa ?? null;
+  const qaLive = qa !== null && qa.state !== "idle";
+  const queue = qaQueue(batch);
+  const blockers = shipBlockers(batch);
+  const approvedCount = Object.values(batch.ticketStates).filter((t) => t.integration?.state === "approved").length;
+  const owed = handoffPending(batch);
+  const qaBoard = qaLive ? qaColumns(batch).filter((column) => column.cards.length > 0 || ["queue", "verifying", "approved"].includes(column.id)) : [];
   const pending = feedbackPending(batch);
 
   const clusterMenu = (id: string, actions: ClusterAction[], x: number, y: number) => {
@@ -229,6 +253,53 @@ export default function BatchBoard({
         <button className="jira-selaction" disabled={busy} onClick={onPlanMore} title="Add more tickets to this batch">
           Add tickets...
         </button>
+        {!qaLive && (
+          <button
+            className="jira-selaction"
+            disabled={busy || queue.length === 0}
+            title={
+              queue.length === 0
+                ? "Nothing is in review yet - there would be nothing to merge"
+                : qa?.lastError
+                  ? `Start the QA agent again (last time: ${qa.lastError})`
+                  : `Cut a QA branch and start an agent to merge the ${queue.length} reviewed ticket${queue.length === 1 ? "" : "s"} onto it`
+            }
+            onClick={onStartQa}
+          >
+            {qa?.lastError ? "Start QA again" : "Start QA"}
+          </button>
+        )}
+        {qaLive && (
+          <button className="jira-selaction" disabled={busy || !qa.sessionName} title={`Open the QA agent's terminal (${qa.branch})`} onClick={onOpenQaTerminal}>
+            QA terminal
+          </button>
+        )}
+        {qaLive && qa.state === "running" && (
+          <button
+            className="jira-selaction primary"
+            disabled={busy || blockers.length > 0 || approvedCount === 0}
+            title={
+              blockers.length > 0
+                ? `Not everything is approved: ${blockers.join(", ")}`
+                : approvedCount === 0
+                  ? "Nothing has been approved yet"
+                  : `Merge ${qa.branch} into ${qa.productionBranch}. Nothing is pushed.`
+            }
+            onClick={onShipQa}
+          >
+            Merge to production
+          </button>
+        )}
+        {qaLive && qa.state === "shipped" && (
+          <button
+            className="jira-selaction primary"
+            disabled={busy || owed.length === 0}
+            title={owed.length === 0 ? "Every approved ticket has been handed off" : `Move ${owed.length} ticket${owed.length === 1 ? "" : "s"} to QA in Jira, assign and comment`}
+            onClick={onHandoff}
+          >
+            Hand off to Jira{owed.length > 0 ? ` (${owed.length})` : ""}
+          </button>
+        )}
         <button
           className="jira-selaction primary"
           disabled={busy || pending.tickets === 0}
@@ -286,8 +357,75 @@ export default function BatchBoard({
         </div>
       )}
 
+      {qaLive && qa.state === "shipped" && <HandoffPanel batch={batch} />}
+      {qaLive && (
+        <div className="jira-bqa-strip" title={qa.awaiting ?? undefined}>
+          <span className="jira-key">{qa.branch}</span>
+          <span className="jira-bqa-sep">from {qa.productionBranch}</span>
+          {qa.previewUrl && (
+            <a className="jira-bqa-preview" href={qa.previewUrl} target="_blank" rel="noreferrer">
+              {qa.previewUrl.replace(/^https?:\/\//, "")}
+            </a>
+          )}
+          {qa.awaiting && <span className="jira-bqa-awaiting">QA agent: {qa.awaiting}</span>}
+          {!qa.awaiting && qa.notes?.length > 0 && (
+            <span className="jira-bqa-note" title={qa.notes.map((n) => n.text).join("\n\n")}>
+              QA agent: {qa.notes[qa.notes.length - 1].text}
+            </span>
+          )}
+          {qa.state === "shipped" && <span className="jira-bqa-shipped">merged into {qa.shippedInto}</span>}
+        </div>
+      )}
       <div className="jira-bboard-cols">
-        {board.map((column) => (
+        {qaLive &&
+          qaBoard.map((column) => (
+            <section key={column.id} className={`jira-bbcol qa-${column.id}${column.cards.length === 0 ? " is-empty" : ""}`}>
+              <header className="jira-bbcol-head">
+                <span className="jira-bbcol-title">{column.label}</span>
+                <span className="jira-bbcol-count">{column.cards.length}</span>
+              </header>
+              <ul className="jira-bbcards">
+                {column.cards.map((card, i) => (
+                  <li key={card.key}>
+                    <KeyLink issueKey={card.key} url={batch.tickets[card.key]?.url} className="jira-bbcard-key" />
+                    <button
+                      className={`jira-bbcard jira-bcol-c${card.color < 0 ? "none" : card.color % 8}${focusedKey === card.key ? " focused" : ""}`}
+                      onClick={() => onFocus(card.key)}
+                    >
+                      <span className="jira-bbcard-top">
+                        <span className="jira-key jira-bbcard-keyph">{card.key}</span>
+                        {card.priority && <span className="jira-bbcard-age">{card.priority}</span>}
+                      </span>
+                      <span className="jira-bbcard-summary">{card.summary}</span>
+                      {card.detail && <span className="jira-bbcard-detail">{card.detail}</span>}
+                      <span className="jira-bbcard-foot">
+                        {batch.clusters.length > 1 && <span className="jira-bbcard-cluster">{card.clusterName}</span>}
+                        {card.integration === "fixing" && (
+                          <span className="jira-bbcard-flag" title="A change was made in the QA worktree and is not committed until you approve">
+                            fix uncommitted
+                          </span>
+                        )}
+                        {card.integration === "merging" && <span className="jira-bbcard-flag">merging...</span>}
+                        {card.integration === "approved" && <span className="jira-bbcard-qa qa-pass">done</span>}
+                        {card.integration === "conflicted" && <span className="jira-bbcard-qa qa-fail">conflict</span>}
+                      </span>
+                    </button>
+                    {column.id === "queue" && qa.state === "running" && (
+                      <button
+                        className={`jira-selaction jira-bqa-merge${i === 0 ? " primary" : ""}`}
+                        disabled={busy}
+                        title={`Cherry-pick ${card.key} onto ${qa.branch} and serve it`}
+                        onClick={() => onMergeTicket(card.key)}
+                      >
+                        Merge
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        {!qaLive && board.map((column) => (
           <section
             key={column.state}
             className={`jira-bbcol state-${column.state}${column.cards.length === 0 ? " is-empty" : ""}`}
@@ -299,12 +437,17 @@ export default function BatchBoard({
             <ul className="jira-bbcards">
               {column.cards.map((card) => (
                 <li key={card.key}>
+                  {/* Beside the button, not inside it: no control nested in a
+                      control. It sits over the placeholder span the button
+                      keeps for the row's layout, so the card reads as before
+                      and the key alone is the link. */}
+                  <KeyLink issueKey={card.key} url={batch.tickets[card.key]?.url} className="jira-bbcard-key" />
                   <button
                     className={`jira-bbcard jira-bcol-c${card.color < 0 ? "none" : card.color % 8}${focusedKey === card.key ? " focused" : ""}`}
                     onClick={() => onFocus(card.key)}
                   >
                     <span className="jira-bbcard-top">
-                      <span className="jira-key">{card.key}</span>
+                      <span className="jira-key jira-bbcard-keyph">{card.key}</span>
                       <span className="jira-bbcard-age">{sinceLabel(card.since, now)}</span>
                     </span>
                     <span className="jira-bbcard-summary">{card.summary}</span>
