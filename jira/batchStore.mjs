@@ -76,7 +76,11 @@ export function createBatchStore(configDir, options = {}) {
       await rename(storePath, kept).catch(() => {});
       console.warn(`jira: ${storePath} was not valid JSON - kept it as ${kept} and started empty`);
     }
-    doc = value === null ? emptyDocument() : normalizeDocument(value);
+    // The store's own clock, not normalizeDocument's fallback: normalization
+    // repairs a started cluster's missing ticket states, and those carry a
+    // timestamp. Letting it reach for Date.now() puts a real one into a test
+    // that injected a fake clock precisely so it would not have to.
+    doc = value === null ? emptyDocument() : normalizeDocument(value, now());
     return doc;
   }
 

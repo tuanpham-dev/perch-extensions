@@ -60,19 +60,19 @@ export function emptyDocument() {
 // Tolerant: a hand-edited or partially written document still loads, with
 // anything missing defaulted rather than the whole file thrown away. A batch
 // that survives normalization is one every function below can be called on.
-export function normalizeDocument(raw) {
+export function normalizeDocument(raw, now = Date.now()) {
   const doc = emptyDocument();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return doc;
   const batches = raw.batches;
   if (!batches || typeof batches !== "object" || Array.isArray(batches)) return doc;
   for (const [id, value] of Object.entries(batches)) {
-    const batch = normalizeBatch(id, value);
+    const batch = normalizeBatch(id, value, now);
     if (batch) doc.batches[id] = batch;
   }
   return doc;
 }
 
-function normalizeBatch(id, raw) {
+function normalizeBatch(id, raw, now) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const clusters = Array.isArray(raw.clusters) ? raw.clusters.filter(isObject).map(normalizeCluster) : [];
   const tickets = isObject(raw.tickets) ? raw.tickets : {};
@@ -81,6 +81,17 @@ function normalizeBatch(id, raw) {
   for (const [key, value] of Object.entries(rawStates)) {
     const state = normalizeTicketState(value);
     if (state) ticketStates[key] = state;
+  }
+  // A started cluster must hold a state for every key it lists - that is what
+  // `jira-batch start` reads. Keys added to a running cluster before
+  // applyProposal and moveTicket queued them on arrival were left with none,
+  // so the agent was briefed on tickets it could never start. Queue them here
+  // so documents written before that fix repair themselves on load.
+  for (const cluster of clusters) {
+    if (!STARTED.has(cluster.state)) continue;
+    for (const key of cluster.keys) {
+      if (!ticketStates[key]) ticketStates[key] = newTicketState(cluster.id, now);
+    }
   }
   return {
     id,
@@ -627,6 +638,9 @@ export function moveTicket(batch, key, clusterId, index, now) {
   if (to) {
     const at = typeof index === "number" ? Math.max(0, Math.min(index, to.keys.length)) : to.keys.length;
     to.keys.splice(at, 0, key);
+    // Same as applyProposal: a ticket dropped onto a cluster that is already
+    // running is queued now, or its agent's `jira-batch start` refuses it.
+    if (isStarted(to)) batch.ticketStates[key] = newTicketState(to.id, now);
   } else {
     batch.unclustered.push(key);
   }

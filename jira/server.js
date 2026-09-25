@@ -35,8 +35,10 @@ import {
   badgeCount,
   canArchive,
   canDelete,
+  clusterOf,
   clusterState,
   diffEvents,
+  isStarted,
   moveTicket,
   newBatch,
   newTicket,
@@ -1850,22 +1852,14 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const after = await batches.get();
       const target = after.batches[id];
       const handovers = [];
+      // Chosen by placement, not by a missing state: applyProposal queues a
+      // ticket it adds to a started cluster in the same update, so every key
+      // here already has one.
       for (const cluster of target.clusters) {
-        const keys = cluster.keys.filter((key) => outcome.placed.includes(key) && target.ticketStates[key] === undefined);
+        const keys = cluster.keys.filter((key) => outcome.placed.includes(key));
         if (keys.length === 0 || !cluster.windowId) continue;
         try {
           await runner.handOffAdditional(id, cluster.id, keys);
-          await batches.update((draft) => {
-            const fresh = draft.batches[id];
-            const live = fresh.clusters.find((c) => c.id === cluster.id);
-            for (const key of keys) {
-              if (!fresh.ticketStates[key]) {
-                fresh.ticketStates[key] = { state: "queued", clusterId: live.id, since: Date.now(), history: [{ state: "queued", at: Date.now(), note: "added to a running cluster" }], summary: "", reason: "", feedbackDraft: "", feedback: [] };
-              }
-            }
-            fresh.unclustered = fresh.unclustered.filter((key) => !keys.includes(key));
-            return { ok: true };
-          });
           handovers.push({ clusterId: cluster.id, keys });
         } catch (err) {
           outcome.warnings.push(`Could not hand ${keys.join(", ")} to "${cluster.name}": ${err.message}`);
@@ -1942,11 +1936,26 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     route(async (req, res) => {
       const { key, clusterId, index } = req.body ?? {};
       if (typeof key !== "string") throw bad("key is required");
+      const upper = key.toUpperCase();
       const result = await batches.update((draft) =>
-        moveTicket(batchOr404(draft, req.params.id), key.toUpperCase(), typeof clusterId === "string" ? clusterId : null, index, Date.now()),
+        moveTicket(batchOr404(draft, req.params.id), upper, typeof clusterId === "string" ? clusterId : null, index, Date.now()),
       );
       if (!result.ok) throw conflict(result.error);
-      res.json({ batch: decorate((await batches.get()).batches[req.params.id]) });
+      // Dropped onto a cluster whose agent is live: moveTicket queued it, and
+      // the agent is told the same way "Add to batch" tells it.
+      const batch = (await batches.get()).batches[req.params.id];
+      const to = typeof clusterId === "string" ? clusterOf(batch, clusterId) : null;
+      const warnings = [];
+      const handovers = [];
+      if (to && isStarted(to) && to.windowId) {
+        try {
+          await runner.handOffAdditional(req.params.id, to.id, [upper]);
+          handovers.push({ clusterId: to.id, keys: [upper] });
+        } catch (err) {
+          warnings.push(`Could not hand ${upper} to "${to.name}": ${err.message}`);
+        }
+      }
+      res.json({ batch: decorate(batch), warnings, handovers });
     }),
   );
 

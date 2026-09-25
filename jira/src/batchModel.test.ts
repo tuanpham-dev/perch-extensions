@@ -193,6 +193,33 @@ test("a card can be dragged to another cluster while both are still planned", ()
   assert.deepEqual(b.keys, ["CAP-1"]);
 });
 
+test("a card dropped onto a running cluster is queued, so its agent can start it", () => {
+  const batch = batchOf("CAP-1", "CAP-2");
+  applyProposal(batch, { clusters: [{ id: null, name: "One", keys: ["CAP-1"] }] }, { makeId, now: NOW });
+  const cluster = batch.clusters[0];
+  markRunning(batch, cluster.id, { worktreePath: "/w", sessionName: "one", windowId: "win-1", agentId: "a", now: NOW });
+  assert.equal(batch.ticketStates["CAP-2"], undefined, "precondition: unclustered tickets have no state");
+  assert.deepEqual(moveTicket(batch, "CAP-2", cluster.id, null, NOW + 1), { ok: true });
+  assert.deepEqual(cluster.keys, ["CAP-1", "CAP-2"]);
+  assert.equal(batch.ticketStates["CAP-2"].state, "queued");
+  assert.equal(batch.ticketStates["CAP-2"].clusterId, cluster.id);
+  assert.equal(ticketReport(batch, cluster.id, "CAP-2", "start", { now: NOW + 2 }).ok, true);
+});
+
+test("a saved document whose started cluster lists a ticket with no state queues it on load", () => {
+  const batch = running("CAP-1", "CAP-2");
+  delete batch.ticketStates["CAP-2"];
+  const planned = batchOf("CAP-3");
+  applyProposal(planned, { clusters: [{ id: null, name: "Later", keys: ["CAP-3"] }] }, { makeId, now: NOW });
+  const doc = normalizeDocument({ version: 1, batches: { [batch.id]: batch, planned } }, NOW + 5);
+  const repaired = doc.batches[batch.id].ticketStates["CAP-2"];
+  assert.equal(repaired.state, "queued");
+  assert.equal(repaired.clusterId, batch.clusters[0].id);
+  assert.equal(repaired.since, NOW + 5);
+  assert.equal(doc.batches[batch.id].ticketStates["CAP-1"].since, NOW, "an existing state is left alone");
+  assert.deepEqual(doc.batches.planned.ticketStates, {}, "a cluster still being planned gets its states when it starts");
+});
+
 test("a ticket an agent already holds cannot be dragged anywhere", () => {
   const batch = running("CAP-1");
   addCluster(batch, { id: makeId(), name: "Other", now: NOW });
@@ -717,4 +744,35 @@ test("a ticket added to a pending cluster stays without a state until it starts"
   const clusterId = batch.clusters[0].id;
   applyProposal(batch, { clusters: [{ id: clusterId, name: "One", keys: ["CAP-2"] }] }, { addOnly: true, makeId, now: NOW });
   assert.equal(batch.ticketStates["CAP-2"], undefined);
+});
+
+// Normalization repairs a started cluster's missing ticket states, and those
+// carry a timestamp. The store injects a clock so a test never has to reason
+// about the real one; reaching past it to Date.now() puts a real timestamp in
+// a document the test believes it pinned.
+test("a repair made while loading uses the store's clock, not the wall clock", async () => {
+  const { dir, store } = await tempStore();
+  await mkdir(path.join(dir, "jira"), { recursive: true });
+  await writeFile(
+    path.join(dir, "jira", "batches.json"),
+    JSON.stringify({
+      version: 1,
+      batches: {
+        bat_1: {
+          id: "bat_1",
+          name: "Batch",
+          repo: "/repo",
+          tickets: { "CAP-1": { key: "CAP-1", summary: "one" } },
+          clusters: [{ id: "cls_1", name: "One", state: "running", keys: ["CAP-1"] }],
+          ticketStates: {},
+          unclustered: [],
+        },
+      },
+    }),
+  );
+  const doc = await store.get();
+  const repaired = doc.batches.bat_1.ticketStates["CAP-1"];
+  assert.equal(repaired.state, "queued");
+  assert.equal(repaired.since, NOW);
+  assert.deepEqual(repaired.history, [{ state: "queued", at: NOW, note: "" }]);
 });
