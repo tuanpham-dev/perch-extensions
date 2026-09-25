@@ -121,3 +121,70 @@ test("the primary worktree is the first entry, so a linked checkout still writes
 test("a repository git cannot describe falls back to where we were", async () => {
   assert.equal(await primaryWorktree("/repo", async () => ""), "/repo");
 });
+
+// ---- More than a before and an after ----
+
+test("extra shots reach the report, after the pair and in the order given", () => {
+  const batch = batchWith(
+    {
+      "CAP-1": {
+        state: "review",
+        qa: report({
+          before: { ext: "png", at: NOW },
+          after: { ext: "png", at: NOW },
+          shots: [
+            { ext: "png", label: "shot-1", caption: "Cart at 390px", at: NOW },
+            { ext: "webp", label: "shot-2", caption: "Drawer open", at: NOW },
+          ],
+        }),
+      },
+    },
+    ["CAP-1"],
+  );
+  const evidence = buildSpec(batch, cluster(["CAP-1"])).tickets[0].evidence;
+  assert.deepEqual(
+    evidence.map((e: { image: string }) => e.image),
+    [
+      path.join("screenshots", "CAP-1-before.png"),
+      path.join("screenshots", "CAP-1-after.png"),
+      path.join("screenshots", "CAP-1-shot-1.png"),
+      path.join("screenshots", "CAP-1-shot-2.webp"),
+    ],
+  );
+  assert.deepEqual(
+    evidence.map((e: { caption: string }) => e.caption),
+    ["Before - CAP-1", "After - CAP-1", "Cart at 390px", "Drawer open"],
+  );
+});
+
+// The pair's labels are what the report styles as BEFORE/AFTER chips. An
+// extra shot has a caption instead, so labelling it would print "shot-1" in a
+// chip beside words that already say what it is.
+test("an extra shot carries no label chip, where the pair does", () => {
+  const batch = batchWith(
+    { "CAP-1": { state: "review", qa: report({ after: { ext: "png", at: NOW }, shots: [{ ext: "png", label: "shot-1", caption: "Mobile", at: NOW }] }) } },
+    ["CAP-1"],
+  );
+  const evidence = buildSpec(batch, cluster(["CAP-1"])).tickets[0].evidence;
+  assert.deepEqual(
+    evidence.map((e: { label?: string }) => e.label),
+    ["after", undefined],
+  );
+});
+
+test("an uncaptioned extra is numbered rather than left blank", () => {
+  const batch = batchWith(
+    { "CAP-1": { state: "review", qa: report({ shots: [{ ext: "png", label: "shot-1", caption: "", at: NOW }] }) } },
+    ["CAP-1"],
+  );
+  assert.equal(buildSpec(batch, cluster(["CAP-1"])).tickets[0].evidence[0].caption, "CAP-1 - 1");
+});
+
+// Reports filed before extras existed have no `shots` at all, and a batch on
+// disk is not migrated - it is read as it was written.
+test("a report from before extra shots existed still builds", () => {
+  const batch = batchWith({ "CAP-1": { state: "review", qa: report({ before: { ext: "png", at: NOW } }) } }, ["CAP-1"]);
+  const evidence = buildSpec(batch, cluster(["CAP-1"])).tickets[0].evidence;
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].image, path.join("screenshots", "CAP-1-before.png"));
+});

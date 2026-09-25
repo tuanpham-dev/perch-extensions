@@ -271,12 +271,6 @@ export default function Lightbox({ shots, index, onIndex, onClose }: LightboxPro
             </span>
           )}
         </span>
-        <button className="icon-button" title="Previous (left arrow)" disabled={index === 0} onClick={() => onIndex(step(index, -1, shots.length))}>
-          <Icon name="chevron-left" />
-        </button>
-        <button className="icon-button" title="Next (right arrow)" disabled={index >= shots.length - 1} onClick={() => onIndex(step(index, 1, shots.length))}>
-          <Icon name="chevron-right" />
-        </button>
         <button className="icon-button" title="Fit to the pane (0)" onClick={refit}>
           <Icon name="screen-normal" />
         </button>
@@ -307,6 +301,32 @@ export default function Lightbox({ shots, index, onIndex, onClose }: LightboxPro
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
         />
       </div>
+      {/* Beside the picture rather than in the toolbar, where the cursor
+          already is when you are comparing two shots - and where the eye
+          looks for "the next one". Left out entirely for a single shot: two
+          permanently dead arrows read as a viewer that is broken. */}
+      {shots.length > 1 && (
+        <>
+          <button
+            className="jira-lb-nav prev"
+            title="Previous (left arrow)"
+            aria-label="Previous screenshot"
+            disabled={index === 0}
+            onClick={() => onIndex(step(index, -1, shots.length))}
+          >
+            <Icon name="chevron-left" />
+          </button>
+          <button
+            className="jira-lb-nav next"
+            title="Next (right arrow)"
+            aria-label="Next screenshot"
+            disabled={index >= shots.length - 1}
+            onClick={() => onIndex(step(index, 1, shots.length))}
+          >
+            <Icon name="chevron-right" />
+          </button>
+        </>
+      )}
     </div>
   );
 }

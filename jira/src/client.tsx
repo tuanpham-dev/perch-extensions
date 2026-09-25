@@ -65,7 +65,6 @@ import BatchBoard from "./BatchBoard";
 import BatchDetail from "./BatchDetail";
 import SkillPicker from "./SkillPicker";
 import Lightbox, { type Shot } from "./Lightbox";
-import { columns } from "./batchViewModel";
 import ProjectPicker from "./ProjectPicker";
 import { buildCombinedBrief } from "./brief";
 import { buildBranch, sessionNameFor } from "./naming";
@@ -1789,23 +1788,31 @@ export function runClusterAction(clusterId: string, action: ClusterAction): void
     .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
 }
 
-// Every shot the open batch holds, in the order the board lists its columns,
-// so stepping through them follows what is on screen.
-function batchShots(batch: Batch): Shot[] {
+// Where the extension serves one stored screenshot from.
+function shotSrc(batchId: string, key: string, which: string): string {
+  return `/api/ext/perch.jira/qa/${encodeURIComponent(batchId)}/${encodeURIComponent(key)}/${which}`;
+}
+
+// One ticket's evidence, in the order it was reported: the pair first, then
+// the extras.
+//
+// One ticket and not the whole batch, because stepping is for comparing -
+// before against after, desktop against mobile, all of it about the same
+// change. Walking off the end of CAP-110 into CAP-121's screenshots is not a
+// comparison, and with extras in the list a batch of twenty tickets makes the
+// arrows a way to get lost. The board is how you reach another ticket.
+function ticketShots(batch: Batch, key: string): Shot[] {
+  const qa = batch.ticketStates[key]?.qa;
+  if (!qa) return [];
   const shots: Shot[] = [];
-  for (const column of columns(batch)) {
-    for (const card of column.cards) {
-      const qa = batch.ticketStates[card.key]?.qa;
-      if (!qa) continue;
-      for (const which of ["before", "after"] as const) {
-        if (!qa[which]) continue;
-        shots.push({
-          src: `/api/ext/perch.jira/qa/${encodeURIComponent(batch.id)}/${encodeURIComponent(card.key)}/${which}`,
-          key: card.key,
-          label: which,
-        });
-      }
-    }
+  for (const which of ["before", "after"] as const) {
+    if (!qa[which]) continue;
+    shots.push({ src: shotSrc(batch.id, key, which), key, label: which });
+  }
+  // A caption stands in for the label, because "shot-2" describes nothing a
+  // reviewer is looking for.
+  for (const shot of qa.shots ?? []) {
+    shots.push({ src: shotSrc(batch.id, key, shot.label), key, label: shot.caption || shot.label });
   }
   return shots;
 }
@@ -1815,12 +1822,16 @@ function batchShots(batch: Batch): Shot[] {
 // querying the document would find the hidden one's thumbnail.
 let shotOpener: HTMLElement | null = null;
 
-export function openShot(key: string, which: "before" | "after", opener?: HTMLElement | null): void {
+export function openShot(key: string, which: string, opener?: HTMLElement | null): void {
   const batch = state.batch;
   if (!batch) return;
   shotOpener = opener ?? null;
-  const shots = batchShots(batch);
-  const index = shots.findIndex((shot) => shot.key === key && shot.label === which);
+  const shots = ticketShots(batch, key);
+  // Found by source, not by label: an extra shot shows its caption where the
+  // pair shows "before"/"after", and a caption is not guaranteed unique. The
+  // URL is the one thing that is.
+  const src = shotSrc(batch.id, key, which);
+  const index = shots.findIndex((shot) => shot.src === src);
   if (index < 0) return;
   setState({ lightbox: { shots, index } });
 }

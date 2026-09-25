@@ -647,6 +647,11 @@ export function createBatchRunner({
 
   const evidenceDir = path.join(configDir, "jira", "evidence");
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  // Extra shots beyond before/after. High enough that no honest report hits
+  // it - a viewport each for phone, tablet and desktop, plus a few states -
+  // and low enough that one ticket cannot fill the store or turn an inlined
+  // report into a file nobody can open.
+  const MAX_SHOTS = 12;
 
   // By content, not by extension: a file named .png that is not one would
   // reach an <img> and render as nothing, which reads as a broken feature
@@ -687,6 +692,18 @@ export function createBatchRunner({
     const kind = IMAGE_KINDS.find((entry) => entry.test(bytes));
     if (!kind) throw new RunnerError(400, `--${label}: ${file} is not a PNG, JPEG or WebP`);
     return { bytes, ext: kind.ext };
+  }
+
+  // Extra shots left by a longer previous report. Bounded by MAX_SHOTS rather
+  // than by reading the directory, so it cannot be steered by whatever
+  // filenames happen to be sitting there.
+  async function pruneShots(batchId, key, kept) {
+    const dir = path.join(evidenceDir, batchId, key);
+    for (let i = kept + 1; i <= MAX_SHOTS; i++) {
+      for (const kind of IMAGE_KINDS) {
+        await rm(path.join(dir, `shot-${i}.${kind.ext}`), { force: true });
+      }
+    }
   }
 
   async function storeImage(batchId, key, label, file) {
@@ -798,10 +815,28 @@ export function createBatchRunner({
           // qa-report applies when it refuses to render a missing screenshot.
           const before = body.before ? await storeImage(batchId, key, "before", String(body.before)) : null;
           const after = body.after ? await storeImage(batchId, key, "after", String(body.after)) : null;
+          // Stored under shot-1, shot-2... rather than under the caption: a
+          // caption is a sentence, and a sentence is not a filename. The
+          // position is what the report and the panel order by anyway.
+          const shots = [];
+          const given = Array.isArray(body.shots) ? body.shots : [];
+          if (given.length > MAX_SHOTS) {
+            throw new RunnerError(400, `--shot given ${given.length} times, over the limit of ${MAX_SHOTS}`);
+          }
+          for (const [i, entry] of given.entries()) {
+            const file = String(entry?.file ?? entry ?? "");
+            if (!file) continue;
+            const label = `shot-${shots.length + 1}`;
+            const stored = await storeImage(batchId, key, label, file);
+            shots.push({ ...stored, label, caption: String(entry?.caption ?? "").slice(0, 120) });
+          }
+          // A re-report with fewer shots than last time must not leave the
+          // extras behind, or the report grows every rework.
+          await pruneShots(batchId, key, shots.length);
           const result = await store.update((doc) => {
             const batch = doc.batches[batchId];
             if (!batch) return { ok: false, error: `no batch ${batchId}` };
-            return recordQa(batch, clusterId, key, { ...body, before, after }, Date.now());
+            return recordQa(batch, clusterId, key, { ...body, before, after, shots }, Date.now());
           });
           if (!result.ok) throw new RunnerError(409, result.error);
           await maybeBuildReport(batchId, clusterId);

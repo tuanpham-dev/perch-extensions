@@ -48,6 +48,14 @@ export interface QaImage {
   at: number;
 }
 
+// One of the extra screenshots past the before/after pair. `label` is its
+// position ("shot-1"), which is both where the bytes sit in the store and
+// what the image route takes; `caption` is the agent's own words for it.
+export interface QaShot extends QaImage {
+  label: string;
+  caption: string;
+}
+
 export interface QaReport {
   status: QaStatus;
   problem: string[];
@@ -59,6 +67,9 @@ export interface QaReport {
   // the panel keeps them after the worktree is gone.
   before: QaImage | null;
   after: QaImage | null;
+  // Everything past the pair, in the order it was reported. Absent on a
+  // report filed before this existed, hence the optional.
+  shots?: QaShot[];
   // The user's own rendered report, where they left it.
   reportPath: string;
   at: number;

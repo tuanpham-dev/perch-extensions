@@ -91,6 +91,29 @@ proves nothing:
   before/after pair that differs in two ways demonstrates nothing about
   either.
 
+### More than a pair
+
+A before and an after are the comparison, but they are not a limit. When the
+ticket's change shows somewhere else too - a second viewport, a later step in
+the flow, a state that only appears on one route - capture that as well and
+pass it with `--shot <file>:<caption>`, which repeats:
+
+```sh
+jira-batch qa CAP-12 --status pass \
+  --before before.png --after after.png \
+  --shot mobile.png:"Cart at 390px" \
+  --shot drawer.png:"Drawer open after the fix"
+```
+
+Caption every one. The reader has your `steps` and nothing else to go on, and
+a row of uncaptioned screenshots is a puzzle rather than evidence. Say what
+the picture shows, not that it is a picture: "Cart at 390px" over "mobile
+screenshot".
+
+Restraint still applies - four shots that each prove something beat eight that
+repeat one another, and a shot nobody can tell the purpose of is worse than no
+shot at all.
+
 ## 3. Writing it down
 
 Three fields do the work. Write them as short bullets, one idea each, because

@@ -1622,12 +1622,20 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     "/qa/:batchId/:key/:which",
     route(async (req, res) => {
       const { batchId, key, which } = req.params;
-      if (which !== "before" && which !== "after") throw bad("which must be before or after");
+      // before, after, or one of the extra shots by position. Matched against
+      // a pattern rather than passed through, because this becomes a path
+      // segment: anything that is not one of these three shapes must not
+      // reach the filesystem.
+      const extra = /^shot-([1-9][0-9]?)$/.exec(which);
+      if (which !== "before" && which !== "after" && !extra) {
+        throw bad("which must be before, after, or shot-<n>");
+      }
       if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
       const doc = await batches.get();
       const batch = batchOr404(doc, batchId);
       const upper = key.toUpperCase();
-      const shot = batch.ticketStates[upper]?.qa?.[which];
+      const qa = batch.ticketStates[upper]?.qa;
+      const shot = extra ? (qa?.shots ?? []).find((entry) => entry.label === which) : qa?.[which];
       if (!shot) throw notFound(`no ${which} image for ${upper}`);
 
       const file = path.join(runner.evidenceDir, batchId, upper, `${which}.${shot.ext}`);

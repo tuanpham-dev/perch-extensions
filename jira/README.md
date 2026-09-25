@@ -425,6 +425,20 @@ and renders it:
 | `<primary worktree>/.backups/orchestration/screenshots/` | The evidence, beside the spec, by short relative paths |
 | `<primary worktree>/.backups/<cluster>-<date>.html` | The rendered report, opened from the chip's menu |
 
+**How many screenshots.** `--before` and `--after` are the pair the report chips as BEFORE and
+AFTER. `--shot` adds as many more as the ticket needs, each with its own caption, in the order
+given - a second viewport, a later step in a flow, a state that only appears on one route. Up to
+12 extras per ticket. They are stored alongside the pair and appear after it, in the panel and in
+the report alike; re-reporting a ticket with fewer replaces the lot rather than leaving the old
+ones behind.
+
+```sh
+jira-batch qa CAP-12 --status pass \
+  --before before.png --after after.png \
+  --shot mobile.png:"Cart at 390px" \
+  --shot drawer.png:"Drawer open, 2560px"
+```
+
 It goes to the **primary** worktree, not the cluster's own, so every cluster's report
 lands in one place and survives its worktree being removed. **Rebuild QA report** in the
 chip menu runs it again from the current reports. Rendering uses
@@ -450,7 +464,7 @@ line, with the batch and cluster ids in its environment. POSIX `sh` around
 | `jira-batch start <KEY>` | Say you are starting that ticket |
 | `jira-batch done <KEY> --summary <text>` | Say it is finished; the summary is what the reviewer reads first |
 | `jira-batch fail <KEY> --reason <text>` | Say it cannot be done, and carry on |
-| `jira-batch qa <KEY> --status pass\|fail\|partial\|blocked` | File the QA report: `--problem`, `--fix`, `--steps` (repeatable), `--notes`, `--files`, `--before <path>`, `--after <path>` |
+| `jira-batch qa <KEY> --status pass\|fail\|partial\|blocked` | File the QA report: `--problem`, `--fix`, `--steps` (repeatable), `--notes`, `--files`, `--before <path>`, `--after <path>`, `--shot <path>[:<caption>]` (repeatable) |
 | `jira-batch note <text>` | Record something against the cluster |
 | `jira-batch brief` | Print the cluster's full brief: every ticket, its comments, the rules |
 | `jira-batch status` | This cluster and where each of its tickets stands |

@@ -3173,3 +3173,81 @@
   align-items: center;
 }
 
+/* An extra shot's caption sits where before/after put their one word, and a
+   sentence is longer than a word - so it takes the room it can and cuts
+   rather than pushing the zoom icon out of the tile. The full text is on the
+   button's title. */
+.jira-qa-shot-cap {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Stepping between a ticket's screenshots, beside the picture rather than in
+   the toolbar - the same place claude-viewer puts it, and the place the
+   cursor already is when you are flicking between a before and an after.
+   Absolute against .jira-lightbox, which is the positioned ancestor. */
+.jira-lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 8px;
+  /* Dark enough to read over a white screenshot, translucent enough not to
+     hide the strip of image it covers. */
+  background: color-mix(in srgb, var(--bg, #1e1e1e) 72%, transparent);
+  color: var(--fg, #ddd);
+  cursor: pointer;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+.jira-lb-nav.prev {
+  left: 10px;
+}
+
+.jira-lb-nav.next {
+  right: 10px;
+}
+
+.jira-lb-nav:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg, #1e1e1e) 92%, transparent);
+}
+
+.jira-lb-nav:focus-visible {
+  outline: 2px solid var(--focus-border, #007fd4);
+  outline-offset: 2px;
+}
+
+/* Kept in place rather than removed at the ends, so the image does not shift
+   sideways on the first and last shot. */
+.jira-lb-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.jira-lb-nav svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* A narrow pane is mostly picture; the arrows shrink rather than eat it. */
+@media (max-width: 560px) {
+  .jira-lb-nav {
+    width: 32px;
+    height: 52px;
+  }
+  .jira-lb-nav.prev {
+    left: 4px;
+  }
+  .jira-lb-nav.next {
+    right: 4px;
+  }
+}

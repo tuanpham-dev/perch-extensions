@@ -15,7 +15,8 @@ export interface BatchDetailProps {
   onFeedback: (key: string, text: string) => void;
   onAccept: (key: string) => void;
   onOpenTerminal: (clusterId: string) => void;
-  onOpenShot: (key: string, which: "before" | "after", opener?: HTMLElement | null) => void;
+  // "before", "after", or "shot-<n>" for one of the extras.
+  onOpenShot: (key: string, which: string, opener?: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
 }
 

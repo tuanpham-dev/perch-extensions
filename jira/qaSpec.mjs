@@ -62,6 +62,21 @@ function evidenceFor(ticket, key, { batchId }) {
       _from: path.join(batchId, key, `${which}.${shot.ext}`),
     });
   }
+  // Then whatever else the ticket needed, in the order it was reported. These
+  // come last so a before/after pair still reads as a pair at the front of the
+  // row, and an existing report is unchanged by the ones that carry none.
+  for (const [i, shot] of (ticket?.qa?.shots ?? []).entries()) {
+    if (!shot?.ext) continue;
+    const label = shot.label || `shot-${i + 1}`;
+    const name = `${key}-${label}.${shot.ext}`;
+    shots.push({
+      image: path.join("screenshots", name),
+      // The agent's own words when it gave any; otherwise say which number it
+      // is, which at least tells two unlabelled shots apart.
+      caption: shot.caption || `${key} - ${i + 1}`,
+      _from: path.join(batchId, key, `${label}.${shot.ext}`),
+    });
+  }
   return shots;
 }
 

@@ -1,5 +1,5 @@
 // What QA concluded about one ticket: the verdict, what was wrong, what
-// changed, how to check it, and the two screenshots.
+// changed, how to check it, and the screenshots.
 //
 // The pictures are thumbnails on purpose - a reviewer scans the words first
 // and opens an image when a claim needs checking. Clicking one hands off to
@@ -14,7 +14,8 @@ export interface QaBlockProps {
   history: QaReport[];
   issueKey: string;
   batchId: string;
-  onOpenShot: (which: "before" | "after", opener: HTMLElement | null) => void;
+  // "before", "after", or "shot-<n>" for one of the extras.
+  onOpenShot: (which: string, opener: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
 }
 
@@ -45,8 +46,9 @@ function when(at: number): string {
 }
 
 export default function QaBlock({ report, history, issueKey, batchId, onOpenShot, onOpenReport }: QaBlockProps) {
-  const shotUrl = (which: "before" | "after") =>
+  const shotUrl = (which: string) =>
     `/api/ext/perch.jira/qa/${encodeURIComponent(batchId)}/${encodeURIComponent(issueKey)}/${which}`;
+  const extras = report.shots ?? [];
 
   return (
     <section className="jira-qa">
@@ -65,8 +67,11 @@ export default function QaBlock({ report, history, issueKey, batchId, onOpenShot
         )}
       </header>
 
-      {(report.before || report.after) && (
+      {(report.before || report.after || extras.length > 0) && (
         <div className="jira-qa-shots">
+          {/* The pair keeps its place at the front, and keeps its empty slot:
+              "not captured" opposite an after shot is a fact about the QA,
+              where a missing extra is just a shot nobody took. */}
           {(["before", "after"] as const).map((which) =>
             report[which] ? (
               <button key={which} className="jira-qa-shot" onClick={(event) => onOpenShot(which, event.currentTarget)} title={`Open the ${which} screenshot`}>
@@ -83,6 +88,20 @@ export default function QaBlock({ report, history, issueKey, batchId, onOpenShot
               </div>
             ),
           )}
+          {extras.map((shot) => (
+            <button
+              key={shot.label}
+              className="jira-qa-shot"
+              onClick={(event) => onOpenShot(shot.label, event.currentTarget)}
+              title={shot.caption || `Open ${shot.label}`}
+            >
+              <span className="jira-qa-shot-label">
+                <span className="jira-qa-shot-cap">{shot.caption || shot.label}</span>
+                <Icon name="zoom-in" />
+              </span>
+              <img src={shotUrl(shot.label)} alt={`${issueKey} ${shot.caption || shot.label}`} loading="lazy" />
+            </button>
+          ))}
         </div>
       )}
 

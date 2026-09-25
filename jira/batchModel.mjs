@@ -270,6 +270,20 @@ export function newQaReport(raw, now) {
     // store; the model never sees a path from the agent.
     before: raw?.before ? { ext: str(raw.before.ext), at: now } : null,
     after: raw?.after ? { ext: str(raw.after.ext), at: now } : null,
+    // Everything past the before/after pair, in the order the agent gave it.
+    // A ticket is rarely one comparison: a fix worth showing at three
+    // viewports, or across two steps of a flow, had nowhere to put the third
+    // image and simply lost it.
+    shots: Array.isArray(raw?.shots)
+      ? raw.shots
+          .filter((shot) => shot && str(shot.ext))
+          .map((shot, i) => ({
+            ext: str(shot.ext),
+            label: str(shot.label) || `shot-${i + 1}`,
+            caption: str(shot.caption),
+            at: now,
+          }))
+      : [],
     // The user's own rendered report, referenced where it sits.
     reportPath: str(raw?.reportPath),
     at: now,

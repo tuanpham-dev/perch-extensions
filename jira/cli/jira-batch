@@ -31,12 +31,16 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
   qa <KEY> --status pass|fail|partial|blocked [--problem <text>]...
            [--fix <text>]... [--steps <text>]... [--notes <text>]...
            [--files <path>]... [--before <image>] [--after <image>]
-           [--report <path>]
+           [--shot <image>[:<caption>]]... [--report <path>]
       File the QA report for a ticket, before `done`. Repeat --problem,
       --fix, --steps, --notes and --files to build a list - one short
       bullet per idea reads better than one long sentence. --before and
       --after are screenshots; they are copied, so the panel keeps them
       after the worktree is gone.
+      --shot adds as many more as the ticket needs, each with its own
+      caption, in the order given - a second viewport, a later step, a
+      state that only shows on one route:
+        --shot mobile.png:"Cart at 390px" --shot drawer.png:"Drawer open"
   note <text>
       Anything worth recording against this cluster. Does not change a
       ticket's state.
@@ -120,6 +124,22 @@ list_problem=""; list_fix=""; list_steps=""; list_notes=""; list_files=""
 is_list_flag() {
   case "$1" in problem | fix | steps | notes | files) return 0 ;; *) return 1 ;; esac
 }
+
+# --shot is a list too, but of objects rather than strings: a screenshot with
+# no caption beside four others is a picture of something the reader has to
+# guess at. Written as PATH or PATH:CAPTION, split on the first colon, which
+# is why the caption goes second - a path is far likelier to be the half that
+# is awkward to quote.
+list_shot=""
+append_shot() {
+  case "$1" in
+    *:*) shot_file=${1%%:*}; shot_caption=${1#*:} ;;
+    *) shot_file=$1; shot_caption="" ;;
+  esac
+  [ -n "$shot_file" ] || die "--shot needs a file, e.g. --shot mobile.png:\"After at 390px\"" 2
+  shot_entry="{\"file\":$(json_string "$(absolute_path "$shot_file")"),\"caption\":$(json_string "$shot_caption")}"
+  if [ -n "$list_shot" ]; then list_shot="$list_shot,$shot_entry"; else list_shot=$shot_entry; fi
+}
 append_list() {
   # $1 key, $2 encoded value
   eval "current=\$list_$1"
@@ -130,6 +150,7 @@ flush_lists() {
     eval "collected=\$list_$name"
     [ -n "$collected" ] && add_field "$name" "[$collected]"
   done
+  [ -n "$list_shot" ] && add_field shots "[$list_shot]"
 }
 
 # Relative to where the agent is standing, absolute by the time it is sent:
@@ -190,7 +211,9 @@ while [ $# -gt 0 ]; do
   case "$key" in
     before | after | report) value=$(absolute_path "$value") ;;
   esac
-  if is_list_flag "$key"; then
+  if [ "$key" = "shot" ]; then
+    append_shot "$value"
+  elif is_list_flag "$key"; then
     append_list "$key" "$(json_string "$value")"
   else
     add_field "$key" "$(json_string "$value")"
