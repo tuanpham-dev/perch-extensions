@@ -119,6 +119,14 @@
    of a hover to say it does something the rest of the row does not. It is an
    <a> to Jira, so the underline a link would otherwise carry is held back
    until hover - a table of thirteen underlined keys reads as noise. */
+/* Narrower than the batch form's card: one field, a note and two buttons. */
+.jira-keypaste {
+  width: min(380px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .jira-keyopen {
   text-decoration: none;
   min-width: 0;

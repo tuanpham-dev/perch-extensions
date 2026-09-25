@@ -77,3 +77,44 @@ export function orderedSelection<T extends { key: string }>(
   }
   return out;
 }
+
+// ---- Pasted keys ----
+//
+// The same reading the server does for /issues/lookup, done here because a
+// paste can only ever select what is already on screen: there is nothing to
+// fetch, so there is no reason to wait for a round trip to find that out.
+//
+// Split on whitespace, commas and semicolons, so a list copied out of a
+// standup note, a spreadsheet column or a Slack message all arrive the same
+// way. A browse URL ends in its key; anything else has to be one.
+const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+const FROM_URL = /\/browse\/([A-Za-z][A-Za-z0-9_]*-\d+)\/?$/;
+
+export interface ParsedKeys {
+  // Upper-cased and de-duplicated, in the order they were written.
+  keys: string[];
+  // Entries that are not ticket keys at all, kept as typed so the message can
+  // quote them back.
+  invalid: string[];
+}
+
+export function parseIssueKeys(text: string): ParsedKeys {
+  const keys: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of String(text ?? "").split(/[\s,;]+/)) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const fromUrl = trimmed.match(FROM_URL);
+    const candidate = fromUrl ? fromUrl[1] : trimmed;
+    if (!ISSUE_KEY.test(candidate)) {
+      if (!invalid.includes(trimmed)) invalid.push(trimmed);
+      continue;
+    }
+    const key = candidate.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return { keys, invalid };
+}

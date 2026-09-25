@@ -2,7 +2,7 @@
 // operations, so the cases below are named for the gesture that reaches them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyMarquee, orderedSelection, prune, rangeOf, selectRange, toggle } from "./selectionModel.ts";
+import { applyMarquee, orderedSelection, prune, rangeOf, selectRange, toggle, parseIssueKeys } from "./selectionModel.ts";
 
 const KEYS = ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5"];
 
@@ -105,4 +105,32 @@ test("a ticket listed in both panes is returned once", () => {
     picked.map((issue) => issue.key),
     ["CAP-1", "CAP-2"],
   );
+});
+
+// ---- Pasted keys ----
+//
+// The shapes a list of keys actually arrives in: a comma list from a note, a
+// column of lines from a spreadsheet, a URL copied out of a browser.
+
+test("keys arrive as a comma list, a line per key, or a browse URL", () => {
+  assert.deepEqual(parseIssueKeys("CAP-1, CAP-2").keys, ["CAP-1", "CAP-2"]);
+  assert.deepEqual(parseIssueKeys("CAP-1\nCAP-2\n").keys, ["CAP-1", "CAP-2"]);
+  assert.deepEqual(parseIssueKeys("CAP-1; CAP-2").keys, ["CAP-1", "CAP-2"]);
+  assert.deepEqual(parseIssueKeys("https://x.atlassian.net/browse/OPS-41").keys, ["OPS-41"]);
+  assert.deepEqual(parseIssueKeys("https://x.atlassian.net/browse/OPS-41/").keys, ["OPS-41"]);
+});
+
+test("a key is upper-cased and listed once, in the order written", () => {
+  assert.deepEqual(parseIssueKeys("cap-2, CAP-1, cap-2").keys, ["CAP-2", "CAP-1"]);
+});
+
+test("what is not a key is reported rather than dropped", () => {
+  const parsed = parseIssueKeys("CAP-1, nope, 123, CAP-, https://x/browse/nope");
+  assert.deepEqual(parsed.keys, ["CAP-1"]);
+  assert.deepEqual(parsed.invalid, ["nope", "123", "CAP-", "https://x/browse/nope"]);
+});
+
+test("an empty paste is empty, not an error", () => {
+  assert.deepEqual(parseIssueKeys("   \n  ").keys, []);
+  assert.deepEqual(parseIssueKeys("").invalid, []);
 });

@@ -41,6 +41,8 @@ export interface FilterBarProps {
   showAssignee: boolean;
   onApply: (filters: IssueFilters) => void;
   onToggleSelectMode: () => void;
+  // Opens the paste box, anchored to its button.
+  onPasteKeys: (anchor: PopoverAnchor) => void;
   // Sort and group: how the list is ordered and split, apart from which
   // tickets it holds. In the funnel popover everywhere; `inlineView` also puts
   // them in the row itself, where the editor tab has the width for them.
@@ -217,6 +219,7 @@ export default function FilterBar({
   showAssignee,
   onApply,
   onToggleSelectMode,
+  onPasteKeys,
   onOpenTab,
   view,
   onView,
@@ -284,6 +287,14 @@ export default function FilterBar({
           onClick={onToggleSelectMode}
         >
           <Icon name="checklist" />
+        </button>
+        <button
+          className="icon-button jira-keypaste-open"
+          title="Select tickets by key - paste a list"
+          aria-label="Select tickets by key"
+          onClick={(e) => onPasteKeys(anchorOf(e.currentTarget))}
+        >
+          <Icon name="add" />
         </button>
         {onOpenTab && (
           <button

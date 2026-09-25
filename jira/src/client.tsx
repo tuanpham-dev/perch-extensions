@@ -58,6 +58,7 @@ import Markdown, { setMarkdownAssetUrl } from "./Markdown";
 import SelectionBar from "./SelectionBar";
 import StartWorkForm from "./StartWorkForm";
 import BatchForm from "./BatchForm";
+import KeyPasteForm from "./KeyPasteForm";
 import BatchReview, { QA_DEFAULT_NOTE } from "./BatchReview";
 import BatchBoard from "./BatchBoard";
 import BatchDetail from "./BatchDetail";
@@ -84,7 +85,7 @@ import {
   type IssueFilters,
   type ListId,
 } from "./filterModel";
-import { applyMarquee, orderedSelection, prune, selectRange, toggle } from "./selectionModel";
+import { applyMarquee, orderedSelection, prune, selectRange, toggle, parseIssueKeys } from "./selectionModel";
 import { TtlCache } from "./ttlCache";
 import {
   DEFAULT_VIEW,
@@ -360,6 +361,8 @@ interface JiraState {
   // ticket, and selecting it in either place means the same thing.
   selection: Set<string>;
   selectMode: boolean;
+  // The paste box, when it is open.
+  keyPaste: KeyPasteState | null;
   // The shift-click anchor is per pane, since each has its own row order.
   anchor: Record<ListId, string | null>;
   startForm: StartFormState | null;
@@ -417,6 +420,15 @@ type BatchView = "review" | "board";
 
 // The Plan batch popover: which tickets, how to split them, and whether the
 // AI may read the repository first.
+interface KeyPasteState {
+  origin: Host;
+  anchor: PopoverAnchor;
+  text: string;
+  busy: boolean;
+  note: string | null;
+  error: string | null;
+}
+
 interface BatchFormState {
   origin: Host;
   anchor: PopoverAnchor;
@@ -471,6 +483,7 @@ let state: JiraState = {
   facets: null,
   selection: new Set(),
   selectMode: false,
+  keyPaste: null,
   anchor: { mine: null, project: null },
   startForm: null,
   projects: [],
@@ -1436,6 +1449,62 @@ export function removeFormIssue(key: string): void {
 
 // Resolving what was pasted. Run when the field loses focus and again on
 // Analyze, so a paste followed straight by Enter is never lost.
+// ---- Selecting by key ----
+//
+// Paste a list of keys and the rows they name are ticked, which is the same
+// thing as having ticked them by hand - so the selection stays exactly what
+// the list is showing, and every action reads it as it always did.
+//
+// Only what is on screen. A key naming a ticket in another project, or one
+// this view filters out, has no row to tick, and is said so rather than
+// quietly added to a count that nothing can act on. That also means no
+// lookup: the keys are read here, and a paste is instant.
+export function openKeyPaste(anchor: PopoverAnchor, origin: Host): void {
+  setState({ keyPaste: { origin, anchor, text: "", busy: false, note: null, error: null } });
+}
+
+export function updateKeyPaste(patch: Partial<KeyPasteState>): void {
+  if (!state.keyPaste) return;
+  setState({ keyPaste: { ...state.keyPaste, ...patch } });
+}
+
+export function closeKeyPaste(): void {
+  setState({ keyPaste: null });
+}
+
+export function submitKeyPaste(): void {
+  const paste = state.keyPaste;
+  if (!paste || !paste.text.trim()) return;
+  const { keys, invalid } = parseIssueKeys(paste.text);
+  const rows = new Set(rowsOf(paste.origin).map((issue) => issue.key));
+
+  const selection = new Set(state.selection);
+  const picked: string[] = [];
+  const absent: string[] = [];
+  for (const key of keys) {
+    if (!rows.has(key)) {
+      absent.push(key);
+      continue;
+    }
+    picked.push(key);
+    selection.add(key);
+  }
+
+  const notes: string[] = [];
+  if (picked.length > 0) notes.push(`Selected ${picked.length === 1 ? "1 ticket" : `${picked.length} tickets`}.`);
+  if (absent.length > 0) notes.push(`Not in this list: ${absent.join(", ")}.`);
+  if (invalid.length > 0) notes.push(`Not ticket keys: ${invalid.join(", ")}.`);
+
+  // Nothing matched: keep what was typed, so a typo can be corrected rather
+  // than retyped.
+  if (picked.length === 0) {
+    updateKeyPaste({ note: notes.join(" ") || "Nothing to select." });
+    return;
+  }
+  setState({ selection, selectMode: true });
+  updateKeyPaste({ text: "", note: notes.join(" ") });
+}
+
 export async function resolvePastedKeys(): Promise<IssueRow[]> {
   const form = state.batchForm;
   if (!form || !form.keysText.trim()) return form?.issues ?? [];
@@ -2561,6 +2630,18 @@ function Floating({ host }: { host: Host }) {
       {s.startForm?.origin === host && <StartWorkFormFor form={s.startForm} />}
       {s.batchForm?.origin === host && <BatchFormFor form={s.batchForm} />}
       {s.projectPicker?.origin === host && <ProjectPickerFor picker={s.projectPicker} />}
+      {s.keyPaste?.origin === host && (
+        <KeyPasteForm
+          anchor={s.keyPaste.anchor}
+          text={s.keyPaste.text}
+          busy={s.keyPaste.busy}
+          note={s.keyPaste.note}
+          error={s.keyPaste.error}
+          onChange={(text) => updateKeyPaste({ text })}
+          onSubmit={submitKeyPaste}
+          onClose={closeKeyPaste}
+        />
+      )}
     </>
   );
 }
@@ -2622,6 +2703,7 @@ function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
           showAssignee={false}
           onApply={(filters) => applyFilters("mine", filters)}
           onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+          onPasteKeys={(anchor) => openKeyPaste(anchor, "mine")}
           onOpenTab={() => openJiraTab("mine")}
           view={s.views.mine}
           onView={(view) => applyView("mine", view)}
@@ -2663,6 +2745,7 @@ function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
           showAssignee
           onApply={(filters) => applyFilters("project", filters)}
           onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+          onPasteKeys={(anchor) => openKeyPaste(anchor, "project")}
           onOpenTab={() => openJiraTab("project")}
           view={s.views.project}
           onView={(view) => applyView("project", view)}
@@ -3123,6 +3206,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
           showAssignee={list === "project"}
           onApply={(filters) => applyFilters(list, filters)}
           onToggleSelectMode={() => setSelectMode(!s.selectMode)}
+          onPasteKeys={(anchor) => openKeyPaste(anchor, "tab")}
           view={s.views[list]}
           onView={(view) => applyView(list, view)}
           inlineView
