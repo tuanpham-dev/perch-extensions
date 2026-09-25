@@ -526,7 +526,10 @@ export function applyProposal(batch, proposal, { addOnly = false, makeId, now })
 // totals +2" says little once the batch has been worked for a day. An empty
 // name keeps the old one rather than leaving a row with nothing to click.
 export function renameBatch(batch, name, now) {
-  const next = str(name).slice(0, 80).trim();
+  // Trimmed before the cap, not after: slicing first turns a long name into
+  // one with trailing space, and leaves whitespace-only input looking like a
+  // real name until the trim that no longer runs on it.
+  const next = str(name).trim().slice(0, 80);
   if (!next) return { ok: false, error: "a batch needs a name" };
   batch.name = next;
   batch.updatedAt = now;
@@ -536,7 +539,11 @@ export function renameBatch(batch, name, now) {
 export function renameCluster(batch, clusterId, name, now) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
-  cluster.name = str(name).slice(0, 60) || cluster.name;
+  // A blank keeps the old name rather than failing, since a cluster always has
+  // one to fall back on - but blank has to mean whitespace too, or a name of
+  // three spaces passes as real and the column heading goes empty.
+  const next = str(name).trim().slice(0, 60);
+  if (next) cluster.name = next;
   batch.updatedAt = now;
   return { ok: true };
 }

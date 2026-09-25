@@ -104,6 +104,19 @@ export default function BatchReview({
 
   const [ticked, setTicked] = useState<Set<string>>(() => new Set(plannable.map((c) => c.id)));
   const [branches, setBranches] = useState<Record<string, string>>({});
+  // Names are held here while they are being typed and written once, on
+  // blur. Writing per keystroke put a POST on the wire for every character -
+  // nine requests to type "Sprint 12", and nine failures to read on any
+  // server that cannot answer them.
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [title, setTitle] = useState<string | null>(null);
+  // Escape has to stop the commit that its own blur() is about to cause, and
+  // clearing the typed state cannot do it: focusout fires synchronously inside
+  // the keydown handler, so the blur handler still closes over the pre-update
+  // value and writes the very edit Escape was abandoning. A ref is read when
+  // the handler runs, which is the only thing that is in time. One flag serves
+  // every name field, since only the focused one can be escaped.
+  const abandoned = useRef(false);
   const [criteriaOpen, setCriteriaOpen] = useState(false);
   const [criteria, setCriteria] = useState(batch.criteria);
   const [readCodebase, setReadCodebase] = useState(batch.readCodebase);
@@ -236,10 +249,26 @@ export default function BatchReview({
           )}
           <input
             className="jira-bcol-name"
-            value={cluster.name}
+            value={names[cluster.id] ?? cluster.name}
             disabled={!editable || busy}
             aria-label="Cluster name"
-            onChange={(e) => onRename(cluster.id, e.target.value)}
+            onChange={(e) => setNames({ ...names, [cluster.id]: e.target.value })}
+            onBlur={() => {
+              const next = (names[cluster.id] ?? "").trim();
+              setNames(({ [cluster.id]: _dropped, ...rest }) => rest);
+              if (abandoned.current) {
+                abandoned.current = false;
+                return;
+              }
+              if (next && next !== cluster.name) onRename(cluster.id, next);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                abandoned.current = true;
+                e.currentTarget.blur();
+              }
+            }}
           />
           {!editable && <span className={`jira-bstate jira-bstate-${cluster.state}`}>{STATE_LABEL[cluster.state]}</span>}
           {editable && (
@@ -308,11 +337,27 @@ export default function BatchReview({
             "Cart drawer totals +2" tells you little a day later. */}
         <input
           className="jira-breview-title"
-          value={batch.name}
+          value={title ?? batch.name}
           disabled={busy}
           aria-label="Batch name"
           title="Rename this batch"
-          onChange={(e) => onRenameBatch(e.target.value)}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => {
+            const next = (title ?? "").trim();
+            setTitle(null);
+            if (abandoned.current) {
+              abandoned.current = false;
+              return;
+            }
+            if (next && next !== batch.name) onRenameBatch(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              abandoned.current = true;
+              e.currentTarget.blur();
+            }
+          }}
         />
         {/* The way back. "Clusters" on the board leads here, and without this
             the only exits were starting something or reloading the page. */}

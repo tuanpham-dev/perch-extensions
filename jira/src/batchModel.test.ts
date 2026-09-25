@@ -35,6 +35,7 @@ import {
   ticketCounts,
   ticketReport,
   renameBatch,
+  renameCluster,
 } from "../batchModel.mjs";
 import { createBatchStore } from "../batchStore.mjs";
 
@@ -636,4 +637,27 @@ test("a blank name is refused rather than leaving a batch with none", () => {
   const out = renameBatch(batch, "   ", NOW);
   assert.equal(out.ok, false);
   assert.equal(batch.name, "Keep me");
+});
+
+test("a cluster takes the name it is given, trimmed and capped", () => {
+  const batch = newBatch({ id: "bat_1", name: "b", repo: "/r", criteria: "", readCodebase: false, tickets: ["CAP-1"], now: NOW });
+  addCluster(batch, { id: "cls_1", name: "Cluster 1", now: NOW });
+  assert.equal(renameCluster(batch, "cls_1", "  Checkout fixes  ", NOW).ok, true);
+  assert.equal(batch.clusters[0].name, "Checkout fixes");
+  renameCluster(batch, "cls_1", "y".repeat(200), NOW);
+  assert.equal(batch.clusters[0].name.length, 60);
+});
+
+// Whitespace is blank. Sliced before it was trimmed, "   " survived as a
+// truthy name and left the column heading empty on the board.
+test("a whitespace-only cluster name keeps the old one", () => {
+  const batch = newBatch({ id: "bat_1", name: "b", repo: "/r", criteria: "", readCodebase: false, tickets: ["CAP-1"], now: NOW });
+  addCluster(batch, { id: "cls_1", name: "Checkout fixes", now: NOW });
+  assert.equal(renameCluster(batch, "cls_1", "   ", NOW).ok, true);
+  assert.equal(batch.clusters[0].name, "Checkout fixes");
+});
+
+test("renaming a cluster that is not there is an error, not a silent no-op", () => {
+  const batch = newBatch({ id: "bat_1", name: "b", repo: "/r", criteria: "", readCodebase: false, tickets: [], now: NOW });
+  assert.equal(renameCluster(batch, "cls_nope", "x", NOW).ok, false);
 });
