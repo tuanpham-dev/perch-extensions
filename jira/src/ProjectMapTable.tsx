@@ -112,7 +112,7 @@ export default function ProjectMapTable({
       ))}
 
       <button
-        className="jira-selaction"
+        className="dialog-button secondary"
         disabled={activeRepo === null || alreadyMapped}
         title={
           activeRepo === null

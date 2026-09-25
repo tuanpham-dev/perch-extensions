@@ -2043,7 +2043,8 @@
 
 .jira-batchform-keys,
 .jira-batchform-criteria,
-.jira-breview-criteria textarea {
+.jira-breview-criteria textarea,
+.jira-bfeedback-box {
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
@@ -2057,7 +2058,8 @@
 
 .jira-batchform-keys:focus,
 .jira-batchform-criteria:focus,
-.jira-breview-criteria textarea:focus {
+.jira-breview-criteria textarea:focus,
+.jira-bfeedback-box:focus {
   outline: 1px solid var(--focus-border, #0078d4);
   outline-offset: -1px;
 }
@@ -3302,9 +3304,37 @@
   line-height: inherit;
 }
 .jira-bbcard-keyph { opacity: 0; }
+/* A queue card with a Merge action while the QA branch is live. The frame,
+   colour bar and hover belong to the list item here, the card inside goes
+   flat, and Merge sits inside the frame under the card's text - the two
+   read as one card with an action rather than a card and a stray button. */
+.jira-bbcard-framed {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--jira-hairline);
+  border-left: 3px solid hsl(var(--jira-cluster-hue, 210) 55% 55%);
+  border-radius: 4px;
+  background: var(--jira-elevated);
+  transition: background 90ms ease, border-color 90ms ease;
+}
+.jira-bbcard-framed.jira-bcol-cnone { border-left-color: var(--border, #333); }
+.jira-bbcard-framed > .jira-bbcard {
+  border: 0;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  padding-bottom: 6px;
+}
+.jira-bbcard-framed:has(> .jira-bbcard.focused) { outline: 1px solid var(--focus-border, #0078d4); outline-offset: -1px; }
+.jira-bbcard-framed > .jira-bbcard.focused { outline: none; }
+/* Hover lights the whole frame, Merge strip included, not just the card
+   part - otherwise the seam between the two shows exactly on hover. */
+.jira-bbcard-framed:has(> .jira-bbcard:hover) { background: var(--list-hover-bg, rgba(255, 255, 255, 0.06)); }
+.jira-bbcard-framed > .jira-bbcard:hover { background: transparent; }
+/* The key link's spot is the card's border plus its padding; here the border
+   is the item's, so the overlay steps in by that much to stay on the key. */
+.jira-bbcard-framed > .jira-bbcard-key { top: 7px; left: 9px; }
 .jira-bqa-merge {
-  margin: -2px 0 6px;
-  width: 100%;
+  margin: 0 8px 8px 9px;
   justify-content: center;
 }
 .jira-bbcard-detail {
@@ -3371,6 +3401,10 @@
 .jira-qav-note { white-space: pre-wrap; }
 .jira-qav-form { display: flex; flex-direction: column; gap: 6px; }
 .jira-qav-label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--fg-inactive, #999); }
+/* The verdict fields - a change request, an exclusion reason, an approval
+   note - are the same box as "Select by key" and the batch form: they share
+   its rules above, so the browser's white default never sits inside a dark
+   card. Only a restated note is marked, by its border. */
 .jira-bfeedback-box.refined { border-color: var(--accent, #4fb3b0); }
 
 .jira-handoff {
@@ -3435,3 +3469,17 @@
   .jira-pset-row { grid-template-columns: minmax(0, 1fr); }
   .jira-pset-desc { grid-column: 1; }
 }
+
+/* ---- Inside the host's Settings page ----
+   The repo map and the per-project editor sit under the host's own rows,
+   whose fields are .dialog-input (29px, 13px type, 4px corners). The
+   extension's compact toolbar sizing read as a different control set
+   there, so in a settings block its fields take the host's metrics; the
+   add button is a host .dialog-button outright. */
+.jira-settings-block .jira-input {
+  height: auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.jira-settings-block select.jira-input { padding: 5px 8px; }

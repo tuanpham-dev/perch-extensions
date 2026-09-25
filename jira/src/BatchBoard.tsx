@@ -385,11 +385,17 @@ export default function BatchBoard({
                 <span className="jira-bbcol-count">{column.cards.length}</span>
               </header>
               <ul className="jira-bbcards">
-                {column.cards.map((card, i) => (
-                  <li key={card.key}>
+                {column.cards.map((card, i) => {
+                  const color = `jira-bcol-c${card.color < 0 ? "none" : card.color % 8}`;
+                  const canMerge = column.id === "queue" && qa.state === "running";
+                  return (
+                  // A card is a button, and a button cannot hold another one, so a
+                  // card with a Merge action lends its frame to the list item and
+                  // the action sits inside that frame, under the card's text.
+                  <li key={card.key} className={canMerge ? `jira-bbcard-framed ${color}` : undefined}>
                     <KeyLink issueKey={card.key} url={batch.tickets[card.key]?.url} className="jira-bbcard-key" />
                     <button
-                      className={`jira-bbcard jira-bcol-c${card.color < 0 ? "none" : card.color % 8}${focusedKey === card.key ? " focused" : ""}`}
+                      className={`jira-bbcard ${color}${focusedKey === card.key ? " focused" : ""}`}
                       onClick={() => onFocus(card.key)}
                     >
                       <span className="jira-bbcard-top">
@@ -410,7 +416,7 @@ export default function BatchBoard({
                         {card.integration === "conflicted" && <span className="jira-bbcard-qa qa-fail">conflict</span>}
                       </span>
                     </button>
-                    {column.id === "queue" && qa.state === "running" && (
+                    {canMerge && (
                       <button
                         className={`jira-selaction jira-bqa-merge${i === 0 ? " primary" : ""}`}
                         disabled={busy}
@@ -421,7 +427,8 @@ export default function BatchBoard({
                       </button>
                     )}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </section>
           ))}
