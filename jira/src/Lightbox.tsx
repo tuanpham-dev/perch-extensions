@@ -298,20 +298,24 @@ export default function Lightbox({ shots, index, onIndex, onClose }: LightboxPro
           alt={`${shot.key} ${shot.label}`}
           draggable={false}
           onLoad={refit}
-          style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
+          // The leading -50% pair is what centres it: the CSS puts its corner
+          // at the pane's centre, and this pulls it back by half its own size.
+          // It has to lead, so the pan and the scale still compose against a
+          // box that is already centred.
+          style={{ transform: `translate(-50%, -50%) translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
         />
       </div>
       {/* Beside the picture rather than in the toolbar, where the cursor
           already is when you are comparing two shots - and where the eye
           looks for "the next one". Left out entirely for a single shot: two
-          permanently dead arrows read as a viewer that is broken. */}
+          arrows that could only return to the same picture read as a viewer
+          that is broken. Never disabled otherwise, because stepping wraps. */}
       {shots.length > 1 && (
         <>
           <button
             className="jira-lb-nav prev"
             title="Previous (left arrow)"
             aria-label="Previous screenshot"
-            disabled={index === 0}
             onClick={() => onIndex(step(index, -1, shots.length))}
           >
             <Icon name="chevron-left" />
@@ -320,7 +324,6 @@ export default function Lightbox({ shots, index, onIndex, onClose }: LightboxPro
             className="jira-lb-nav next"
             title="Next (right arrow)"
             aria-label="Next screenshot"
-            disabled={index >= shots.length - 1}
             onClick={() => onIndex(step(index, 1, shots.length))}
           >
             <Icon name="chevron-right" />

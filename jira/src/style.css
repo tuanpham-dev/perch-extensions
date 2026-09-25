@@ -2968,11 +2968,15 @@
 
 .jira-qa-shot img {
   width: 100%;
-  /* Tall captures are common; the thumbnail shows the top of one rather than
-     squashing it, and the viewer is one click away for the rest. */
-  max-height: 140px;
-  object-fit: cover;
-  object-position: top;
+  /* Contained, not cropped. `cover` filled the tile by cutting the capture
+     down to its top strip, which for a full-page screenshot is the header and
+     nothing that was being reported. A fixed height keeps a row of tiles even
+     when a phone capture sits beside a desktop one; the whole image is there,
+     letterboxed, and full size is one click away. */
+  height: 150px;
+  object-fit: contain;
+  object-position: center;
+  background: var(--jira-sunken);
   display: block;
 }
 
@@ -3084,8 +3088,13 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  display: grid;
-  place-items: center;
+  /* The image is placed absolutely inside this, not centred by grid or flex.
+     Its layout box is the screenshot's natural size, and a box wider than its
+     track cannot be centred - the browser pins its start edge instead, so a
+     2560px capture in a 978px pane laid out from the left edge and the fit
+     transform then scaled it about a centre 791px off screen. Absolute
+     placement makes where it sits independent of how big it is. */
+  position: relative;
   /* The browser's own panning and pinching would fight the handlers. */
   touch-action: none;
   cursor: zoom-in;
@@ -3100,7 +3109,13 @@
   cursor: grabbing;
 }
 
+/* left/top put its top-left corner at the pane's centre; the translate(-50%)
+   pair in the transform pulls it back by half its own size, so its centre
+   lands there whatever its size. The pan and the fit scale compose after. */
 .jira-lb-stage img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
   transform-origin: center center;
   will-change: transform;
   max-width: none;

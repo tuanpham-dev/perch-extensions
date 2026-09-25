@@ -85,9 +85,23 @@ test("panning moves by exactly what it was given", () => {
   assert.deepEqual(panBy({ scale: 2, x: 10, y: 5, fit: 0.5 }, { x: -4, y: 7 }), { scale: 2, x: 6, y: 12, fit: 0.5 });
 });
 
-test("stepping stops at both ends rather than wrapping", () => {
-  assert.equal(step(0, -1, 4), 0);
-  assert.equal(step(3, 1, 4), 3);
-  assert.equal(step(1, 1, 4), 2);
+test("stepping wraps at both ends", () => {
+  assert.equal(step(1, 1, 4), 2, "the ordinary case");
+  assert.equal(step(3, 1, 4), 0, "off the end, round to the first");
+  assert.equal(step(0, -1, 4), 3, "back off the start, round to the last");
   assert.equal(step(0, 1, 0), 0, "no shots at all");
+  assert.equal(step(0, 1, 1), 0, "one shot is its own neighbour");
+});
+
+// JavaScript's % keeps the sign of the dividend, so a single modulo returns
+// -1 here and indexes outside the array.
+test("stepping back past the start never returns a negative index", () => {
+  for (let count = 1; count <= 6; count++) {
+    for (let index = 0; index < count; index++) {
+      for (const delta of [-1, 1]) {
+        const next = step(index, delta, count);
+        assert.ok(next >= 0 && next < count, `step(${index}, ${delta}, ${count}) = ${next}`);
+      }
+    }
+  }
 });

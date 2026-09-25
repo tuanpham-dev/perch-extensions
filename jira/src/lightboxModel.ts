@@ -82,9 +82,15 @@ export function actualSize(state: ViewState, pointer: Point = { x: 0, y: 0 }): V
   return zoomAt(state, 1 / state.scale, pointer);
 }
 
-// Stops at the ends rather than wrapping: walking off the last shot and
-// landing back on the first is disorienting when you are comparing two.
+// Wraps. The list is one ticket's evidence now, not the whole batch, so the
+// ends are a handful of shots apart and stopping there just means reaching
+// for the other arrow. Going round is also what makes a repeated before/after
+// comparison one key rather than two.
+//
+// The modulo is taken twice because JavaScript's keeps the sign of the
+// dividend: -1 % 5 is -1, not 4, and stepping back from the first shot would
+// index outside the array.
 export function step(index: number, delta: number, count: number): number {
   if (count <= 0) return 0;
-  return Math.min(Math.max(index + delta, 0), count - 1);
+  return (((index + delta) % count) + count) % count;
 }
