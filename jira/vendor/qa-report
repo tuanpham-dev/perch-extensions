@@ -76,6 +76,60 @@ const missing = [];
 let inlinedBytes = 0;
 if (useAssets) fs.mkdirSync(assetDir, { recursive: true });
 
+// The pixel size, read from the header of the bytes already in hand.
+//
+// A reviewer cannot judge a screenshot without it: "the header is 4px out" is
+// a different claim at 390px than at 2560px, and a report that scales every
+// shot to the width of its column hides exactly which one they are looking
+// at. Parsed here rather than measured in the browser so it is in the HTML
+// for anyone reading the file as text, and so a printed report still carries
+// it.
+//
+// Unknown is a fine answer: SVG has no intrinsic pixel size worth quoting,
+// and a format this cannot read simply goes without the label.
+const dimensions = (buf, ext) => {
+  try {
+    if (ext === '.png' && buf.length > 24 && buf.toString('ascii', 12, 16) === 'IHDR') {
+      return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+    }
+    if (ext === '.gif' && buf.length > 10) {
+      return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+    }
+    if (ext === '.jpg' || ext === '.jpeg') {
+      // Walk the segment chain to the first frame header; the dimensions are
+      // not at a fixed offset, and EXIF thumbnails sit before them.
+      let i = 2;
+      while (i + 9 < buf.length && buf[i] === 0xff) {
+        const marker = buf[i + 1];
+        const len = buf.readUInt16BE(i + 2);
+        // SOF0-SOF15, minus the four that are not frame headers.
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) };
+        }
+        i += 2 + len;
+      }
+      return null;
+    }
+    if (ext === '.webp' && buf.length > 30 && buf.toString('ascii', 8, 12) === 'WEBP') {
+      const kind = buf.toString('ascii', 12, 16);
+      // Lossy: 14 bits each, after the 3-byte start code.
+      if (kind === 'VP8 ') return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+      // Lossless: 14 bits each, packed across four bytes, and one less than
+      // the real size.
+      if (kind === 'VP8L') {
+        const bits = buf.readUInt32LE(21);
+        return { w: (bits & 0x3fff) + 1, h: ((bits >> 14) & 0x3fff) + 1 };
+      }
+      // Extended: 24 bits each, also one less than the real size.
+      if (kind === 'VP8X') {
+        const at = (o) => buf[o] | (buf[o + 1] << 8) | (buf[o + 2] << 16);
+        return { w: at(24) + 1, h: at(27) + 1 };
+      }
+    }
+  } catch { /* a truncated or malformed header is simply unknown */ }
+  return null;
+};
+
 const resolveImage = (p, ticketId, i) => {
   const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
   if (!fs.existsSync(abs)) { missing.push(`${ticketId}: ${p}`); return null; }
@@ -83,20 +137,23 @@ const resolveImage = (p, ticketId, i) => {
   const mime = MIME[ext];
   if (!mime) { missing.push(`${ticketId}: unsupported image type ${ext} (${p})`); return null; }
   const buf = fs.readFileSync(abs);
+  const size = dimensions(buf, ext);
+  const bytes = buf.length;
   if (useAssets) {
     const name = `${ticketId.toLowerCase()}-${i + 1}${ext}`;
     fs.writeFileSync(path.join(assetDir, name), buf);
-    return `${path.basename(assetDir)}/${name}`;
+    return { src: `${path.basename(assetDir)}/${name}`, size, bytes };
   }
   inlinedBytes += buf.length;
-  return `data:${mime};base64,${buf.toString('base64')}`;
+  return { src: `data:${mime};base64,${buf.toString('base64')}`, size, bytes };
 };
 
 // Resolve everything up front so a missing file fails before any output.
 for (const t of spec.tickets) {
-  t._evidence = (t.evidence || []).map((e, i) => ({
-    ...e, src: resolveImage(e.image, t.id || 'ticket', i),
-  })).filter(e => e.src);
+  t._evidence = (t.evidence || []).map((e, i) => {
+    const got = resolveImage(e.image, t.id || 'ticket', i);
+    return got ? { ...e, src: got.src, size: got.size, bytes: got.bytes } : { ...e, src: null };
+  }).filter(e => e.src);
 }
 if (missing.length) {
   die(`referenced screenshots not found — nothing written:\n  ${missing.join('\n  ')}`, 2);
@@ -167,12 +224,21 @@ const ticketHtml = t => {
   const s = statusOf(t);
   const steps = (t.steps || []).map(x => `<li>${rich(x)}</li>`).join('\n');
   const files = (t.files || []).map(f => `<code>${esc(f)}</code>`).join(' ');
-  const shots = t._evidence.map(e => `
+  const shots = t._evidence.map(e => {
+    const dim = e.size ? `${e.size.w} × ${e.size.h}` : '';
+    const kb = e.bytes ? `${Math.max(1, Math.round(e.bytes / 1024))} KB` : '';
+    const meta = [dim, kb].filter(Boolean).join(' · ');
+    return `
       <figure class="shot">
         <img src="${e.src}" alt="${esc(e.caption || t.id)}" loading="lazy"
+             ${e.size ? `width="${e.size.w}" height="${e.size.h}"` : ''}
              data-caption="${esc([t.id, e.label, e.caption].filter(Boolean).join(' · '))}">
-        <figcaption>${e.label ? `<span class="tag">${esc(e.label)}</span>` : ''}${esc(e.caption || '')}</figcaption>
-      </figure>`).join('\n');
+        <figcaption>
+          <span class="cap-text">${e.label ? `<span class="tag">${esc(e.label)}</span>` : ''}${esc(e.caption || '')}</span>
+          ${meta ? `<span class="cap-dim" title="Full size of the captured image">${esc(meta)}</span>` : ''}
+        </figcaption>
+      </figure>`;
+  }).join('\n');
 
   return `
   <section class="ticket" id="${esc(t.id)}" data-tag="${esc(t.tag || '')}">
@@ -277,9 +343,20 @@ ol.steps li::marker{color:var(--faint);font-variant-numeric:tabular-nums}
 .files code{background:var(--surface-2);border:1px solid var(--border);border-radius:4px;
 padding:1px 5px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 margin-right:5px;display:inline-block;margin-bottom:4px}
-.shots{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+/* align-items:start so a tall narrow shot (a phone capture beside a desktop
+   one) sets its own height instead of every figure in the row stretching to
+   the tallest and padding the short ones with dead space. Matters from the
+   third image onward, where the shapes stop being a matched pair. */
+.shots{display:grid;gap:16px;align-items:start;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 figure.shot{margin:0;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;overflow:hidden}
-figure.shot img{display:block;width:100%;height:auto;background:#fff;cursor:zoom-in;
+/* Capped, and contained rather than cropped. Once a ticket carries more than
+   a matched before/after pair the shapes stop agreeing - a 390x844 phone
+   capture beside a 2560x1440 desktop one makes a row four times taller than
+   the shots that share it. The cap keeps the grid readable; nothing is lost,
+   because the full image is one click away and its real size is printed in
+   the caption. */
+figure.shot img{display:block;width:100%;height:280px;object-fit:contain;
+object-position:center;background:#fff;cursor:zoom-in;
 transition:opacity .12s ease}
 figure.shot img:hover{opacity:.88}
 figure.shot img:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
@@ -309,7 +386,12 @@ padding:10px 15px !important}
 .lb-prev{left:14px}.lb-next{right:14px}
 .lb-hint{color:#8f8c86;font-size:11.5px}
 @media (max-width:640px){.lb-hint{display:none}.lb-nav{padding:8px 12px !important}}
-figure.shot figcaption{padding:9px 11px;font-size:12.5px;color:var(--dim);border-top:1px solid var(--border)}
+figure.shot figcaption{display:flex;gap:10px;align-items:baseline;justify-content:space-between;
+padding:9px 11px;font-size:12.5px;color:var(--dim);border-top:1px solid var(--border)}
+figure.shot figcaption .cap-text{min-width:0}
+/* The pixel size is the part a reviewer checks against the ticket, so it
+   keeps its own column and its digits line up down a row of figures. */
+figure.shot figcaption .cap-dim{flex:none;font-variant-numeric:tabular-nums;white-space:nowrap;opacity:.85}
 .tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
 background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:1px 7px;margin-right:7px;color:var(--faint)}
 .note{margin-top:15px;background:var(--surface-2);border-left:3px solid var(--accent);

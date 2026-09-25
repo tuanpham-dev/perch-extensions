@@ -439,6 +439,11 @@ jira-batch qa CAP-12 --status pass \
   --shot drawer.png:"Drawer open, 2560px"
 ```
 
+Every figure in the report carries the image's real pixel size and weight under its caption, so a
+claim about a 4px gap can be read against the width it was captured at. Thumbnails are a uniform
+height and letterboxed rather than cropped, which keeps a row readable when a phone capture sits
+beside a desktop one; the full image is one click away.
+
 It goes to the **primary** worktree, not the cluster's own, so every cluster's report
 lands in one place and survives its worktree being removed. **Rebuild QA report** in the
 chip menu runs it again from the current reports. Rendering uses
