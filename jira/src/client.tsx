@@ -1862,9 +1862,12 @@ export function deleteOpenBatch(): void {
 export function startBatchClusters(clusterIds: string[], branches: Record<string, string>): void {
   const batch = state.batch;
   if (!batch) return;
-  const agentId = batch.agentId || "";
+  // The picker shows agents[0] when nothing has been chosen, so that is the
+  // agent the user is looking at - reading batch.agentId alone refused to
+  // start ("Pick an agent first") over a choice the screen said was made.
+  const agentId = batch.agentId || cachedPresets[0]?.id || "";
   if (!agentId) {
-    setState({ batchError: "Pick an agent first." });
+    setState({ batchError: "No agent is enabled - add one in Settings, AI Providers." });
     return;
   }
   setState({ batchBusy: true, batchError: null });
