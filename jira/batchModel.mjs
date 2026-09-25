@@ -491,6 +491,22 @@ export function applyProposal(batch, proposal, { addOnly = false, makeId, now })
         continue;
       }
       existing.keys.push(...keys);
+      // A cluster makes its ticket states when it starts, over the keys it
+      // held at that moment. Keys arriving afterwards got none, so the agent
+      // was handed tickets in its brief that `jira-batch start` then refused
+      // with "this cluster has not started" - about a cluster it was plainly
+      // running in. Anything added to a started cluster is queued here, the
+      // same way markRunning queues the originals.
+      //
+      // It also puts the new tickets back in front of clusterState, which
+      // counts only keys that have a state: without this a cluster whose
+      // original tickets were all finished read as idle while holding work
+      // nobody could begin.
+      if (isStarted(existing)) {
+        for (const key of keys) {
+          if (!batch.ticketStates[key]) batch.ticketStates[key] = newTicketState(existing.id, now);
+        }
+      }
       // A running cluster keeps the name and reasoning it was launched with;
       // only a cluster still being planned takes the proposal's wording.
       if (!isStarted(existing)) {

@@ -661,3 +661,60 @@ test("renaming a cluster that is not there is an error, not a silent no-op", () 
   const batch = newBatch({ id: "bat_1", name: "b", repo: "/r", criteria: "", readCodebase: false, tickets: [], now: NOW });
   assert.equal(renameCluster(batch, "cls_nope", "x", NOW).ok, false);
 });
+
+// ---- Tickets added to a cluster that is already running ----
+
+// The reported symptom: the brief lists the new tickets, and `jira-batch
+// start` refuses them as belonging to a cluster that has not started - about
+// the very cluster the agent is running in. A cluster builds its ticket
+// states when it starts, so keys added afterwards had none.
+test("a ticket added to a running cluster can be started", () => {
+  const batch = batchOf("CAP-1", "CAP-2");
+  applyProposal(batch, { clusters: [{ id: null, name: "One", keys: ["CAP-1"] }] }, { makeId, now: NOW });
+  const clusterId = batch.clusters[0].id;
+  markRunning(batch, clusterId, { worktreePath: "/w", sessionName: "one", windowId: "w1", agentId: "a", now: NOW });
+
+  applyProposal(batch, { clusters: [{ id: clusterId, name: "One", keys: ["CAP-2"] }] }, { addOnly: true, makeId, now: NOW });
+
+  assert.ok(batch.clusters[0].keys.includes("CAP-2"), "the brief lists it");
+  const out = ticketReport(batch, clusterId, "CAP-2", "start", { now: NOW + 1 });
+  assert.equal(out.ok, true, out.ok ? "" : out.error);
+  assert.equal(batch.ticketStates["CAP-2"].state, "in-progress");
+});
+
+test("a ticket added to a running cluster is queued, not started", () => {
+  const batch = batchOf("CAP-1", "CAP-2");
+  applyProposal(batch, { clusters: [{ id: null, name: "One", keys: ["CAP-1"] }] }, { makeId, now: NOW });
+  const clusterId = batch.clusters[0].id;
+  markRunning(batch, clusterId, { worktreePath: "/w", sessionName: "one", windowId: "w1", agentId: "a", now: NOW });
+  applyProposal(batch, { clusters: [{ id: clusterId, name: "One", keys: ["CAP-2"] }] }, { addOnly: true, makeId, now: NOW });
+
+  assert.equal(batch.ticketStates["CAP-2"].state, "queued");
+  assert.equal(batch.ticketStates["CAP-2"].clusterId, clusterId);
+});
+
+// clusterState counts only keys that have a state. Without one, a cluster
+// whose original tickets were all finished read as idle while holding work
+// nobody could begin - and an idle cluster is one the board offers to close.
+test("added tickets keep a running cluster off idle", () => {
+  const batch = batchOf("CAP-1", "CAP-2");
+  applyProposal(batch, { clusters: [{ id: null, name: "One", keys: ["CAP-1"] }] }, { makeId, now: NOW });
+  const clusterId = batch.clusters[0].id;
+  markRunning(batch, clusterId, { worktreePath: "/w", sessionName: "one", windowId: "w1", agentId: "a", now: NOW });
+  ticketReport(batch, clusterId, "CAP-1", "start", { now: NOW + 1 });
+  ticketReport(batch, clusterId, "CAP-1", "done", { summary: "did it", now: NOW + 2 });
+  assert.equal(clusterState(batch, batch.clusters[0]), "idle");
+
+  applyProposal(batch, { clusters: [{ id: clusterId, name: "One", keys: ["CAP-2"] }] }, { addOnly: true, makeId, now: NOW + 3 });
+  assert.equal(clusterState(batch, batch.clusters[0]), "running");
+});
+
+// A cluster still being planned gets its states at markRunning, as it always
+// did - creating them early would make an unstarted cluster look startable.
+test("a ticket added to a pending cluster stays without a state until it starts", () => {
+  const batch = batchOf("CAP-1", "CAP-2");
+  applyProposal(batch, { clusters: [{ id: null, name: "One", keys: ["CAP-1"] }] }, { makeId, now: NOW });
+  const clusterId = batch.clusters[0].id;
+  applyProposal(batch, { clusters: [{ id: clusterId, name: "One", keys: ["CAP-2"] }] }, { addOnly: true, makeId, now: NOW });
+  assert.equal(batch.ticketStates["CAP-2"], undefined);
+});
