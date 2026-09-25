@@ -3126,26 +3126,32 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         />
       )}
       <div className="jira-tab-head">
-        <div className="jira-scope" role="tablist" aria-label="Which issues">
-          <button
-            role="tab"
-            aria-selected={list === "mine"}
-            className={`jira-scope-button${list === "mine" ? " active" : ""}`}
-            onClick={() => setTabList("mine")}
-          >
-            Assigned to me
-            <span className="jira-scope-count">{s.mine.length}</span>
-          </button>
-          <button
-            role="tab"
-            aria-selected={list === "project"}
-            className={`jira-scope-button${list === "project" ? " active" : ""}`}
-            onClick={() => setTabList("project")}
-          >
-            Project
-            {s.project && <span className="jira-scope-count">{s.project.issues.length}</span>}
-          </button>
-        </div>
+        {/* Everything up to the view switcher acts on the issue list, which
+            the Batches view does not show: the scope tabs pick which list
+            Table and Board read, and a batch reads neither. Left in place
+            they are a choice that changes nothing on screen. */}
+        {!onBatches && (
+          <div className="jira-scope" role="tablist" aria-label="Which issues">
+            <button
+              role="tab"
+              aria-selected={list === "mine"}
+              className={`jira-scope-button${list === "mine" ? " active" : ""}`}
+              onClick={() => setTabList("mine")}
+            >
+              Assigned to me
+              <span className="jira-scope-count">{s.mine.length}</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={list === "project"}
+              className={`jira-scope-button${list === "project" ? " active" : ""}`}
+              onClick={() => setTabList("project")}
+            >
+              Project
+              {s.project && <span className="jira-scope-count">{s.project.issues.length}</span>}
+            </button>
+          </div>
+        )}
         <div className="jira-scope" role="group" aria-label="View">
           <button
             aria-pressed={!onBoard}
@@ -3171,8 +3177,8 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
             {s.batchBadge > 0 && <span className="jira-scope-count">{s.batchBadge}</span>}
           </button>
         </div>
-        {!gate && list === "project" && <ProjectCaption host="tab" />}
-        {!gate && actions && <div className="jira-head-actions">{actions}</div>}
+        {!gate && !onBatches && list === "project" && <ProjectCaption host="tab" />}
+        {!gate && !onBatches && actions && <div className="jira-head-actions">{actions}</div>}
         {!gate && (
           // Side by side or top and bottom. Until one is picked the tab
           // decides by its width; the highlighted button is whichever layout
@@ -3198,7 +3204,7 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         )}
       </div>
 
-      {!gate && (list === "mine" || hasProject(s)) && (
+      {!gate && !onBatches && (list === "mine" || hasProject(s)) && (
         <FilterBar
           filters={s.filters[list]}
           facets={s.facets}

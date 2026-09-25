@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "displayName": "Jira",
   "description": "A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with a \"Start work\" action that creates a worktree session for one - and batches, which split a pile of tickets into clusters, give each its own worktree and coding agent, track every ticket on a kanban filtered by cluster, and send review feedback back to the agent that wrote it. Backed by the Jira Cloud REST API; the API token is held in the host's per-extension secret store, never in a setting.",
   "icon": "./icon.svg",
