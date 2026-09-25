@@ -25,6 +25,11 @@ export interface BatchBoardProps {
   onClearFilter: () => void;
   onFocus: (key: string) => void;
   onClusterAction: (clusterId: string, action: ClusterAction) => void;
+  onRenameCluster: (clusterId: string) => void;
+  onRenameBatch: () => void;
+  // Back to the review, where clusters are named, moved and split. Null when
+  // nothing is still pending - there is nothing left to arrange.
+  onReview: (() => void) | null;
   onSendFeedback: () => void;
   onArchive: () => void;
   onUnarchive: (id: string) => void;
@@ -65,6 +70,9 @@ export default function BatchBoard({
   onClearFilter,
   onFocus,
   onClusterAction,
+  onRenameCluster,
+  onRenameBatch,
+  onReview,
   onSendFeedback,
   onArchive,
   onUnarchive,
@@ -101,6 +109,9 @@ export default function BatchBoard({
       items.push({ label: "Open QA report", onClick: () => onOpenReport(cluster.qaReportPath) });
     }
     items.push({ label: "Rebuild QA report", onClick: () => onRebuildReport(id) });
+    // Whatever state it is in: the name is a label for whoever reads the
+    // board, and the branch it started on is shown beside it either way.
+    items.push({ label: "Rename cluster...", onClick: () => onRenameCluster(id) });
     if (items.length === 0) return;
     showMenu(x, y, items);
   };
@@ -205,6 +216,16 @@ export default function BatchBoard({
 
         <span className="jira-bboard-spacer" />
 
+        {onReview && (
+          <button
+            className="jira-selaction"
+            disabled={busy}
+            title="Name, move and split the clusters that have not started yet"
+            onClick={onReview}
+          >
+            Clusters
+          </button>
+        )}
         <button className="jira-selaction" disabled={busy} onClick={onPlanMore} title="Add more tickets to this batch">
           Add tickets...
         </button>
@@ -232,6 +253,7 @@ export default function BatchBoard({
             const x = e.clientX || box.left;
             const y = e.clientY || box.bottom;
             showMenu(x, y, [
+              { label: "Rename this batch...", onClick: onRenameBatch },
               { label: "Archive this batch", onClick: onArchive },
               // Only when there is something to show: an item whose click
               // does nothing reads as a bug, and saying which way it will go

@@ -34,6 +34,7 @@ import {
   setFeedbackDraft,
   ticketCounts,
   ticketReport,
+  renameBatch,
 } from "../batchModel.mjs";
 import { createBatchStore } from "../batchStore.mjs";
 
@@ -618,4 +619,21 @@ test("a reloaded document keeps its reports and its cluster's skills", () => {
   const back = reloaded.batches.bat_1;
   assert.equal(back.ticketStates["CAP-1"].qa.status, "pass");
   assert.equal(back.clusters[0].skills.execution.name, "execute-jira-ticket");
+});
+
+// ---- Renaming the batch ----
+
+test("a batch takes the name it is given, trimmed and capped", () => {
+  const batch = newBatch({ id: "bat_1", name: "Cart drawer totals +2", repo: "/r", criteria: "", readCodebase: false, tickets: [], now: NOW });
+  assert.equal(renameBatch(batch, "  Checkout work  ", NOW).ok, true);
+  assert.equal(batch.name, "Checkout work");
+  renameBatch(batch, "x".repeat(200), NOW);
+  assert.equal(batch.name.length, 80);
+});
+
+test("a blank name is refused rather than leaving a batch with none", () => {
+  const batch = newBatch({ id: "bat_1", name: "Keep me", repo: "/r", criteria: "", readCodebase: false, tickets: [], now: NOW });
+  const out = renameBatch(batch, "   ", NOW);
+  assert.equal(out.ok, false);
+  assert.equal(batch.name, "Keep me");
 });

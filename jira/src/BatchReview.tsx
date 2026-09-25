@@ -34,6 +34,9 @@ export interface BatchReviewProps {
   worktreeLocation: (branch: string) => string;
   showMenu?: (x: number, y: number, items: MenuItem[]) => void;
   onRename: (clusterId: string, name: string) => void;
+  onRenameBatch: (name: string) => void;
+  // Null until something has started - there is no board to go back to.
+  onBoard: (() => void) | null;
   onBranch: (clusterId: string, branch: string) => void;
   onAddCluster: () => void;
   onRemoveCluster: (clusterId: string) => void;
@@ -84,6 +87,8 @@ export default function BatchReview({
   worktreeLocation,
   showMenu,
   onRename,
+  onRenameBatch,
+  onBoard,
   onBranch,
   onAddCluster,
   onRemoveCluster,
@@ -298,7 +303,24 @@ export default function BatchReview({
   return (
     <div className="jira-batchreview">
       <div className="jira-breview-bar">
-        <span className="jira-breview-title">{batch.name}</span>
+        {/* An input, like the cluster headings below it. The name a batch is
+            born with is derived from its first cluster, which is a guess -
+            "Cart drawer totals +2" tells you little a day later. */}
+        <input
+          className="jira-breview-title"
+          value={batch.name}
+          disabled={busy}
+          aria-label="Batch name"
+          title="Rename this batch"
+          onChange={(e) => onRenameBatch(e.target.value)}
+        />
+        {/* The way back. "Clusters" on the board leads here, and without this
+            the only exits were starting something or reloading the page. */}
+        {onBoard && (
+          <button className="jira-selaction" disabled={busy} title="Back to the board" onClick={onBoard}>
+            Board
+          </button>
+        )}
         <button className="jira-selaction with-icon" disabled={busy} onClick={() => setCriteriaOpen(!criteriaOpen)}>
           Criteria
           <Icon name={criteriaOpen ? "chevron-up" : "chevron-down"} />

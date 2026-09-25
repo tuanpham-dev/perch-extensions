@@ -69,6 +69,10 @@ export function saveClusters(id: string, proposal: Proposal): Promise<BatchRespo
   return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/clusters`, { proposal });
 }
 
+export function renameBatch(id: string, name: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/rename`, { name });
+}
+
 export function renameCluster(id: string, clusterId: string, name: string): Promise<BatchResponse> {
   return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/clusters/${encodeURIComponent(clusterId)}/rename`, { name });
 }

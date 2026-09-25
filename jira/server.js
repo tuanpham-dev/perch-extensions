@@ -43,6 +43,7 @@ import {
   OPEN_FOR_ADD,
   pendingFeedbackCount,
   removeCluster,
+  renameBatch,
   renameCluster,
   setBranch,
   setFeedbackDraft,
@@ -1853,6 +1854,15 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       });
       const doc = await batches.get();
       res.json({ batch: decorate(doc.batches[id]), warnings: outcome.warnings });
+    }),
+  );
+
+  router.post(
+    "/batches/:id/rename",
+    route(async (req, res) => {
+      const result = await batches.update((draft) => renameBatch(batchOr404(draft, req.params.id), req.body?.name ?? "", Date.now()));
+      if (!result.ok) throw bad(result.error);
+      res.json({ batch: decorate((await batches.get()).batches[req.params.id]) });
     }),
   );
 

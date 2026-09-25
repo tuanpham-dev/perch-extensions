@@ -521,6 +521,18 @@ export function applyProposal(batch, proposal, { addOnly = false, makeId, now })
   return { placed: [...placed], warnings };
 }
 
+// The batch's own name. Derived at creation from its first cluster (see
+// server.js), which is a reasonable guess and nothing more - "Cart drawer
+// totals +2" says little once the batch has been worked for a day. An empty
+// name keeps the old one rather than leaving a row with nothing to click.
+export function renameBatch(batch, name, now) {
+  const next = str(name).slice(0, 80).trim();
+  if (!next) return { ok: false, error: "a batch needs a name" };
+  batch.name = next;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
 export function renameCluster(batch, clusterId, name, now) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };

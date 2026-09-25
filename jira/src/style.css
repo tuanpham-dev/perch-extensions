@@ -2107,11 +2107,28 @@
   flex-wrap: wrap;
 }
 
+/* An input that reads as a heading until you point at it, the same bargain
+   the cluster headings strike: a row of boxed fields would look like a form,
+   and these are names you change once. */
 .jira-breview-title {
+  flex: 0 1 auto;
+  min-width: 6ch;
+  max-width: 34ch;
+  font: inherit;
   font-weight: 600;
   font-size: 13px;
   color: var(--fg-bright, #eee);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 3px;
   margin-right: 2px;
+}
+
+.jira-breview-title:hover:not(:disabled),
+.jira-breview-title:focus {
+  border-color: var(--border, #333);
+  background: var(--input-bg, transparent);
 }
 
 .jira-breview-spacer {

@@ -29,6 +29,7 @@ import {
   lookupIssues,
   moveTicket,
   removeCluster,
+  renameBatch,
   renameCluster,
   setClusterBranch,
   startClusters,
@@ -155,6 +156,7 @@ let getActiveContext: (() => ActiveContext) | null = null;
 let onDidChangeContext: ((cb: (ctx: ActiveContext) => void) => () => void) | null = null;
 let openSessionWindow: ((sessionName: string, opts?: { createCwd?: string }) => void) | null = null;
 let hostConfirm: ((message: string, confirmLabel?: string) => Promise<boolean>) | null = null;
+let hostPrompt: ((message: string, value?: string) => Promise<string | null>) | null = null;
 let setHostBadge: ((panelId: string, badge: number | null) => void) | null = null;
 let openFileTab: ((path: string, line?: number) => void) | null = null;
 
@@ -163,6 +165,13 @@ let openFileTab: ((path: string, line?: number) => void) | null = null;
 function confirmDialog(message: string, confirmLabel?: string): Promise<boolean> {
   if (hostConfirm) return hostConfirm(message, confirmLabel);
   return Promise.resolve(window.confirm(message));
+}
+
+// The app's prompt where there is one. Not destructive, but the same
+// reasoning: a rename belongs in the app's own dialog, not the browser's.
+function promptDialog(message: string, value?: string): Promise<string | null> {
+  if (hostPrompt) return hostPrompt(message, value);
+  return Promise.resolve(window.prompt(message, value ?? ""));
 }
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
@@ -1215,6 +1224,18 @@ export function selectAll(host: Host): void {
   setState({ selection: next });
 }
 
+export async function renameClusterFromBoard(clusterId: string): Promise<void> {
+  const batch = state.batch;
+  const cluster = batch?.clusters.find((entry) => entry.id === clusterId);
+  if (!batch || !cluster) return;
+  const name = await promptDialog(`Rename "${cluster.name}" to:`, cluster.name);
+  if (name === null || !name.trim() || name.trim() === cluster.name) return;
+  setState({ batchBusy: true, batchError: null });
+  void renameCluster(batch.id, clusterId, name.trim())
+    .then((res) => setState({ batch: res.batch, batchBusy: false }))
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
 export function setClusterFilter(next: Set<string>): void {
   setState({ clusterFilter: next });
 }
@@ -1316,11 +1337,21 @@ function holdBatch(batch: Batch, warnings?: string[]): void {
   refreshBadge();
 }
 
-export function openBatch(id: string, view: BatchView = "board"): void {
+// `view` picks the screen; left out, a batch opens on the board unless none
+// of its clusters has started, in which case there is nothing to watch yet
+// and everything still to decide - so it opens in the review. Reloading used
+// to land on an empty board with no way back to the clusters.
+export function openBatch(id: string, view?: BatchView): void {
   setState({ batchBusy: true, batchError: null });
   void getBatch(id)
     .then((res) => {
-      setState({ batch: res.batch, batchView: view, batchBusy: false, clusterFilter: new Set<string>() });
+      const untouched = res.batch.clusters.length > 0 && res.batch.clusters.every((cluster) => cluster.state === "pending");
+      setState({
+        batch: res.batch,
+        batchView: view ?? (untouched ? "review" : "board"),
+        batchBusy: false,
+        clusterFilter: new Set<string>(),
+      });
       setTabView("batches");
     })
     .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
@@ -1586,6 +1617,24 @@ function batchEdit(run: () => Promise<{ batch: Batch; warnings?: string[] }>): v
   setState({ batchBusy: true, batchError: null });
   void run()
     .then((res) => holdBatch(res.batch, res.warnings))
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function renameOpenBatch(name: string): void {
+  if (!state.batch) return;
+  batchEdit(() => renameBatch(state.batch!.id, name));
+}
+
+// From the board, where the title is not an input: the app's prompt, the
+// same as renaming a cluster there.
+export async function renameBatchFromBoard(): Promise<void> {
+  const batch = state.batch;
+  if (!batch) return;
+  const name = await promptDialog(`Rename "${batch.name}" to:`, batch.name);
+  if (name === null || !name.trim() || name.trim() === batch.name) return;
+  setState({ batchBusy: true, batchError: null });
+  void renameBatch(batch.id, name.trim())
+    .then((res) => setState({ batch: res.batch, batchBusy: false }))
     .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
 }
 
@@ -2891,6 +2940,12 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
           worktreeLocation={worktreeLocationFor}
           showMenu={showMenu}
           onRename={renameBatchCluster}
+          onRenameBatch={renameOpenBatch}
+          onBoard={
+            batch.clusters.some((cluster) => cluster.state !== "pending")
+              ? () => setState({ batchView: "board" })
+              : null
+          }
           onBranch={setBatchClusterBranch}
           onAddCluster={addBatchCluster}
           onRemoveCluster={removeBatchCluster}
@@ -2916,6 +2971,13 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
               onClearFilter={() => setClusterFilter(new Set<string>())}
               onFocus={(key) => focusBatchTicket(key)}
               onClusterAction={runClusterAction}
+              onRenameCluster={(clusterId) => void renameClusterFromBoard(clusterId)}
+              onRenameBatch={() => void renameBatchFromBoard()}
+              onReview={
+                batch.clusters.some((cluster) => cluster.state === "pending")
+                  ? () => setState({ batchView: "review" })
+                  : null
+              }
               onSendFeedback={sendBatchFeedback}
               onArchive={archiveOpenBatch}
               onUnarchive={unarchiveBatch}
@@ -3475,6 +3537,9 @@ interface ExtensionContext {
     // a worktree both confirm first, and without this they fall back to
     // window.confirm rather than doing it unasked.
     confirmDialog?(message: string, confirmLabel?: string): Promise<boolean>;
+    // Optional too, and for the same reason: renaming a cluster falls back to
+    // window.prompt on a core that has none.
+    promptDialog?(message: string, defaultValue?: string): Promise<string | null>;
   };
 }
 
@@ -3485,6 +3550,7 @@ export function activate(ctx: ExtensionContext): void {
   onDidChangeContext = ctx.app.onDidChangeContext;
   openSessionWindow = ctx.app.openSessionWindow;
   hostConfirm = ctx.app.confirmDialog ? ctx.app.confirmDialog.bind(ctx.app) : null;
+  hostPrompt = ctx.app.promptDialog ? ctx.app.promptDialog.bind(ctx.app) : null;
   setHostBadge = ctx.app.setSidebarBadge ? ctx.app.setSidebarBadge.bind(ctx.app) : null;
   openFileTab = ctx.app.openFileTab ? ctx.app.openFileTab.bind(ctx.app) : null;
   openViewerTab = ctx.app.openViewerTab.bind(ctx.app);
