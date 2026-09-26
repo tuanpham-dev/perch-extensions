@@ -53,12 +53,23 @@ async function writeJsonAtomic(file, value) {
   await rename(tmp, file);
 }
 
+// The batch document's store. Everything below is document-shaped rather
+// than batch-shaped, so the review document (reviewStore.mjs) shares it.
+//
 // options:
 //   now       clock, for tests
 //   onChange  (before, after) after every successful save
 export function createBatchStore(configDir, options = {}) {
+  return createDocumentStore({ configDir, file: "batches.json", normalize: normalizeDocument, empty: emptyDocument, ...options });
+}
+
+// One JSON document under <configDir>/jira/, with the discipline described at
+// the top of this file. `normalize(value, now)` turns whatever is on disk into
+// a document every model function can be called on; `empty()` is what a
+// missing file reads as.
+export function createDocumentStore({ configDir, file, normalize, empty, ...options }) {
   const dir = path.join(configDir, "jira");
-  const storePath = path.join(dir, "batches.json");
+  const storePath = path.join(dir, file);
   const now = options.now ?? (() => Date.now());
   const listeners = new Set();
   if (options.onChange) listeners.add(options.onChange);
@@ -80,7 +91,7 @@ export function createBatchStore(configDir, options = {}) {
     // repairs a started cluster's missing ticket states, and those carry a
     // timestamp. Letting it reach for Date.now() puts a real one into a test
     // that injected a fake clock precisely so it would not have to.
-    doc = value === null ? emptyDocument() : normalizeDocument(value, now());
+    doc = value === null ? empty() : normalize(value, now());
     return doc;
   }
 

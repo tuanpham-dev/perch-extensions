@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "displayName": "Jira",
   "description": "A JIRA sidebar tab listing the issues assigned to you and the active repo's project, with a \"Start work\" action that creates a worktree session for one - and batches, which split a pile of tickets into clusters, give each its own worktree and coding agent, track every ticket on a kanban filtered by cluster, and send review feedback back to the agent that wrote it. Backed by the Jira Cloud REST API; the API token is held in the host's per-extension secret store, never in a setting.",
   "icon": "./icon.svg",
@@ -135,6 +135,21 @@
           "type": "string",
           "default": "",
           "description": "The URL a handed-off ticket's comment says it can be checked at, for example the store's preview-theme link. Empty leaves the URL out of the comment."
+        },
+        "jira.reviewAction": {
+          "type": "string",
+          "default": "both",
+          "enum": [
+            "code",
+            "qa",
+            "both"
+          ],
+          "enumItemLabels": [
+            "Code review",
+            "Visual QA",
+            "Both"
+          ],
+          "description": "What a ticket's Review button runs when clicked: a code review of its pull request, a visual QA of its preview theme, or both. Picking from the button's menu changes it."
         },
         "jira.skillPaths": {
           "type": "string",

@@ -1,0 +1,182 @@
+#!/bin/sh
+# jira-review - report a ticket review from the terminal it runs in.
+#
+# Installed by the Jira extension beside jira-batch and put on the agent's
+# PATH by the line that starts a review, together with the ids below. Every
+# verb is one POST to the extension's 0600 unix socket (the same one
+# jira-batch uses); the reply is printed as-is. POSIX sh plus curl and awk.
+#
+#   JB_SOCK   the control socket (required)
+#   JR_KEY    the ticket under review   -> sent as key
+#   JR_TASK   code or qa                -> sent as task
+
+usage() {
+  cat <<'USAGE'
+jira-review - report your review of a Jira ticket back to Perch
+
+Usage: jira-review <verb> [--flag value ...]
+
+  brief
+      Print your brief: the ticket, what to check and how to report.
+
+  code --verdict approve|request-changes|comment --summary <text>
+       [--finding <severity>:<file>:<line>:<text>]...
+      File the code review. One --finding per finding, severity high,
+      medium or low; file and line may be left empty ("low:::text").
+        --finding high:snippets/buy-box.liquid:42:"Reads the first variant"
+
+  qa --status pass|fail|partial|blocked [--checked <text>]...
+     [--wrong <text>]... [--note <text>]...
+     [--page <path> [--before-1440 <image>] [--after-1440 <image>]
+                    [--before-390 <image>] [--after-390 <image>]
+                    [--shot <image>[:<caption>]]... ]...
+      File the visual QA. Each --page starts a page; the images after it
+      belong to it. before is the live storefront, after the preview.
+      Images are copied, so the panel keeps them after this folder is gone.
+
+  status
+      Whether this review task is still waiting for your report.
+
+  help
+      This text.
+
+Any flag value can be "-" to read it from stdin.
+
+Environment: JB_SOCK (required), JR_KEY, JR_TASK.
+USAGE
+}
+
+die() {
+  printf 'jira-review: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+json_string() {
+  printf '%s' "$1" | awk '
+    BEGIN { ORS = ""; print "\"" }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      gsub(/\r/, "\\r")
+      gsub(/[\001-\010\013\014\016-\037]/, "")
+      if (NR > 1) print "\\n"
+      print
+    }
+    END { print "\"" }'
+}
+
+absolute_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$(pwd)" "$1" ;;
+  esac
+}
+
+verb=${1:-help}
+case "$verb" in
+  help | -h | --help) usage; exit 0 ;;
+esac
+shift
+case "$verb" in
+  brief | status | code | qa) ;;
+  *) die "unknown verb \"$verb\" - run: jira-review help" 2 ;;
+esac
+
+command -v curl >/dev/null 2>&1 || die "curl is required but was not found on PATH"
+[ -n "${JB_SOCK-}" ] || die "not inside a review agent's terminal (JB_SOCK is unset)"
+[ -S "$JB_SOCK" ] || die "no socket at $JB_SOCK - is the Jira extension enabled on this perch?"
+[ -n "${JR_KEY-}" ] && [ -n "${JR_TASK-}" ] || die "not inside a review agent's terminal (JR_KEY or JR_TASK is unset)"
+
+body=""
+add_field() {
+  if [ -n "$body" ]; then body="$body,"; fi
+  body="$body$(json_string "$1"):$2"
+}
+
+append() {
+  # $1 variable name, $2 encoded element
+  eval "current=\$$1"
+  if [ -n "$current" ]; then eval "$1=\"\$current,\$2\""; else eval "$1=\$2"; fi
+}
+
+list_checked=""; list_wrong=""; list_notes=""; list_findings=""; list_pages=""
+page_open=""; page_fields=""; page_shots=""
+
+flush_page() {
+  [ -n "$page_open" ] || return 0
+  entry="{$page_fields"
+  [ -n "$page_shots" ] && entry="$entry,\"shots\":[$page_shots]"
+  entry="$entry}"
+  append list_pages "$entry"
+  page_open=""; page_fields=""; page_shots=""
+}
+
+need_page() {
+  [ -n "$page_open" ] || die "--$1 must follow a --page, e.g. --page /products/a --$1 file.png" 2
+}
+
+# sev:file:line:text, split on the first three colons so the text may hold
+# its own.
+append_finding() {
+  rest=$1
+  case "$rest" in *:*) ;; *) die "--finding looks like high:path/file.js:12:\"what is wrong\"" 2 ;; esac
+  sev=${rest%%:*}; rest=${rest#*:}
+  case "$rest" in
+    *:*:*) file=${rest%%:*}; rest=${rest#*:}; line=${rest%%:*}; text=${rest#*:} ;;
+    *) file=""; line=""; text=$rest ;;
+  esac
+  [ -n "$text" ] || die "--finding needs its text after the last colon" 2
+  append list_findings "{\"severity\":$(json_string "$sev"),\"file\":$(json_string "$file"),\"line\":$(json_string "$line"),\"text\":$(json_string "$text")}"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --*) ;;
+    *) die "unexpected argument \"$1\" - flags look like --name value" 2 ;;
+  esac
+  name=${1#--}
+  shift
+  [ $# -gt 0 ] || die "--$name needs a value" 2
+  value=$1
+  shift
+  [ "$value" = "-" ] && value=$(cat)
+  case "$verb:$name" in
+    code:verdict | code:summary | qa:status) add_field "$name" "$(json_string "$value")" ;;
+    code:finding) append_finding "$value" ;;
+    qa:checked) append list_checked "$(json_string "$value")" ;;
+    qa:wrong) append list_wrong "$(json_string "$value")" ;;
+    qa:note | qa:notes) append list_notes "$(json_string "$value")" ;;
+    qa:page)
+      flush_page
+      page_open=1
+      page_fields="\"page\":$(json_string "$value")"
+      ;;
+    qa:before-1440 | qa:after-1440 | qa:before-390 | qa:after-390)
+      need_page "$name"
+      page_fields="$page_fields,$(json_string "$name"):$(json_string "$(absolute_path "$value")")"
+      ;;
+    qa:shot)
+      need_page shot
+      case "$value" in
+        *:*) shot_file=${value%%:*}; shot_caption=${value#*:} ;;
+        *) shot_file=$value; shot_caption="" ;;
+      esac
+      [ -n "$shot_file" ] || die "--shot needs a file, e.g. --shot drawer.png:\"Drawer open, 390\"" 2
+      append page_shots "{\"file\":$(json_string "$(absolute_path "$shot_file")"),\"caption\":$(json_string "$shot_caption")}"
+      ;;
+    *) die "--$name is not a flag of \"$verb\" - run: jira-review help" 2 ;;
+  esac
+done
+flush_page
+
+[ -n "$list_findings" ] && add_field findings "[$list_findings]"
+[ -n "$list_checked" ] && add_field checked "[$list_checked]"
+[ -n "$list_wrong" ] && add_field wrong "[$list_wrong]"
+[ -n "$list_notes" ] && add_field notes "[$list_notes]"
+[ -n "$list_pages" ] && add_field pages "[$list_pages]"
+add_field key "$(json_string "$JR_KEY")"
+add_field task "$(json_string "$JR_TASK")"
+
+printf '{%s}' "$body" | curl -sS --fail-with-body --unix-socket "$JB_SOCK" \
+  -H 'content-type: application/json' --data-binary @- "http://jira-review/review-$verb"

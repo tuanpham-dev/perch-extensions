@@ -18,14 +18,18 @@ export function setApiFetcher(fn: ((path: string, init?: RequestInit) => Promise
 export async function readJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body?.error) message = body.error;
+      body = await res.json();
+      if ((body as { error?: string })?.error) message = (body as { error: string }).error;
     } catch {
       // non-JSON error body; keep the status message
     }
-    const error = new Error(message) as Error & { status?: number };
+    // The whole body rides along: a refusal can carry what to do next (the
+    // review route's needsRepo, say), not just a message.
+    const error = new Error(message) as Error & { status?: number; body?: unknown };
     error.status = res.status;
+    error.body = body;
     throw error;
   }
   const text = await res.text();

@@ -2,6 +2,7 @@
 // client.tsx - the pure models beside this file, and their tests, need them
 // too and can't import a React tree to get them. Every field here is one
 // server.js actually emits; keep the two in step.
+import type { TicketLinks } from "../links.mjs";
 
 export interface StatusResponse {
   configured: boolean;
@@ -67,6 +68,9 @@ export interface IssueDetail {
   updated?: string | null;
   comments: IssueComment[];
   url: string;
+  // The pull request and preview theme links found in the description and
+  // comments, newest first (links.mjs). Absent from an older server.
+  links?: TicketLinks;
 }
 
 export interface WorktreeResponse {

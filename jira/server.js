@@ -58,6 +58,10 @@ import { buildHandoffComment, buildQaRefinePrompt } from "./brief.mjs";
 import { createBatchStore, newId } from "./batchStore.mjs";
 import { buildClusterPrompt, heuristicClusters, parseClusterReply, singleCluster } from "./analysis.mjs";
 import { createBatchRunner } from "./batchRunner.mjs";
+import { findTicketLinks } from "./links.mjs";
+import { createReviewStore } from "./reviewStore.mjs";
+import { createReviewRunner } from "./reviewRunner.mjs";
+import { PAGE_SHOTS, buildJiraComment, buildPrReviewBody, diffEvents as reviewDiffEvents, prReviewFlag, setPosted } from "./reviewModel.mjs";
 import { discoverSkills, parseSkillPaths } from "./skills.mjs";
 
 // Where the batch store and the worker CLI live. PERCH_CONFIG_DIR moves the
@@ -75,6 +79,8 @@ const configDir =
 // rather than accumulated.
 let activeRunner = null;
 let openBoards = new Set();
+let activeReviewRunner = null;
+let openReviewStreams = new Set();
 
 const API_TIMEOUT = 15000;
 const GIT_TIMEOUT = 15000;
@@ -1172,7 +1178,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       }
 
     const parent = issue.fields?.parent;
-    return {
+    const detail = {
       key: issue.key,
       summary: issue.fields?.summary ?? "",
       description: adfToMarkdown(issue.fields?.description),
@@ -1197,6 +1203,9 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       comments,
       url: `${cfg.siteUrl}/browse/${issue.key}`,
     };
+    // The pull request and preview links a review is built on, found once
+    // here so the panel never parses comment text itself.
+    return { ...detail, links: findTicketLinks(detail) };
   }
 
   // Several tickets at once, by key: what a pasted list resolves through, and
@@ -1568,6 +1577,29 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
 
   // `store` above is the secret store; this one holds the batches.
   const batches = createBatchStore(configDir);
+
+  // Reviews share the batch runner's control socket, so their store and
+  // runner exist before it starts serving verbs.
+  const STOREFRONT_PASSWORD = "storefrontPassword.";
+  const reviews = createReviewStore(configDir);
+  const reviewRunner = createReviewRunner({
+    host,
+    store: reviews,
+    configDir,
+    readConfig,
+    issueDetail,
+    settingsForRepo: projectSettingsFor,
+    getSettings,
+    repoRoot,
+    resolveLocation,
+    storefrontPassword: async (project) =>
+      PROJECT_KEY.test(project) ? ((await store.get(`${STOREFRONT_PASSWORD}${project.toUpperCase()}`)) ?? "") : "",
+    // Read when an agent starts, by which time the batch runner below exists.
+    controlSocket: () => ({ socketPath: runner.socketPath, binDir: runner.binDir }),
+    log,
+  });
+  activeReviewRunner = reviewRunner;
+
   const runner = createBatchRunner({
     host,
     getSettings,
@@ -1578,6 +1610,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     createWorktree,
     progressIssue,
     configDir,
+    extraVerbs: () => reviewRunner.verbs(),
     log,
   });
   runner.start().catch((err) => log(`could not start the batch runner: ${err?.stack ?? err}`));
@@ -1600,6 +1633,242 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     }
   });
   openBoards = boards;
+
+  // ---- Reviewing a ticket ----
+  //
+  // A code review of a ticket's pull request and a visual QA of its preview
+  // theme, each an agent in a session of its own. State in reviewStore, rules
+  // in reviewModel, terminals and worktrees in reviewRunner - the same split
+  // as batches, and what is left here is the HTTP shape.
+
+  const reviewStreams = new Set();
+  reviews.onChange((before, after) => {
+    for (const event of reviewDiffEvents(before, after)) {
+      const line = `event: review-changed\ndata: ${JSON.stringify(event)}\n\n`;
+      for (const res of reviewStreams) {
+        try {
+          res.write(line);
+        } catch {
+          reviewStreams.delete(res);
+        }
+      }
+    }
+  });
+  openReviewStreams = reviewStreams;
+  reviewRunner.startSweep();
+
+  function reviewKeyOf(req) {
+    const key = String(req.params.key ?? "").toUpperCase();
+    if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+    return key;
+  }
+
+  // "~"-shortened paths arrive from the client as core displays them.
+  function expandHome(raw) {
+    if (typeof raw !== "string" || !raw) return "";
+    const full = raw === "~" || raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(1)) : raw;
+    if (!path.isAbsolute(full)) throw bad(`${raw} must be an absolute path`);
+    return full;
+  }
+
+  router.get(
+    "/reviews",
+    route(async (_req, res) => {
+      res.json(await reviews.get());
+    }),
+  );
+
+  router.get(
+    "/reviews/events",
+    route(async (req, res) => {
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      res.flushHeaders?.();
+      res.write(": open\n\n");
+      reviewStreams.add(res);
+      const ping = setInterval(() => {
+        try {
+          res.write(": ping\n\n");
+        } catch {
+          clearInterval(ping);
+        }
+      }, 25_000);
+      ping.unref?.();
+      req.on("close", () => {
+        clearInterval(ping);
+        reviewStreams.delete(res);
+      });
+    }),
+  );
+
+  router.get(
+    "/reviews/:key",
+    route(async (req, res) => {
+      res.json((await reviews.get()).reviews[reviewKeyOf(req)] ?? null);
+    }),
+  );
+
+  // Answers 409 with { needsRepo: { owner, repo } } when the pull request's
+  // repository is not checked out anywhere known; the panel asks and calls
+  // again with repoPath.
+  router.post(
+    "/reviews/:key/start",
+    route(async (req, res) => {
+      const key = reviewKeyOf(req);
+      const body = req.body ?? {};
+      const text = (value) => (typeof value === "string" ? value : "");
+      const result = await reviewRunner.start(key, {
+        tasks: Array.isArray(body.tasks) ? body.tasks.filter((t) => typeof t === "string") : [],
+        prUrl: text(body.prUrl),
+        previewUrl: text(body.previewUrl),
+        agentId: text(body.agentId),
+        cwd: expandHome(body.cwd),
+        repoPath: expandHome(body.repoPath),
+      });
+      if (result.needsRepo) {
+        const { owner, repo } = result.needsRepo;
+        res.status(409).json({ error: `${owner}/${repo} is not checked out in any repository perch knows`, needsRepo: result.needsRepo });
+        return;
+      }
+      res.json(result);
+    }),
+  );
+
+  router.post(
+    "/reviews/:key/stop",
+    route(async (req, res) => {
+      res.json(await reviewRunner.stop(reviewKeyOf(req), String(req.body?.task ?? "")));
+    }),
+  );
+
+  router.post(
+    "/reviews/:key/close",
+    route(async (req, res) => {
+      res.json(await reviewRunner.close(reviewKeyOf(req)));
+    }),
+  );
+
+  // One stored screenshot. Both segments become part of a path, so both are
+  // matched against a pattern and then against the stored report.
+  router.get(
+    "/review-shots/:key/:page/:which",
+    route(async (req, res) => {
+      const key = reviewKeyOf(req);
+      const { page, which } = req.params;
+      if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(page)) throw bad("page must be a page slug");
+      if (!PAGE_SHOTS.includes(which) && !/^shot-[1-9][0-9]?$/.test(which)) throw bad("which must be a capture name or shot-<n>");
+      const shot = await reviewRunner.shotFile(key, page, which);
+      if (!shot) throw notFound(`no ${which} image of ${page} for ${key}`);
+      res.setHeader("content-type", shot.type);
+      // Run again replaces the files; a cached older one would be evidence
+      // for the wrong pass.
+      res.setHeader("cache-control", "no-store");
+      res.sendFile(shot.file, (err) => {
+        if (err && !res.headersSent) res.status(404).json({ error: "that image is no longer stored" });
+      });
+    }),
+  );
+
+  function ghRun(args, input = null) {
+    return new Promise((resolve, reject) => {
+      const child = execFile("gh", args, { encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) {
+          const message = String(stderr || err.message).trim();
+          reject(new HttpError(err.code === "ENOENT" ? 501 : 502, err.code === "ENOENT" ? "gh is not installed on this host" : `gh: ${message}`));
+        } else resolve(stdout);
+      });
+      if (input !== null) child.stdin.end(input);
+    });
+  }
+
+  // One pull request review from the gh account on this host. A second post
+  // must say so (`again: true`), since the first is shown beside the button.
+  router.post(
+    "/reviews/:key/post-pr",
+    route(async (req, res) => {
+      const key = reviewKeyOf(req);
+      const review = (await reviews.get()).reviews[key];
+      const report = review?.tasks?.code?.report;
+      if (!report) throw conflict("there is no code review report to post yet");
+      if (review.posted.pr && req.body?.again !== true) throw conflict("this review was already posted to the pull request");
+      const pr = findTicketLinks({ comments: [{ body: review.prUrl }] }).prs[0];
+      if (!pr) throw bad(`${review.prUrl} is not a pull request link`);
+      await ghRun(["pr", "review", pr.url, prReviewFlag(report.verdict), "--body-file", "-"], buildPrReviewBody(review));
+      let url = pr.url;
+      try {
+        const lines = (await ghRun(["api", "--paginate", `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, "--jq", ".[].html_url"]))
+          .split("\n")
+          .filter(Boolean);
+        url = lines[lines.length - 1] ?? pr.url;
+      } catch {
+        // The review is posted; only its exact link is unknown.
+      }
+      await reviews.update((doc) => setPosted(doc, key, "pr", { url }, Date.now()));
+      res.json({ url });
+    }),
+  );
+
+  router.post(
+    "/reviews/:key/post-jira",
+    route(async (req, res) => {
+      const key = reviewKeyOf(req);
+      const review = (await reviews.get()).reviews[key];
+      if (!review?.tasks?.code?.report && !review?.tasks?.qa?.report) throw conflict("there is no report to post yet");
+      if (review.posted.jira && req.body?.again !== true) throw conflict("this review was already posted to Jira");
+      let perchUrl = "";
+      try {
+        const url = new URL(String(req.body?.perchUrl ?? ""));
+        if (url.protocol === "https:" || url.protocol === "http:") perchUrl = url.href;
+      } catch {
+        // Posted without the link rather than refused over it.
+      }
+      const cfg = await readConfig(review.repo || undefined);
+      if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) throw bad("jira is not configured");
+      try {
+        await jiraFetch(cfg, `/rest/api/3/issue/${key}/comment`, {
+          method: "POST",
+          body: JSON.stringify({ body: adf(buildJiraComment(review, perchUrl)) }),
+        });
+      } catch (err) {
+        throw new HttpError(typeof err?.status === "number" ? err.status : 502, scrub(err?.message, cfg.apiToken));
+      }
+      await reviews.update((doc) => setPosted(doc, key, "jira", {}, Date.now()));
+      res.json({ ok: true });
+    }),
+  );
+
+  // The storefront password a QA agent needs on a password-protected store,
+  // per Jira project, in the secret store. Presence only, never the value -
+  // the same contract as /token.
+  function passwordProjectOf(raw) {
+    const project = String(raw ?? "").trim().toUpperCase();
+    if (!PROJECT_KEY.test(project) || project.length > 40) throw bad("project must be a Jira project key");
+    return project;
+  }
+
+  router.get(
+    "/storefront-password",
+    route(async (req, res) => {
+      const project = passwordProjectOf(req.query.project);
+      res.json({ set: !!(await store.get(`${STOREFRONT_PASSWORD}${project}`)), supported: secretsAvailable });
+    }),
+  );
+
+  router.put(
+    "/storefront-password",
+    route(async (req, res) => {
+      const project = passwordProjectOf(req.body?.project);
+      const value = req.body?.value;
+      if (typeof value !== "string") throw bad("value must be a string");
+      if (!secretsAvailable) throw tooOld(NO_SECRETS);
+      await store.set(`${STOREFRONT_PASSWORD}${project}`, value.trim() || null);
+      res.status(204).end();
+    }),
+  );
 
   router.get(
     "/batches/events",
@@ -2301,6 +2570,16 @@ export async function deactivate() {
     }
   }
   openBoards = new Set();
+  for (const res of openReviewStreams) {
+    try {
+      res.end();
+    } catch {
+      // The client is already gone.
+    }
+  }
+  openReviewStreams = new Set();
+  activeReviewRunner?.stopSweep();
+  activeReviewRunner = null;
   await activeRunner?.stop();
   activeRunner = null;
 }

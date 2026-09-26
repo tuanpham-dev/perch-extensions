@@ -224,3 +224,105 @@ export function ProjectMapSettings() {
     />
   );
 }
+
+// The storefront password a review's QA agent enters on a password-protected
+// store, one per Jira project, kept in the host's secret store beside the API
+// token. Presence only, never the value - the same contract as the token.
+export function StorefrontPasswordSetting() {
+  const tick = useBridge();
+  const { projects } = useProjects(tick);
+  const active = bridge?.getActiveProject() ?? "";
+  const [project, setProject] = useState("");
+  const [set, setSet] = useState<boolean | null>(null);
+  const [supported, setSupported] = useState(true);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const chosen = project || active || projects[0]?.key || "";
+
+  const refresh = useCallback(() => {
+    if (!serverFetch || !chosen) return;
+    setSet(null);
+    serverFetch(`/storefront-password?project=${encodeURIComponent(chosen)}`)
+      .then((res) => res.json())
+      .then((body: { set: boolean; supported?: boolean }) => {
+        setSet(body.set);
+        setSupported(body.supported !== false);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, [chosen]);
+
+  useEffect(refresh, [refresh]);
+
+  const write = async (next: string) => {
+    if (!serverFetch || !chosen) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await serverFetch("/storefront-password", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: chosen, value: next }),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      setValue("");
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-row">
+      <span className="settings-label">
+        Storefront password{" "}
+        <span className="settings-hint">
+          - {!chosen ? "pick a project" : !supported ? "unavailable" : set === null ? "checking…" : set ? "stored" : "not set"}
+        </span>
+      </span>
+      <div className="settings-hint">For a password-protected store: the review QA agent enters it on the preview. One per Jira project.</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select
+          id="jira-storefront-project"
+          className="dialog-input"
+          style={{ width: "auto", maxWidth: "16rem" }}
+          value={chosen}
+          disabled={busy}
+          onChange={(e) => setProject(e.target.value)}
+        >
+          {!projects.some((row) => row.key === chosen) && chosen && <option value={chosen}>{chosen}</option>}
+          {projects.map((row) => (
+            <option key={row.key} value={row.key}>
+              {row.key} - {row.name}
+            </option>
+          ))}
+        </select>
+        <input
+          id="jira-storefront-password"
+          className="dialog-input"
+          style={{ flex: 1, minWidth: "10rem" }}
+          type="password"
+          autoComplete="off"
+          placeholder={set ? "Stored - type to replace" : "The store's password page password"}
+          value={value}
+          disabled={busy || !supported || !chosen}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim()) void write(value);
+          }}
+        />
+        <button className="dialog-button primary" disabled={busy || !supported || !value.trim() || !chosen} onClick={() => void write(value)}>
+          Save
+        </button>
+        {set && (
+          <button className="dialog-button secondary" disabled={busy} onClick={() => void write("")}>
+            Clear
+          </button>
+        )}
+      </div>
+      {error && <div className="settings-hint settings-error">{error}</div>}
+    </div>
+  );
+}

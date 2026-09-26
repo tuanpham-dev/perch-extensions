@@ -291,6 +291,73 @@ assigns it to you if it is unassigned - every ticket, when there is more than on
 fails leaves the rest moved. Neither is fatal: the worktree exists either way, so a
 Jira-side failure is reported as a note in the panel rather than as a failed "Start work".
 
+## Reviewing a ticket
+
+A ticket whose description or comments link a **GitHub pull request**
+(`https://github.com/<owner>/<repo>/pull/<n>`) or a **Shopify preview theme**
+(any link with `preview_theme_id=`, or a theme editor link
+`https://admin.shopify.com/store/<store>/themes/<id>/editor`) gets a
+**Review** button beside Start work, and a **Review** section above its
+description. Tickets in a batch are reviewed by the batch's own QA flow instead.
+
+The button is split: its main part runs the last choice, the arrow offers
+**Code review**, **Visual QA** and **Both**. An item the ticket's links cannot
+serve is shown disabled. The choice is the setting `jira.reviewAction`, so it
+follows you across devices. With more than one agent in
+**Settings -> AI Providers**, starting a review asks which one.
+
+The Review section lists every pull request and preview link found, newest
+first; the newest of each is used unless you pick another chip.
+
+| Task | Runs in | Does |
+| --- | --- | --- |
+| Code review | a worktree of your local clone, checked out at the pull request's head (branch `review/pr-<n>`, fetched from `refs/pull/<n>/head`, so forks work too) | reads the pull request with `gh` (or a GitHub MCP), uses the repository around the diff for context, runs cheap checks, and reports a verdict and findings |
+| Visual QA | the pull request worktree when there is one, else the active window's repository, else a scratch folder | follows the bundled `jira-review-qa` skill: the live storefront and the preview theme, each at 1440 and 390 wide, compared against the ticket |
+
+Each task is an agent in a session of its own, `review-<key>-code` and
+`review-<key>-qa`, started together for **Both**. They never commit, push or
+change the pull request.
+
+**Finding your clone.** The active window's repository is used when its
+`origin` is the pull request's repository; otherwise any repository in
+`jira.projectMap` whose `origin` is; otherwise the path you gave last time for
+that repository. When none matches you are asked for the path once, and it is
+remembered.
+
+**Password-protected stores.** Save the storefront password per Jira project
+under **Settings -> Jira -> Storefront password**. It is kept in the host's
+secret store like the API token, and handed only to the QA agent's brief.
+Without one, a password page makes the QA report `blocked`.
+
+**Reports.** The code review shows its verdict, summary and findings by
+severity and file; the visual QA shows its status, what was checked and what
+is wrong, and per page four thumbnails (live and preview at each width) plus
+any extras, which open in the image viewer. Screenshots are copied into the
+extension's own store, so they outlive the worktree.
+
+**Posting.** Nothing is posted by itself. **Post to PR** submits the code
+review as one pull request review from the `gh` account on this host,
+approving, requesting changes or commenting by its verdict. **Post to Jira**
+adds one comment with both results and a link back to Perch. Each shows when
+it was posted, and posting again asks first.
+
+**Run again** replaces that task's report; **Stop** ends its agent; **Close
+review** removes the worktree and both terminals and keeps the reports. A task
+whose terminal disappears is marked failed within about 15 seconds.
+
+The agents report with `jira-review`, installed beside `jira-batch` and on
+their `PATH`:
+
+| Verb | |
+| --- | --- |
+| `jira-review brief` | Print the task's brief again |
+| `jira-review code --verdict approve\|request-changes\|comment --summary <text> [--finding <sev>:<file>:<line>:<text>]...` | File the code review |
+| `jira-review qa --status pass\|fail\|partial\|blocked [--checked\|--wrong\|--note <text>]... [--page <path> [--before-1440\|--after-1440\|--before-390\|--after-390 <image>] [--shot <image>:<caption>]...]...` | File the visual QA |
+| `jira-review status` | Whether the task still waits for a report |
+
+The review document lives at `<config>/jira/reviews.json`, its screenshots
+under `<config>/jira/evidence/reviews/`.
+
 ## Batches
 
 "Start work" gives one worktree to one agent. A **batch** splits a pile of tickets
@@ -606,6 +673,7 @@ report on a batch, exactly as it could run the agent itself.
 | `jira.boardMaxResults` | `100` | How many issues the editor tab's board fetches per list |
 | `jira.boardDoneDays` | `14` | Days a finished ticket stays on the board. `0` shows no Done tickets |
 | `jira.commentLimit` | `20` | How many of the issue's most recent comments "Start work" hands the agent. `0` sends none |
+| `jira.reviewAction` | `both` | What a ticket's Review button runs: `code`, `qa` or `both`. The button's menu changes it |
 | `jira.detailCacheSeconds` | `300` | How long an opened ticket's details are reused before being fetched again. `0` turns caching off |
 | `jira.clusterBranchTemplate` | `{cluster}` | Branch name for a batch cluster - `{cluster}` is the cluster's name as a slug |
 | `jira.executionSkill` | `""` | Which skill a cluster's agent implements tickets with. Empty uses `execute-jira-ticket` when it is installed; `none` leaves it to the agent |

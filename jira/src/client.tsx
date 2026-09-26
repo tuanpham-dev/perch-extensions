@@ -61,7 +61,14 @@ import {
   sendToAgent,
   type AgentLaunchPreset,
 } from "./agentTarget";
-import SettingsPanel, { ProjectMapSettings, ProjectSettingsSetting, onTokenChange, setFetcher, setSettingsBridge } from "./SettingsPanel";
+import SettingsPanel, {
+  ProjectMapSettings,
+  ProjectSettingsSetting,
+  StorefrontPasswordSetting,
+  onTokenChange,
+  setFetcher,
+  setSettingsBridge,
+} from "./SettingsPanel";
 import { overridesFor } from "../projectSettings.mjs";
 import FilterBar from "./FilterBar";
 import Markdown, { setMarkdownAssetUrl } from "./Markdown";
@@ -74,6 +81,20 @@ import BatchBoard from "./BatchBoard";
 import BatchDetail from "./BatchDetail";
 import SkillPicker from "./SkillPicker";
 import Lightbox, { type Shot } from "./Lightbox";
+import ReviewButton from "./ReviewButton";
+import ReviewDetail from "./ReviewDetail";
+import {
+  closeReviewOf,
+  fetchReviews,
+  postReviewToJira,
+  postReviewToPr,
+  reviewShotSrc,
+  startReview,
+  stopReviewTask,
+  subscribeReviewEvents,
+} from "./reviewApi";
+import type { Review, ReviewAction, ReviewDocument, ReviewTaskName, TicketLinks } from "./reviewTypes";
+import { tasksFor } from "../reviewModel.mjs";
 import ProjectPicker from "./ProjectPicker";
 import { buildCombinedBrief } from "./brief";
 import { buildBranch, sessionNameFor } from "./naming";
@@ -447,6 +468,15 @@ interface JiraState {
   executionSkill: string;
   qaSkill: string;
   integrationSkill: string;
+  // ---- Reviews ----
+  // Every ticket's review, replaced whole on every change (the document is
+  // one small file). Null until the first fetch answers.
+  reviews: ReviewDocument | null;
+  reviewBusy: boolean;
+  reviewError: string | null;
+  // Which pull request and preview a review would use, per ticket, when the
+  // user picked something other than the newest.
+  reviewPicks: Record<string, { pr?: string; preview?: string }>;
 }
 
 type TabView = "table" | "board" | "batches";
@@ -544,6 +574,10 @@ let state: JiraState = {
   executionSkill: "",
   qaSkill: "",
   integrationSkill: "",
+  reviews: null,
+  reviewBusy: false,
+  reviewError: null,
+  reviewPicks: {},
 };
 
 const listeners = new Set<() => void>();
@@ -1863,6 +1897,168 @@ export function openShot(key: string, which: string, opener?: HTMLElement | null
   const src = shotSrc(batch.id, key, which);
   const index = shots.findIndex((shot) => shot.src === src);
   if (index < 0) return;
+  setState({ lightbox: { shots, index } });
+}
+
+// ---- Reviewing a ticket ----
+
+export function loadReviews(): void {
+  void fetchReviews()
+    .then((doc) => setState({ reviews: doc }))
+    .catch(() => {
+      // An older server has no review routes; the section simply stays away.
+    });
+}
+
+export function reviewOf(key: string): Review | null {
+  return state.reviews?.reviews[key] ?? null;
+}
+
+// The newest of each kind unless the user picked another.
+export function reviewPicksFor(key: string, links: TicketLinks): { pr: string; preview: string } {
+  const picks = state.reviewPicks[key] ?? {};
+  const pr = links.prs.find((link) => link.url === picks.pr)?.url ?? links.prs[0]?.url ?? "";
+  const preview = links.previews.find((link) => link.url === picks.preview)?.url ?? links.previews[0]?.url ?? "";
+  return { pr, preview };
+}
+
+export function pickReviewLink(key: string, kind: "pr" | "preview", url: string): void {
+  setState({ reviewPicks: { ...state.reviewPicks, [key]: { ...state.reviewPicks[key], [kind]: url } } });
+}
+
+export function saveReviewAction(action: ReviewAction): void {
+  extSettings?.set("jira.reviewAction", action);
+}
+
+function reviewFailed(err: unknown): void {
+  setState({ reviewBusy: false, reviewError: message(err) });
+}
+
+async function launchReview(key: string, links: TicketLinks, tasks: ReviewTaskName[], agentId: string, repoPath = ""): Promise<void> {
+  const picks = reviewPicksFor(key, links);
+  setState({ reviewBusy: true, reviewError: null });
+  try {
+    await startReview(key, {
+      tasks,
+      prUrl: tasks.includes("code") ? picks.pr : undefined,
+      previewUrl: tasks.includes("qa") ? picks.preview : undefined,
+      agentId,
+      cwd: state.cwd,
+      repoPath: repoPath || undefined,
+    });
+    setState({ reviewBusy: false });
+    loadReviews();
+  } catch (err) {
+    const needsRepo = (err as { body?: { needsRepo?: { owner: string; repo: string } } }).body?.needsRepo;
+    if (!needsRepo || repoPath) {
+      reviewFailed(err);
+      return;
+    }
+    // The pull request's repository is checked out nowhere perch knows: ask
+    // once, and the server remembers the answer for that owner/repo.
+    setState({ reviewBusy: false });
+    const answer = hostPrompt
+      ? await hostPrompt(`Where is ${needsRepo.owner}/${needsRepo.repo} checked out? The path of a local clone:`, state.cwd ?? "")
+      : null;
+    if (!answer?.trim()) {
+      setState({ reviewError: `Code review needs a local clone of ${needsRepo.owner}/${needsRepo.repo}.` });
+      // Cancelling cancels the code review only; the visual QA needs no clone.
+      if (tasks.includes("qa")) {
+        const reason = state.reviewError;
+        await launchReview(key, links, ["qa"], agentId);
+        if (!state.reviewError) setState({ reviewError: reason });
+      }
+      return;
+    }
+    await launchReview(key, links, tasks, agentId, answer.trim());
+  }
+}
+
+// With more than one agent, which one reviews is asked, as Start work asks.
+export async function runReview(
+  key: string,
+  links: TicketLinks,
+  tasks: ReviewTaskName[],
+  showMenu: SidebarPanelHostProps["showMenu"],
+  x: number,
+  y: number,
+): Promise<void> {
+  let presets: AgentLaunchPreset[] = [];
+  try {
+    presets = await agentPresets();
+  } catch {
+    // Left to the server, which takes the first enabled agent.
+  }
+  if (presets.length > 1 && showMenu) {
+    showMenu(
+      x,
+      y,
+      presets.map((preset) => ({ label: preset.name, onClick: () => void launchReview(key, links, tasks, preset.id) })),
+    );
+    return;
+  }
+  await launchReview(key, links, tasks, presets[0]?.id ?? "");
+}
+
+function reviewAction(fn: () => Promise<unknown>): void {
+  setState({ reviewBusy: true, reviewError: null });
+  void fn()
+    .then(() => {
+      setState({ reviewBusy: false });
+      loadReviews();
+    })
+    .catch(reviewFailed);
+}
+
+export function stopReview(key: string, task: ReviewTaskName): void {
+  reviewAction(() => stopReviewTask(key, task));
+}
+
+export async function closeReview(key: string): Promise<void> {
+  const ok = hostConfirm ? await hostConfirm(`Close the review of ${key}? Its worktree and terminals are removed; the reports stay.`, "Close review") : true;
+  if (ok) reviewAction(() => closeReviewOf(key));
+}
+
+export async function postReview(key: string, where: "pr" | "jira"): Promise<void> {
+  const review = reviewOf(key);
+  const already = where === "pr" ? review?.posted.pr : review?.posted.jira;
+  if (already) {
+    const ok = hostConfirm
+      ? await hostConfirm(`This review was already posted to ${where === "pr" ? "the pull request" : "Jira"}. Post it again?`, "Post again")
+      : false;
+    if (!ok) return;
+  }
+  reviewAction(() => (where === "pr" ? postReviewToPr(key, Boolean(already)) : postReviewToJira(key, Boolean(already), window.location.origin)));
+}
+
+export function openReviewTerminal(key: string, task: ReviewTaskName): void {
+  const current = reviewOf(key)?.tasks[task];
+  if (!current) return;
+  openSessionWindow?.(`review-${key.toLowerCase()}-${task}`, { createCwd: current.cwd });
+}
+
+const REVIEW_SHOT_LABEL: Record<string, string> = {
+  "before-1440": "live 1440",
+  "after-1440": "preview 1440",
+  "before-390": "live 390",
+  "after-390": "preview 390",
+};
+
+// Every screenshot of the ticket's QA report, page by page, so the viewer's
+// arrows walk the whole comparison.
+export function openReviewShot(key: string, src: string, opener: HTMLElement | null): void {
+  const report = reviewOf(key)?.tasks.qa?.report;
+  if (!report) return;
+  const shots: Shot[] = [];
+  for (const page of report.pages) {
+    for (const which of ["before-1440", "after-1440", "before-390", "after-390"] as const) {
+      if (page.images[which]) shots.push({ src: reviewShotSrc(key, page.slug, which), key, label: `${page.page}, ${REVIEW_SHOT_LABEL[which]}` });
+    }
+    for (const extra of page.extras) shots.push({ src: reviewShotSrc(key, page.slug, extra.label), key, label: extra.caption || extra.label });
+  }
+  const index = shots.findIndex((shot) => shot.src === src);
+  if (index < 0) return;
+  shotOpener = opener;
   setState({ lightbox: { shots, index } });
 }
 
@@ -3258,6 +3454,19 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
 
   const onBoard = s.tabView === "board";
   const onBatches = s.tabView === "batches";
+  // A ticket's review links, when it has any and is not one the open batch
+  // holds - a batch ticket is reviewed by the batch's own QA flow.
+  const focusedKey = s.focused?.key ?? null;
+  const inOpenBatch = Boolean(
+    focusedKey && s.batch && (s.batch.clusters.some((c) => c.keys.includes(focusedKey)) || s.batch.unclustered.includes(focusedKey)),
+  );
+  const detailLinks = s.focused?.detail?.links ?? null;
+  const focusedReview = focusedKey ? reviewOf(focusedKey) : null;
+  const reviewLinks: TicketLinks | null =
+    detailLinks && !inOpenBatch && (detailLinks.prs.length > 0 || detailLinks.previews.length > 0) ? detailLinks : null;
+  const runningReviewTasks = new Set<ReviewTaskName>(
+    (["code", "qa"] as const).filter((task) => focusedReview?.tasks[task]?.state === "running"),
+  );
   const boardIssues = s.board?.issues ?? null;
   // The open ticket may be one only the board holds (past the table's cap,
   // or already Done), so both lists are searched.
@@ -3348,6 +3557,16 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         >
           {s.busyKey === focusedIssue.key ? "Starting..." : "Start work"}
         </button>
+        {reviewLinks && (
+          <ReviewButton
+            links={reviewLinks}
+            saved={extSettings?.get("jira.reviewAction")}
+            busy={s.reviewBusy}
+            running={runningReviewTasks}
+            onSave={saveReviewAction}
+            onRun={(action, x, y) => void runReview(focusedIssue.key, reviewLinks, tasksFor(action), showMenu, x, y)}
+          />
+        )}
       </>
     );
   }
@@ -3519,6 +3738,26 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
                     <Icon name="close" />
                   </button>
                 </div>
+                {(reviewLinks || (focusedReview && !inOpenBatch)) && s.focused.detail && (
+                  <ReviewDetail
+                    issueKey={s.focused.key}
+                    links={reviewLinks ?? s.focused.detail.links ?? { prs: [], previews: [] }}
+                    review={focusedReview}
+                    picked={reviewPicksFor(s.focused.key, reviewLinks ?? s.focused.detail.links ?? { prs: [], previews: [] })}
+                    busy={s.reviewBusy}
+                    error={s.reviewError}
+                    onPick={(kind, url) => pickReviewLink(s.focused!.key, kind, url)}
+                    onOpenTerminal={(task) => openReviewTerminal(s.focused!.key, task)}
+                    onStop={(task) => stopReview(s.focused!.key, task)}
+                    onRunAgain={(task, x, y) =>
+                      void runReview(s.focused!.key, reviewLinks ?? { prs: [], previews: [] }, [task], showMenu, x, y)
+                    }
+                    onClose={() => void closeReview(s.focused!.key)}
+                    onPostPr={() => void postReview(s.focused!.key, "pr")}
+                    onPostJira={() => void postReview(s.focused!.key, "jira")}
+                    onOpenShot={(src, opener) => openReviewShot(s.focused!.key, src, opener)}
+                  />
+                )}
                 <DetailBody detail={s.focused.detail} error={s.focused.error} />
               </>
             ) : null}
@@ -3850,6 +4089,7 @@ export function activate(ctx: ExtensionContext): void {
   // edits. Registered token first, so on a core without `after` - where both
   // land at the bottom - the credential still comes before the table.
   ctx.registerSettingsComponent({ id: "jira-token", component: SettingsPanel, after: "jira.email" });
+  ctx.registerSettingsComponent({ id: "jira-storefront-password", component: StorefrontPasswordSetting, after: "jira.reviewAction" });
   // The same picker as the review bar, writing the stored default instead of
   // a per-run override.
   ctx.registerSettingsComponent({ id: "jira-execution-skill", component: ExecutionSkillSetting, after: "jira.executionSkill" });
@@ -3868,6 +4108,9 @@ export function activate(ctx: ExtensionContext): void {
   // the whole point of it - and a batch runs whether or not its view is open.
   // The board still only refetches the batch actually on screen.
   disposeBridge.push(subscribeBatchEvents(onBatchChanged, refreshOpenBatch));
+  // Reviews: one small document, refetched whole on any change.
+  disposeBridge.push(subscribeReviewEvents(loadReviews, loadReviews));
+  loadReviews();
 
   ctx.registerCommand({
     id: "open",

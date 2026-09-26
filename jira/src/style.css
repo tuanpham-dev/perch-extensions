@@ -3483,3 +3483,153 @@
   font-size: 13px;
 }
 .jira-settings-block select.jira-input { padding: 5px 8px; }
+
+/* ---- Reviewing a ticket ----
+   The Review split button in the ticket's head, and the Review section above
+   the ticket body. Same controls and tokens as the batch detail; the split
+   button's two halves are one control with a shared border. */
+.jira-split {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.jira-split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.jira-split-arrow {
+  border-left-width: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-inline: 3px;
+  display: inline-flex;
+  align-items: center;
+}
+.jira-split-arrow .codicon { font-size: 12px; }
+.jira-split-menu {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 0;
+  z-index: 1000;
+  min-width: 11rem;
+  padding: 4px 0;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: var(--jira-elevated);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+}
+.jira-split-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 6px;
+  border: 0;
+  background: none;
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.jira-split-item:hover:not(:disabled) { background: var(--list-hover-bg, rgba(255, 255, 255, 0.06)); }
+.jira-split-item:disabled { color: var(--fg-inactive, #999); cursor: default; opacity: 0.7; }
+.jira-split-item:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: -1px; }
+.jira-split-check { width: 14px; display: inline-flex; justify-content: center; }
+.jira-split-check .codicon { font-size: 12px; }
+
+.jira-rv {
+  /* Flush with the ticket's own content below it, which the pane pads. */
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 6px;
+  background: var(--jira-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.jira-rv-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.jira-rv-links { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.jira-rv-links-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+  margin-right: 4px;
+  min-width: 4.2em;
+}
+.jira-rv-chip {
+  padding: 1px 7px;
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  background: var(--bg, #1e1e1e);
+  color: var(--fg-inactive, #999);
+  font-family: var(--jira-mono, ui-monospace, monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+.jira-rv-chip.picked { color: var(--fg, #ccc); border-color: var(--focus-border, #0078d4); }
+.jira-rv-chip:disabled { cursor: default; }
+.jira-rv-task { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.jira-rv-state {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-right: 4px;
+  color: var(--fg-inactive, #999);
+}
+.jira-rv-state.state-running { color: hsl(35 80% 58%); }
+.jira-rv-state.state-reported { color: hsl(150 50% 48%); }
+.jira-rv-state.state-failed { color: var(--jira-danger); }
+.jira-rv-error { flex-basis: 100%; color: var(--jira-danger); font-size: 11px; }
+.jira-rv-report {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--jira-sunken);
+}
+.jira-rv-verdict { font-weight: 600; font-size: 11.5px; }
+.jira-rv-verdict.verdict-approve, .jira-rv-verdict.qa-pass { color: hsl(150 50% 48%); }
+.jira-rv-verdict.verdict-request-changes, .jira-rv-verdict.qa-fail { color: hsl(0 60% 60%); }
+.jira-rv-verdict.qa-partial { color: hsl(35 80% 58%); }
+.jira-rv-verdict.qa-blocked, .jira-rv-verdict.verdict-comment { color: var(--fg, #ccc); }
+.jira-rv-summary { margin: 0; line-height: 1.45; white-space: pre-wrap; }
+.jira-rv-findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.jira-rv-findings li { display: grid; grid-template-columns: 4.2rem 1fr; gap: 6px; align-items: baseline; line-height: 1.4; }
+.jira-rv-sev { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.jira-rv-sev.sev-high { color: hsl(0 60% 60%); }
+.jira-rv-sev.sev-medium { color: hsl(35 80% 58%); }
+.jira-rv-sev.sev-low { color: var(--fg-inactive, #999); }
+.jira-rv-finding { min-width: 0; overflow-wrap: anywhere; }
+.jira-rv-where { margin-right: 6px; font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-rv-page { display: flex; flex-direction: column; gap: 4px; }
+.jira-rv-page-path { font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-rv-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.jira-rv-shot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 3px;
+  background: var(--bg, #1e1e1e);
+  color: var(--fg-inactive, #999);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+.jira-rv-shot img { width: 100%; height: 64px; object-fit: contain; background: var(--jira-sunken); display: block; }
+.jira-rv-shot span { padding: 1px 4px 3px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jira-rv-shot.missing { cursor: default; justify-content: center; min-height: 82px; align-items: center; opacity: 0.7; }
+.jira-rv-shot:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: -1px; }
+.jira-rv-post { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.jira-rv-post .codicon { font-size: 12px; vertical-align: -2px; }
+.jira-rv-posted { font-size: 11px; color: var(--fg-inactive, #999); }

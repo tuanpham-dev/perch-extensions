@@ -95,3 +95,30 @@ test("tickets are separated so two descriptions cannot read as one", () => {
 test("no tickets is an empty string, not a heading with nothing under it", () => {
   assert.equal(buildCombinedBrief([]), "");
 });
+
+// ---- reviewing a ticket ----
+
+import { buildCodeReviewBrief, buildPreviewQaBrief, buildReviewBriefLine } from "../brief.mjs";
+
+const pr = { url: "https://github.com/o/r/pull/7", number: 7 };
+const preview = { url: "https://s.com/?preview_theme_id=9", themeId: "9" };
+
+test("a review agent's launch line sends it to its full brief", () => {
+  assert.match(buildReviewBriefLine({ key: "CAP-1", task: "code" }), /code review .* CAP-1\. Run `jira-review brief`/);
+  assert.match(buildReviewBriefLine({ key: "CAP-1", task: "qa" }), /visual QA/);
+});
+
+test("the code review brief names the pull request, the repo context and the report verb", () => {
+  const brief = buildCodeReviewBrief({ detail: detail(), pr, worktreePath: "/repo/.worktrees/review/pr-7" });
+  for (const part of ["gh pr diff https://github.com/o/r/pull/7", "/repo/.worktrees/review/pr-7", "jira-review code --verdict", "--finding high:", "Never commit, push", "CAP-123: Fix header alignment"]) {
+    assert.ok(brief.includes(part), `missing ${part}`);
+  }
+});
+
+test("the QA brief names both storefronts, both viewports, the password and every report flag", () => {
+  const brief = buildPreviewQaBrief({ detail: detail(), preview, liveOrigin: "https://s.com", pages: ["/products/a"], password: "hunter2" });
+  for (const part of ["Preview: https://s.com/?preview_theme_id=9", "Live storefront: https://s.com", "hunter2", "1440", "390", "- /products/a", "jira-review-qa", "--before-1440", "--after-1440", "--before-390", "--after-390", "--shot", "--checked", "--wrong", "--note"]) {
+    assert.ok(brief.includes(part), `missing ${part}`);
+  }
+  assert.match(buildPreviewQaBrief({ detail: detail(), preview, liveOrigin: "", pages: [] }), /none stored.*blocked/s);
+});

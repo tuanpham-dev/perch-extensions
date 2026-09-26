@@ -368,3 +368,100 @@ export function buildQaConflictMessage({ key, summary, qaBranch, files = [], why
     .join("\n")
     .trimEnd();
 }
+
+// ---- Reviewing a ticket ----
+//
+// Two agents, each started with one line on its launch command that tells it
+// to fetch its full brief with `jira-review brief` - the same split the batch
+// agents use, because a brief with the ticket's whole comment thread does not
+// belong on a shell command line.
+
+const REVIEW_RULES = [
+  "You review; you do not fix. Never commit, push, open or change the pull request, or edit files in this folder.",
+  "Report exactly once with the `jira-review` line below, or the ticket's panel cannot show your work.",
+  "If you cannot do the task - no access, no browser, a page that will not load - report that as your result rather than guessing.",
+];
+
+export function buildReviewBriefLine({ key, task }) {
+  const what = task === "code" ? "code review of its pull request" : "visual QA of its preview theme";
+  return [
+    `You are doing the ${what} for the Jira ticket ${key}.`,
+    "Run `jira-review brief` now: it prints the ticket, what to check and how to report.",
+  ].join(" ");
+}
+
+// The code reviewer sits in a worktree checked out at the pull request's head,
+// so the repository around the diff is on disk to read, grep and run.
+export function buildCodeReviewBrief({ detail, pr, worktreePath }) {
+  return [
+    `# Code review: ${detail.key}, pull request #${pr.number}`,
+    "",
+    `Pull request: ${pr.url}`,
+    worktreePath
+      ? `This folder (${worktreePath}) is a checkout of the pull request's head, in a worktree of its own.`
+      : "This folder is a checkout of the repository.",
+    "",
+    "## What to do",
+    `1. Read the pull request: \`gh pr view ${pr.url}\` and \`gh pr diff ${pr.url}\`, or your GitHub tool if you have one. Read its description and review comments too.`,
+    "2. Read the ticket below and decide whether the change does what it asks, and nothing it does not.",
+    "3. Use the repository for context: open the files the diff touches in full, find what calls them and what they call, and check the conventions the codebase already follows.",
+    "4. Look for bugs, regressions, missed cases, security and performance problems, and code that should reuse something that already exists. Run cheap checks - a linter, a test file, a theme check - when the repository has them.",
+    "5. Keep findings to what a reviewer should act on, each with the file and line it concerns.",
+    "",
+    "## Rules",
+    ...REVIEW_RULES.map((rule) => `- ${rule}`),
+    "",
+    "## Reporting",
+    "When you are done, run this once, with one `--finding` per finding (severity is high, medium or low):",
+    "",
+    "```sh",
+    'jira-review code --verdict approve|request-changes|comment --summary "What you concluded, in two or three sentences" \\',
+    '  --finding high:path/to/file.liquid:42:"What is wrong and why" \\',
+    '  --finding low:path/to/file.js:7:"..."',
+    "```",
+    "",
+    "## The ticket",
+    "",
+    buildAgentBrief(detail),
+  ].join("\n");
+}
+
+// The QA agent compares the live storefront with the preview theme. The
+// skill carries the procedure; this carries the facts for this ticket.
+export function buildPreviewQaBrief({ detail, preview, liveOrigin, pages, password = "", skillName = "jira-review-qa" }) {
+  const pageList = pages.length > 0 ? pages : ["the page the ticket describes - decide from its words"];
+  return [
+    `# Visual QA: ${detail.key}, preview theme ${preview.themeId}`,
+    "",
+    `Preview: ${preview.url}`,
+    liveOrigin
+      ? `Live storefront: ${liveOrigin}`
+      : "Live storefront: not known from the link - find the store's domain from the preview page (the theme editor's own link) and say which you used.",
+    password ? `Storefront password: ${password}` : "Storefront password: none stored. If the store asks for one, report `blocked` and say so.",
+    "Viewports: 1440 wide (desktop) and 390 wide (phone).",
+    "",
+    "Pages to check:",
+    ...pageList.map((page) => `- ${page}`),
+    "",
+    `Follow the \`${skillName}\` skill in this folder (.claude/skills/${skillName}/SKILL.md) for how to capture and compare.`,
+    "",
+    "## Rules",
+    ...REVIEW_RULES.map((rule) => `- ${rule}`),
+    "",
+    "## Reporting",
+    "When you are done, run this once, with one `--page` group per page and its four captures after it:",
+    "",
+    "```sh",
+    'jira-review qa --status pass|fail|partial|blocked \\',
+    '  --checked "What you looked at" --wrong "A defect, one per flag" --note "Anything else" \\',
+    "  --page /products/example \\",
+    "    --before-1440 live-1440.png --after-1440 preview-1440.png \\",
+    "    --before-390 live-390.png --after-390 preview-390.png \\",
+    '    --shot drawer-open.png:"Cart drawer open, 390"',
+    "```",
+    "",
+    "## The ticket",
+    "",
+    buildAgentBrief(detail),
+  ].join("\n");
+}

@@ -73,6 +73,7 @@ import {
 } from "./brief.mjs";
 import { createControlServer } from "./batchControl.mjs";
 import { writeAndRender } from "./qaSpec.mjs";
+import { IMAGE_KINDS, readImage as readImageFile, writeImage } from "./evidence.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -134,6 +135,10 @@ export function createBatchRunner({
   createWorktree,
   progressIssue,
   configDir,
+  // Verbs another flow serves on the same control socket (the ticket review
+  // runner's). One socket, one listener: a second would need a second path in
+  // every agent's environment for nothing.
+  extraVerbs = () => ({}),
   log = console.log,
 }) {
   const binDir = path.join(configDir, "bin");
@@ -673,11 +678,15 @@ export function createBatchRunner({
 
   async function installCli() {
     await mkdir(binDir, { recursive: true });
-    const source = path.join(here, "cli", "jira-batch");
-    const tmp = `${cliPath}.${process.pid}.tmp`;
-    await copyFile(source, tmp);
-    await chmod(tmp, 0o755);
-    await rename(tmp, cliPath);
+    // jira-review rides along: same socket, same bin directory on PATH.
+    for (const name of ["jira-batch", "jira-review"]) {
+      const source = path.join(here, "cli", name);
+      const target = path.join(binDir, name);
+      const tmp = `${target}.${process.pid}.tmp`;
+      await copyFile(source, tmp);
+      await chmod(tmp, 0o755);
+      await rename(tmp, target);
+    }
   }
 
   // ---- Evidence ----
@@ -687,24 +696,12 @@ export function createBatchRunner({
   // the panel, and `.backups/` is the user's to tidy.
 
   const evidenceDir = path.join(configDir, "jira", "evidence");
-  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
   // Extra shots beyond before/after. High enough that no honest report hits
   // it - a viewport each for phone, tablet and desktop, plus a few states -
   // and low enough that one ticket cannot fill the store or turn an inlined
   // report into a file nobody can open.
   const MAX_SHOTS = 12;
 
-  // By content, not by extension: a file named .png that is not one would
-  // reach an <img> and render as nothing, which reads as a broken feature
-  // rather than a rejected file.
-  const IMAGE_KINDS = [
-    { ext: "png", test: (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
-    { ext: "jpg", test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
-    {
-      ext: "webp",
-      test: (b) => b.length > 12 && b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP",
-    },
-  ];
 
   async function exists(file) {
     try {
@@ -716,23 +713,11 @@ export function createBatchRunner({
   }
 
   async function readImage(label, file) {
-    let info;
     try {
-      info = await stat(file);
-    } catch {
-      throw new RunnerError(400, `--${label}: there is no file at ${file}`);
+      return await readImageFile(label, file);
+    } catch (err) {
+      throw new RunnerError(typeof err?.status === "number" ? err.status : 400, err.message);
     }
-    if (!info.isFile()) throw new RunnerError(400, `--${label}: ${file} is not a file`);
-    if (info.size > MAX_IMAGE_BYTES) {
-      throw new RunnerError(
-        400,
-        `--${label}: ${file} is ${Math.round(info.size / 1024 / 1024)}MB, over the ${MAX_IMAGE_BYTES / 1024 / 1024}MB limit`,
-      );
-    }
-    const bytes = await readFile(file);
-    const kind = IMAGE_KINDS.find((entry) => entry.test(bytes));
-    if (!kind) throw new RunnerError(400, `--${label}: ${file} is not a PNG, JPEG or WebP`);
-    return { bytes, ext: kind.ext };
   }
 
   // Extra shots left by a longer previous report. Bounded by MAX_SHOTS rather
@@ -748,21 +733,9 @@ export function createBatchRunner({
   }
 
   async function storeImage(batchId, key, label, file) {
-    const { bytes, ext } = await readImage(label, file);
-    const dir = path.join(evidenceDir, batchId, key);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const target = path.join(dir, `${label}.${ext}`);
-    const tmp = `${target}.${process.pid}.tmp`;
-    await writeFile(tmp, bytes, { mode: 0o600 });
-    await chmod(tmp, 0o600);
-    await rename(tmp, target);
-    // A ticket re-reported after rework may switch format; the old file would
-    // otherwise sit beside the new one and be served by a stale extension.
-    for (const other of IMAGE_KINDS) {
-      if (other.ext === ext) continue;
-      await rm(path.join(dir, `${label}.${other.ext}`), { force: true });
-    }
-    return { ext };
+    // A ticket re-reported after rework may switch format; writeImage removes
+    // the old file so a stale one is never served beside the new verdict.
+    return writeImage(path.join(evidenceDir, batchId, key), label, await readImage(label, file));
   }
 
   // ---- The QA agent ----
@@ -1238,7 +1211,7 @@ export function createBatchRunner({
       log(`could not install the jira-batch command: ${err.message}`);
     }
 
-    const control = createControlServer({ socketPath, handlers: verbs(), log });
+    const control = createControlServer({ socketPath, handlers: { ...verbs(), ...extraVerbs() }, log });
     try {
       await control.start();
       self.control = control;
@@ -1297,6 +1270,8 @@ export function createBatchRunner({
   }
 
   return {
+    socketPath,
+    binDir,
     start,
     stop,
     startClusters,
