@@ -251,6 +251,8 @@ export function ChatTab({
 
   const send = async (text: string, images: PendingImage[]): Promise<boolean> => {
     setSendError(null);
+    // Read before sending: whether Claude runs a command now or queues it.
+    const working = screen?.activity?.state === "working";
     try {
       const paths = await Promise.all(images.map((i) => uploadFile(i.file)));
       const { status, data } = await postJson<{ state?: ScreenState; error?: string }>("/send", { windowId, text, paths, clearInput: true });
@@ -270,7 +272,7 @@ export function ChatTab({
       if (text.trim()) {
         setPending((prev) => [
           ...prev,
-          createPending(modelRef.current.items, prev, text, `pending-${++pendingKey.current}`, Date.now()),
+          createPending(modelRef.current.items, prev, text, `pending-${++pendingKey.current}`, Date.now(), working),
         ]);
       }
       return true;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChatItem } from "./chatModel.ts";
-import { createPending, pendingItems, PENDING_TIMEOUT_MS, resolvePending } from "./pending.ts";
+import { COMMAND_TIMEOUT_MS, createPending, pendingItems, PENDING_TIMEOUT_MS, resolvePending } from "./pending.ts";
 
 const userItem = (text: string): ChatItem => ({ kind: "text", role: "user", text, key: `k${text}` });
 const assistantItem = (text: string): ChatItem => ({ kind: "text", role: "assistant", text, key: `a${text}` });
@@ -50,4 +50,48 @@ test("keeps the same array when nothing resolved, for a cheap re-render check", 
 test("renders as user text rows marked pending", () => {
   const rows = pendingItems([createPending([], [], "queued text", "p1", 0)]);
   assert.deepEqual(rows, [{ kind: "text", role: "user", text: "queued text", pending: true, key: "p1" }]);
+});
+
+const commandItem = (command: string, args: string): ChatItem => ({ kind: "command", command, args, key: `c${command}${args}` });
+
+test("a slash command resolves on its command entry", () => {
+  const p = createPending([], [], "/model opus", "p1", 0, false);
+  assert.deepEqual(resolvePending([p], [commandItem("/model", "opus")], 1000), []);
+  // A different argument is a different command.
+  assert.deepEqual(resolvePending([p], [commandItem("/model", "fable")], 1000), [p]);
+});
+
+test("a slash command without arguments resolves on its entry", () => {
+  const p = createPending([], [], "/usage", "p1", 0, false);
+  assert.deepEqual(resolvePending([p], [commandItem("/usage", "")], 1000), []);
+});
+
+test("a shell command resolves on its ! entry", () => {
+  const p = createPending([], [], "!git status", "p1", 0, false);
+  assert.deepEqual(resolvePending([p], [commandItem("!", "git status")], 1000), []);
+});
+
+test("an earlier run of the same command doesn't resolve it", () => {
+  const items = [commandItem("/model", "opus")];
+  const p = createPending(items, [], "/model opus", "p1", 0, false);
+  assert.deepEqual(resolvePending([p], items, 1000), [p]);
+  assert.deepEqual(resolvePending([p], [...items, commandItem("/model", "opus")], 1000), []);
+});
+
+test("a command sent while idle that the transcript never records goes quickly", () => {
+  const p = createPending([], [], "/help", "p1", 0, false);
+  assert.deepEqual(resolvePending([p], [], COMMAND_TIMEOUT_MS - 1), [p]);
+  assert.deepEqual(resolvePending([p], [], COMMAND_TIMEOUT_MS + 1), []);
+});
+
+test("a command queued while Claude works waits as long as a message", () => {
+  const p = createPending([], [], "/plan-first fix it", "p1", 0, true);
+  assert.deepEqual(resolvePending([p], [], COMMAND_TIMEOUT_MS + 1), [p]);
+  // Queued, it comes back as the text as typed.
+  assert.deepEqual(resolvePending([p], [userItem("/plan-first fix it")], 2000), []);
+});
+
+test("plain text sent while idle keeps the long timeout", () => {
+  const p = createPending([], [], "hello", "p1", 0, false);
+  assert.deepEqual(resolvePending([p], [], COMMAND_TIMEOUT_MS + 1), [p]);
 });

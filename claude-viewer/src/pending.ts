@@ -19,6 +19,8 @@ export type PendingMessage = {
   // message in the conversation doesn't resolve either of them.
   seen: number;
   sentAt: number;
+  // When to stop waiting for it (see timeoutFor).
+  timeout: number;
 };
 
 // A pending message nothing ever claims (sent to a pane that isn't Claude,
@@ -26,10 +28,38 @@ export type PendingMessage = {
 // enough that a slow tool call doesn't drop a real one early.
 export const PENDING_TIMEOUT_MS = 10 * 60 * 1000;
 
-export function countUserText(items: ChatItem[], text: string): number {
+// A slash command or `!` shell command sent while Claude is idle runs at
+// once, and many of them (/help, /config, /model with no argument, a picker
+// you close) never write anything to the transcript. So one that hasn't
+// shown up within a couple of polls isn't going to.
+export const COMMAND_TIMEOUT_MS = 5 * 1000;
+
+export function isCommandText(text: string): boolean {
+  return /^[/!]/.test(text.trim());
+}
+
+export function timeoutFor(text: string, working: boolean): number {
+  return isCommandText(text) && !working ? COMMAND_TIMEOUT_MS : PENDING_TIMEOUT_MS;
+}
+
+// The transcript entry `text` comes back as. A slash command is recorded as
+// its name and arguments ("/model" + "opus"), a shell command as "!" + the
+// command, so a command bubble is matched against those, not user text. A
+// command queued while Claude works comes back as the text as typed, which
+// the user-text match covers.
+function echoes(item: ChatItem, text: string): boolean {
+  if (item.kind === "text") return item.role === "user" && item.text === text;
+  if (item.kind !== "command") return false;
+  const t = text.trim();
+  if (t.startsWith("!")) return item.command === "!" && item.args === t.slice(1).trim();
+  const m = /^(\/\S+)\s*([\s\S]*)$/.exec(t);
+  return m !== null && item.command === m[1] && item.args === m[2].trim();
+}
+
+export function countEchoes(items: ChatItem[], text: string): number {
   let n = 0;
   for (const item of items) {
-    if (item.kind === "text" && item.role === "user" && item.text === text) n++;
+    if (echoes(item, text)) n++;
   }
   return n;
 }
@@ -43,16 +73,17 @@ export function createPending(
   text: string,
   key: string,
   now: number,
+  working = true,
 ): PendingMessage {
   const alreadyPending = pending.filter((p) => p.text === text).length;
-  return { key, text, seen: countUserText(items, text) + alreadyPending, sentAt: now };
+  return { key, text, seen: countEchoes(items, text) + alreadyPending, sentAt: now, timeout: timeoutFor(text, working) };
 }
 
 /** Drops each pending message the transcript has caught up with, or given up on. */
 export function resolvePending(pending: PendingMessage[], items: ChatItem[], now: number): PendingMessage[] {
   if (pending.length === 0) return pending;
   const kept = pending.filter(
-    (p) => now - p.sentAt < PENDING_TIMEOUT_MS && countUserText(items, p.text) <= p.seen,
+    (p) => now - p.sentAt < p.timeout && countEchoes(items, p.text) <= p.seen,
   );
   return kept.length === pending.length ? pending : kept;
 }
