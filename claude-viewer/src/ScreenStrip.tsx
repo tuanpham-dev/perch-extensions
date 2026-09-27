@@ -96,7 +96,7 @@ export function ScreenStripHeading({ strip, minHeight, status }: { strip: Screen
           strip.toggle();
         }}
       >
-        <span aria-hidden="true">{strip.open ? "▴" : "▸"}</span>
+        <span className={`codicon codicon-${strip.open ? "chevron-up" : "chevron-right"}`} aria-hidden="true" />
       </button>
       <span className="cv-strip-head-status" aria-live="polite">
         {status}

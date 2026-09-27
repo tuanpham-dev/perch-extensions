@@ -199,25 +199,25 @@ export function Lightbox({ images, index, onIndex, onClose }: { images: string[]
           {index + 1} / {count}
         </span>
         <button onClick={() => zoomAt(0, 0, scale / 1.5)} disabled={scale <= MIN_SCALE} aria-label="Zoom out">
-          −
+          <span className="codicon codicon-zoom-out" aria-hidden="true" />
         </button>
         <button onClick={() => zoomAt(0, 0, 1)} disabled={scale === 1} aria-label="Reset zoom">
           {Math.round(scale * 100)}%
         </button>
         <button onClick={() => zoomAt(0, 0, scale * 1.5)} disabled={scale >= MAX_SCALE} aria-label="Zoom in">
-          +
+          <span className="codicon codicon-zoom-in" aria-hidden="true" />
         </button>
         <button onClick={onClose} aria-label="Close">
-          ×
+          <span className="codicon codicon-close" aria-hidden="true" />
         </button>
       </div>
       {count > 1 && (
         <>
           <button className="claude-viewer-lightbox-nav claude-viewer-lightbox-prev" onClick={() => go(-1)} aria-label="Previous image">
-            ‹
+            <span className="codicon codicon-chevron-left" aria-hidden="true" />
           </button>
           <button className="claude-viewer-lightbox-nav claude-viewer-lightbox-next" onClick={() => go(1)} aria-label="Next image">
-            ›
+            <span className="codicon codicon-chevron-right" aria-hidden="true" />
           </button>
         </>
       )}

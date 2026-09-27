@@ -405,7 +405,7 @@ export function ToolCallCard({ card, model }: { card: ToolCard; model: ChatModel
           setOpen(!open);
         }}
       >
-        <span className="tool-chevron">{open ? "▾" : "▸"}</span>
+        <span className={`tool-chevron codicon codicon-${open ? "chevron-down" : "chevron-right"}`} />
         <span className="tool-name">{card.name}</span>
         <span className="tool-summary">
           <LinkedText text={summary} />

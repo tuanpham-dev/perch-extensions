@@ -114,7 +114,7 @@ export function AgentHeader({
     <div className="cv-agent-head" data-version={version}>
       <nav className="cv-agent-crumbs" aria-label="Subagent path">
         <button type="button" className="btn cv-agent-back" onClick={() => onNavigate(path.slice(0, -1))}>
-          ← Back
+          <span className="codicon codicon-arrow-left" aria-hidden="true" /> Back
         </button>
         <button type="button" className="cv-agent-crumb" onClick={() => onNavigate([])}>
           Main
@@ -154,7 +154,7 @@ export function AgentNote({ card }: { card: ToolCard }) {
   const label = `Agent "${card.agent?.description ?? agentName(card)}" ${ENDED[status]}`;
   return (
     <button type="button" className={`cv-agent-note cv-agent-note-${status}`} onClick={() => nav.open(card.id)} title="Open its transcript">
-      <span className="cv-agent-note-dot" aria-hidden="true">●</span>
+      <span className="cv-agent-note-dot codicon codicon-circle-filled" aria-hidden="true" />
       <span>{label}</span>
     </button>
   );

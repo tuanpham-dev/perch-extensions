@@ -239,7 +239,7 @@ export const PromptCard = forwardRef<PromptCardHandle, {
       {showTabs && (
         <div className="cv-prompt-tabs">
           <button className="cv-tab-nav" disabled={busy} onClick={() => key("left")} title="Previous question">
-            ‹
+            <span className="codicon codicon-chevron-left" aria-hidden="true" />
           </button>
           {prompt.tabs!.map((t, i) => (
             <button
@@ -250,12 +250,12 @@ export const PromptCard = forwardRef<PromptCardHandle, {
               title={activeTab === null ? undefined : i === activeTab ? "Current question" : t.submit ? "Review and submit" : `Go to ${t.label}`}
               onClick={() => goToTab(i)}
             >
-              {t.done && !t.submit ? "✓ " : ""}
+              {t.done && !t.submit && <span className="codicon codicon-check" aria-hidden="true" />}
               {t.label}
             </button>
           ))}
           <button className="cv-tab-nav" disabled={busy} onClick={() => key("tab")} title="Next question">
-            ›
+            <span className="codicon codicon-chevron-right" aria-hidden="true" />
           </button>
         </div>
       )}
@@ -399,7 +399,11 @@ export const PromptCard = forwardRef<PromptCardHandle, {
               onClick={() => void choose(o)}
             >
               {prompt.numbered && <span className="cv-option-n">{o.n}</span>}
-              {o.checked !== null && <span className="cv-option-box" aria-hidden="true">{o.checked ? "☑" : "☐"}</span>}
+              {o.checked !== null && (
+                <span className={`cv-option-box${o.checked ? " cv-option-box-checked" : ""}`} aria-hidden="true">
+                  {o.checked && <span className="codicon codicon-check" />}
+                </span>
+              )}
               <span className="cv-option-text">
                 <span className="cv-option-label">
                   {o.label}

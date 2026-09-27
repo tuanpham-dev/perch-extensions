@@ -227,7 +227,7 @@ export const Composer = forwardRef<ComposerHandle, {
                 aria-label="Remove image"
                 onClick={() => setImages(images.filter((_, i) => i !== idx))}
               >
-                ×
+                <span className="codicon codicon-close" aria-hidden="true" />
               </button>
             </div>
           ))}
