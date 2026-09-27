@@ -168,6 +168,9 @@ export function ChatTab({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const userScrolled = useRef(false);
+  // stickToBottom as state, for the scroll-to-bottom button: shown only once
+  // the reader has scrolled up away from the newest message.
+  const [scrolledUp, setScrolledUp] = useState(false);
   const activeRef = useRef(active);
   activeRef.current = active;
   const pollRef = useRef<(() => Promise<void>) | null>(null);
@@ -184,6 +187,7 @@ export function ChatTab({
     cursorRef.current = null;
     stickToBottom.current = true;
     userScrolled.current = false;
+    setScrolledUp(false);
     setLoaded(false);
     setVersion((v) => v + 1);
     if (!sessionId) return;
@@ -318,6 +322,7 @@ export function ChatTab({
       else {
         stickToBottom.current = true;
         userScrolled.current = false;
+        setScrolledUp(false);
       }
       return next;
     });
@@ -329,6 +334,7 @@ export function ChatTab({
     mainScroll.current = null;
     if (!saved || !scrollRef.current) return;
     stickToBottom.current = saved.stick;
+    setScrolledUp(!saved.stick);
     if (!saved.stick) scrollRef.current.scrollTop = saved.top;
   }, [shownPath.length]);
   const agentNav = useMemo<AgentNav>(
@@ -476,40 +482,62 @@ export function ChatTab({
           toolbarTarget,
         )}
       {openCard && <AgentHeader model={model} path={shownPath} version={version} onNavigate={navigate} />}
-      <div
-        className="chat-scroll"
-        ref={scrollRef}
-        onWheel={() => (userScrolled.current = true)}
-        onTouchMove={() => (userScrolled.current = true)}
-        onKeyDown={() => (userScrolled.current = true)}
-        onScroll={(e) => {
-          if (!userScrolled.current) return;
-          const el = e.currentTarget;
-          stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-        }}
-      >
-        {empty && !openCard && (
-          <div className="cv-empty">
-            {!info
-              ? "Loading"
-              : !info.session
-                ? "No conversation in this window yet. It appears here as soon as Claude writes its first message."
-                : !info.session.file
-                  ? "Claude has started. The conversation appears here once its first message is written."
-                  : loaded
-                    ? "This conversation has no messages yet."
-                    : "Loading the conversation"}
-          </div>
+      <div className="chat-scroll-wrap">
+        <div
+          className="chat-scroll"
+          ref={scrollRef}
+          onWheel={() => (userScrolled.current = true)}
+          onTouchMove={() => (userScrolled.current = true)}
+          onKeyDown={() => (userScrolled.current = true)}
+          onScroll={(e) => {
+            if (!userScrolled.current) return;
+            const el = e.currentTarget;
+            stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            setScrolledUp(!stickToBottom.current);
+          }}
+        >
+          {empty && !openCard && (
+            <div className="cv-empty">
+              {!info
+                ? "Loading"
+                : !info.session
+                  ? "No conversation in this window yet. It appears here as soon as Claude writes its first message."
+                  : !info.session.file
+                    ? "Claude has started. The conversation appears here once its first message is written."
+                    : loaded
+                      ? "This conversation has no messages yet."
+                      : "Loading the conversation"}
+            </div>
+          )}
+          <MessageList
+            key={shownPath.join("/") || "main"}
+            model={model}
+            items={shownItems}
+            pending={openCard ? NO_PENDING : pending}
+            version={version}
+            scrollRef={scrollRef}
+            stickToBottom={stickToBottom}
+          />
+        </div>
+        {scrolledUp && (
+          <button
+            type="button"
+            className="cv-scroll-bottom"
+            title="Scroll to the newest message"
+            aria-label="Scroll to the newest message"
+            onClick={() => {
+              const el = scrollRef.current;
+              // Pinned again, so rows that grow as they are measured on the
+              // way down keep it at the bottom (MessageList re-pins on resize).
+              stickToBottom.current = true;
+              userScrolled.current = false;
+              setScrolledUp(false);
+              el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+            }}
+          >
+            <span className="codicon codicon-arrow-down" aria-hidden="true" />
+          </button>
         )}
-        <MessageList
-          key={shownPath.join("/") || "main"}
-          model={model}
-          items={shownItems}
-          pending={openCard ? NO_PENDING : pending}
-          version={version}
-          scrollRef={scrollRef}
-          stickToBottom={stickToBottom}
-        />
       </div>
       {prompt && <PromptCard ref={promptCardRef} windowId={windowId} prompt={prompt} onState={acceptScreen} enterSends={settings.enterSends} />}
       {sendError && (

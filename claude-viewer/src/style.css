@@ -58,6 +58,34 @@
   flex-direction: column;
   min-width: 0;
 }
+/* Positions the scroll-to-bottom button over the list's bottom edge. */
+.cv-root .chat-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cv-root .chat-scroll-wrap > .cv-scroll-bottom {
+  position: absolute;
+  bottom: 12px;
+  /* Clear of the list's scrollbar. */
+  right: 20px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--cv-border);
+  border-radius: 50%;
+  background: var(--cv-panel);
+  color: var(--cv-text);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+.cv-root .chat-scroll-wrap > .cv-scroll-bottom:hover { color: var(--cv-strong); border-color: var(--cv-accent); }
 .cv-root .chat-scroll {
   flex: 1;
   overflow-y: auto;
