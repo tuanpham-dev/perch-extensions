@@ -20,6 +20,14 @@ export interface TouchKey {
 // keyboard has its own sticky Ctrl key in its bottom row, so the bar doesn't
 // need one. A user can add {ctrl} back via the editor; it then toggles the
 // host's shared sticky-Ctrl exactly like the Touch Keys bar does.
+// The codicon a key label names: "$(name)", or one of the emoji labels the
+// defaults used before icons (still in saved layouts). null = plain text.
+const LEGACY_EMOJI_ICONS: Record<string, string> = { "🎤": "mic", "📷": "device-camera" };
+export function keyLabelIcon(label: string): string | null {
+  const m = /^\$\(([a-z0-9-]+)\)$/.exec(label.trim());
+  return m ? m[1] : (LEGACY_EMOJI_ICONS[label.trim()] ?? null);
+}
+
 export const DEFAULT_TOP_KEYS: TouchKey[] = [
   { label: "Esc", send: "{esc}", when: "" },
   { label: "Tab", send: "{tab}", when: "" },
@@ -30,11 +38,11 @@ export const DEFAULT_TOP_KEYS: TouchKey[] = [
   { label: "^C", send: "{^c}", when: "" },
   // Self-hides on browsers without SpeechRecognition (keyButtons.tsx's
   // visibleKeys) — safe to always include by default.
-  { label: "🎤", send: "{mic}", when: "" },
+  { label: "$(mic)", send: "{mic}", when: "" },
   // Opens the native image picker and uploads through the same
   // pasteDropUploadDir pipeline paste/drop use. Gated to claude by default,
   // matching that feature's localEchoWhen gating.
-  { label: "📷", send: "{image}", when: "claude" },
+  { label: "$(device-camera)", send: "{image}", when: "claude" },
 ];
 
 const SIMPLE_TOKENS: Record<string, string> = {

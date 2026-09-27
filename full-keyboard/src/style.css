@@ -148,6 +148,11 @@
   z-index: 6;
 }
 
+/* .codicon fixes its own 16px; match the toggle's old glyph size. */
+.fk-fab .codicon {
+  font-size: 20px;
+}
+
 .fk-fab.active {
   background: var(--accent);
   border-color: var(--accent);

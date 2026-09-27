@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TerminalAccessoryContext } from "./client";
 import { getFloatingOpen, readStyle, readSuppressMode, setFloatingOpen, useFloatingOpen } from "./client";
+import Icon from "./Icon";
 import KeyboardSurface from "./KeyboardSurface";
 
 interface Props {
@@ -155,13 +156,15 @@ export default function FloatingKeyboard({ context, visible }: Props) {
       )}
       <button
         className={`fk-fab${expanded ? " active" : ""}`}
+        aria-label="Keyboard"
+        aria-expanded={expanded}
         style={{ left: `${centerX - half}px`, top: `${centerY - half}px` }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       >
-        ⌨
+        <Icon name="keyboard" />
       </button>
     </>
   );

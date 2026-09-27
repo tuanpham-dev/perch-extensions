@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { sendWithInkSafeEnters, whenMatches } from "@perch/engine-support";
-import { parseSend, type TouchKey } from "./spec";
+import Icon from "./Icon";
+import { keyLabelIcon, parseSend, type TouchKey } from "./spec";
 import { isVoiceInputSupported, VoiceInput } from "./voiceInput";
 
 // The special-key top bar's button family — ported from
@@ -119,6 +120,17 @@ export function useRepeatHandlers(onFire: () => void) {
   };
 }
 
+function KeyLabel({ label }: { label: string }) {
+  const icon = keyLabelIcon(label);
+  if (!icon) return <>{label}</>;
+  // The codicon span has no text, so give screen readers the icon's name.
+  return (
+    <span role="img" aria-label={icon.replace(/-/g, " ")}>
+      <Icon name={icon} />
+    </span>
+  );
+}
+
 // A `{mic}` key: toggles a VoiceInput session on tap, sending each final
 // transcript through onTranscript. Its own component (unlike the stateless
 // {ctrl} branch below) since it owns a VoiceInput instance's lifecycle —
@@ -145,7 +157,7 @@ function MicKeyButton({ label, onTranscript }: { label: string; onTranscript: (t
 
   return (
     <button className={`fk-key fk-key-mic${listening ? " active" : ""}`} {...tap}>
-      {label}
+      <KeyLabel label={label} />
     </button>
   );
 }
@@ -176,7 +188,7 @@ function ImageKeyButton({ label, onUploadImages }: { label: string; onUploadImag
         }}
       />
       <button className="fk-key fk-key-image" {...tap}>
-        {label}
+        <KeyLabel label={label} />
       </button>
     </>
   );
@@ -222,13 +234,13 @@ export function TouchKeyButton({
   if (isCtrl) {
     return (
       <button className={`fk-key fk-key-ctrl${stickyCtrl ? " active" : ""}`} {...tap}>
-        {touchKey.label}
+        <KeyLabel label={touchKey.label} />
       </button>
     );
   }
   return (
     <button className="fk-key" {...(isArrowSend(touchKey.send) ? repeat : tap)}>
-      {touchKey.label}
+      <KeyLabel label={touchKey.label} />
     </button>
   );
 }
