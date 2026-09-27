@@ -4,6 +4,7 @@
 // records chatModel.ts keeps on Agent (and Task) cards.
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { agentStats, agentStatus, listAgents, type AgentStatus, type ChatModel, type ToolCard } from "./chatModel";
+import { CLOSE_EVENT } from "./Status";
 import { modelLabel } from "./usage";
 
 // ---- Navigation ----
@@ -176,8 +177,9 @@ export function AgentsChip({
   const running = agents.filter((a) => agentStatus(model.tools[a.toolId]) === "running").length;
   const now = useNow(open && running > 0);
 
-  // Closes on a click anywhere else, and on Esc (ChatTab hands that over by
-  // the event below, so Esc never also stops Claude while the list is open).
+  // Closes on a click anywhere else, and on Esc (ChatTab hands that over
+  // through closeFooterPopover, so Esc never also stops Claude while the
+  // list is open).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
@@ -185,11 +187,11 @@ export function AgentsChip({
     };
     const onClose = () => setOpen(false);
     document.addEventListener("pointerdown", onDown);
-    rootRef.current?.addEventListener("cv-close-agents", onClose);
+    rootRef.current?.addEventListener(CLOSE_EVENT, onClose);
     const root = rootRef.current;
     return () => {
       document.removeEventListener("pointerdown", onDown);
-      root?.removeEventListener("cv-close-agents", onClose);
+      root?.removeEventListener(CLOSE_EVENT, onClose);
     };
   }, [open]);
 
@@ -238,12 +240,4 @@ export function AgentsChip({
       )}
     </div>
   );
-}
-
-// Whether an Esc should go to an open agents list: closes it and says so.
-export function closeAgentsList(root: HTMLElement | null): boolean {
-  const list = root?.querySelector(".cv-agents[data-open]");
-  if (!list) return false;
-  list.dispatchEvent(new Event("cv-close-agents"));
-  return true;
 }

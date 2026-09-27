@@ -30,7 +30,7 @@ export const Composer = forwardRef<ComposerHandle, {
   // Claude is mid-turn: an empty composer's button becomes Stop.
   working?: boolean;
   onStop?: () => void;
-  // The row under the text box: after the attach button, and at its far end.
+  // The row under the text box: at its start, and at its far end.
   footerStart?: ReactNode;
   footerEnd?: ReactNode;
 }>(function Composer({ commands, searchFiles, onSend, disabled, disabledReason, terminalInput, enterSends, working, onStop, footerStart, footerEnd }, ref) {
@@ -289,6 +289,18 @@ export const Composer = forwardRef<ComposerHandle, {
               }
             }}
           />
+          {/* Attach sits just before the action button, where a thumb on a
+              phone already is. */}
+          <button
+            className="cv-input-action cv-input-attach"
+            title="Attach files or images (or drop them anywhere on this tab)"
+            aria-label="Attach files"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
           {/* One button, three jobs: Stop while Claude works and nothing is
               written, Use when the terminal's own input has text to take, Send
               otherwise. */}
@@ -329,16 +341,6 @@ export const Composer = forwardRef<ComposerHandle, {
         </div>
         <div className="cv-composer-foot">
           <div className="cv-composer-foot-start">
-            <button
-              className="cv-foot-btn cv-foot-icon"
-              title="Attach files or images (or drop them anywhere on this tab)"
-              aria-label="Attach files"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-              </svg>
-            </button>
             <input
               ref={fileInputRef}
               type="file"

@@ -133,17 +133,29 @@
   .cv-spinner { animation: none; }
 }
 /* Context, cost and plan limits in the composer's bottom row: a ring, the
-   cost, and two stacked bars (5-hour over 7-day). Figures are in tooltips. */
-.cv-usage { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 12px; color: var(--cv-dim); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+   cost, and two stacked bars (5-hour over 7-day). Tapping either opens the
+   figures in a panel above the footer. */
+.cv-usage-pop { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.cv-usage { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* As a span it was dim 12px; as a button `.claude-viewer button` resets both. */
+.claude-viewer .cv-usage { font-size: 12px; }
+.claude-viewer .cv-usage:not(:hover) { color: var(--cv-dim); }
 .cv-ring { flex-shrink: 0; }
 .cv-ring circle { fill: none; stroke-width: 2.5; }
 /* The empty parts, mixed from the text color so they show on light themes as
    well as dark ones. */
 .cv-ring-track { stroke: color-mix(in srgb, var(--cv-text) 18%, transparent); }
 .cv-ring-fill { stroke: currentColor; stroke-linecap: round; }
-.cv-limits { display: inline-flex; flex-direction: column; justify-content: center; gap: 3px; height: 22px; padding: 0 6px; cursor: default; }
+.cv-limits { display: inline-flex; flex-direction: column; justify-content: center; gap: 3px; }
 .cv-limit-track { display: block; width: 28px; height: 3px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--cv-text) 18%, transparent); }
 .cv-limit-fill { display: block; height: 100%; background: currentColor; }
+.cv-usage-pop[data-open] .cv-foot-btn { background: var(--hover); color: var(--cv-text); }
+.cv-usage-row { display: flex; flex-direction: column; gap: 5px; padding: 9px 12px; border-bottom: 1px solid var(--cv-border); font-size: 12px; }
+.cv-usage-row:last-child { border-bottom: none; }
+.cv-usage-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+.cv-usage-row-top strong { font-weight: 600; color: var(--cv-strong); }
+.cv-usage-row-desc { color: var(--cv-dim); overflow-wrap: anywhere; }
+.cv-usage-meter { display: block; height: 4px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--cv-text) 18%, transparent); }
 .cv-level-ok { color: var(--cv-ok); }
 .cv-level-warn { color: var(--cv-warn); }
 .cv-level-crit { color: var(--cv-err); }
@@ -457,7 +469,8 @@
 .claude-viewer .cv-agents-chip { font-variant-numeric: tabular-nums; }
 .claude-viewer .cv-agents-chip-running { color: var(--cv-warn); }
 .claude-viewer .cv-agents[data-open] .cv-agents-chip { background: var(--hover); color: var(--cv-text); }
-.claude-viewer .cv-agents-list {
+.claude-viewer .cv-agents-list,
+.claude-viewer .cv-foot-panel {
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
@@ -472,6 +485,8 @@
   display: flex;
   flex-direction: column;
 }
+/* The usage panel is figures, not a list: narrower. */
+.claude-viewer .cv-usage-panel { width: min(300px, calc(100vw - 16px)); }
 .claude-viewer .cv-agents-row {
   display: flex;
   flex-direction: column;
@@ -759,11 +774,12 @@
   position: relative;
 }
 .claude-viewer .composer { display: flex; flex-direction: column; gap: 4px; }
-/* The text box with its action button tucked into the bottom-right corner. */
+/* The text box with attach and its action button tucked into the
+   bottom-right corner. */
 .cv-input-box { position: relative; }
 /* One row of text: 10px padding, an 18px line and 1px borders make 40px. The
-   right padding keeps text clear of the button. */
-.claude-viewer .composer textarea { display: block; min-height: 40px; max-height: 200px; line-height: 18px; padding: 10px 44px 10px 10px; }
+   right padding keeps text clear of the two buttons. */
+.claude-viewer .composer textarea { display: block; min-height: 40px; max-height: 200px; line-height: 18px; padding: 10px 74px 10px 10px; }
 .claude-viewer .composer textarea:disabled { opacity: 0.6; }
 .cv-input-action {
   position: absolute;
@@ -781,6 +797,8 @@
   cursor: pointer;
 }
 .cv-input-action:disabled { opacity: 0.4; cursor: default; }
+.claude-viewer .cv-input-attach { right: 36px; color: var(--cv-dim); }
+.cv-input-attach:hover:not(:disabled) { background: var(--hover); color: var(--cv-text); }
 .cv-input-send { color: var(--cv-accent); }
 .cv-input-send:hover:not(:disabled) { background: var(--cv-accent-soft); }
 .cv-input-stop { color: var(--cv-text); }
@@ -812,10 +830,11 @@
 }
 .cv-foot-btn:hover:not(:disabled) { background: var(--hover); color: var(--cv-text); }
 .cv-foot-icon { width: 24px; padding: 0; justify-content: center; flex-shrink: 0; }
-.cv-foot-mode { color: var(--cv-text); display: block; line-height: 22px; }
-.cv-foot-mode-plan { color: var(--cv-ok); }
-.cv-foot-mode-acceptEdits { color: var(--git-renamed-fg, var(--cv-accent)); }
-.cv-foot-mode-bypassPermissions { color: var(--cv-err); }
+.claude-viewer .cv-foot-mode { color: var(--cv-text); display: inline-flex; align-items: center; gap: 5px; line-height: 22px; }
+.cv-foot-mode-label { overflow: hidden; text-overflow: ellipsis; }
+.cv-mode-icon { flex-shrink: 0; }
+/* The mode with click-to-cycle turned off: the same look, not a button. */
+.cv-foot-mode-static { height: 22px; padding: 0 6px; white-space: nowrap; min-width: 0; }
 .cv-foot-model { font-size: 12px; color: var(--cv-text); padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cv-strip-toggle-open { color: var(--cv-text); background: var(--hover); }
 .cv-strip-toggle-attn { color: var(--cv-attn); }

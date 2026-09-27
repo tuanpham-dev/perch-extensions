@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { getJson, host, postJson, setting, uploadFile, type ShowMenu } from "./bridge";
-import { AgentHeader, AgentNavContext, AgentsChip, closeAgentsList, livePath, pathTo, type AgentNav } from "./AgentView";
+import { AgentHeader, AgentNavContext, AgentsChip, livePath, pathTo, type AgentNav } from "./AgentView";
 import { applyAgentMeta, applyMessages, collectImages, createChatModel, type AgentMeta, type ChatModel, type TranscriptMessage } from "./chatModel";
 import { createFileLinks, FileLinksContext } from "./FileLinks";
 import { Composer, type ComposerHandle, type PendingImage, type SlashCommand } from "./Composer";
@@ -19,7 +19,7 @@ import { createPending, resolvePending, type PendingMessage } from "./pending";
 import { MessageList } from "./MessageList";
 import { PromptCard, type PromptCardHandle } from "./PromptCard";
 import { ScreenStrip, ScreenStripHeading, ScreenStripToggle, useScreenStrip } from "./ScreenStrip";
-import { ActivityStatus, MODE_HINT, UsageStats } from "./Status";
+import { ActivityStatus, closeFooterPopover, MODE_HINT, ModeIcon, UsageStats } from "./Status";
 import { useOverlayInset } from "./useOverlayInset";
 import type { ScreenState, SessionInfo } from "./types";
 import { addToTally, createTally, currentModelLabel, type UsageTally } from "./usage";
@@ -44,6 +44,7 @@ function useSettings() {
     showMeters: setting<boolean>("claudeViewer.showUsageMeters", false) === true,
     showContext: setting<boolean>("claudeViewer.showContext", true) !== false,
     enterSends: setting<string>("claudeViewer.enterKey", "send") !== "newline",
+    modeClickCycles: setting<boolean>("claudeViewer.modeClickCycles", true) !== false,
   });
   const [value, setValue] = useState(read);
   useEffect(() => subscribeSettings(() => setValue(read())), []);
@@ -373,8 +374,9 @@ export function ChatTab({
     if (e.defaultPrevented || e.nativeEvent.isComposing || !running) return;
     // Portalled children (the lightbox, the tab bar button) bubble here too.
     if (!rootRef.current?.contains(e.target as Node)) return;
-    // An open agents list takes Esc first, so closing it never stops Claude.
-    if (e.key === "Escape" && closeAgentsList(rootRef.current)) {
+    // An open footer popover (usage, agents) takes Esc first, so closing it
+    // never stops Claude.
+    if (e.key === "Escape" && closeFooterPopover(rootRef.current)) {
       e.preventDefault();
       return;
     }
@@ -533,11 +535,20 @@ export function ChatTab({
               : "Waiting for the terminal"
         }
         footerStart={
-          mode && (
+          mode &&
+          (settings.modeClickCycles ? (
             <button className={`cv-foot-btn cv-foot-mode cv-foot-mode-${mode.id}`} onClick={() => void post("/cycle-mode")} title={`${MODE_HINT[mode.id] ?? mode.label}. Click to cycle (Shift+Tab).`}>
-              {mode.label.charAt(0).toUpperCase() + mode.label.slice(1)}
+              <ModeIcon id={mode.id} />
+              <span className="cv-foot-mode-label">{mode.label.charAt(0).toUpperCase() + mode.label.slice(1)}</span>
             </button>
-          )
+          ) : (
+            // Shows the mode only, so a stray tap on a phone can't switch it;
+            // Shift+Tab still cycles it.
+            <span className={`cv-foot-mode cv-foot-mode-static cv-foot-mode-${mode.id}`} title={`${MODE_HINT[mode.id] ?? mode.label}. Shift+Tab to cycle.`}>
+              <ModeIcon id={mode.id} />
+              <span className="cv-foot-mode-label">{mode.label.charAt(0).toUpperCase() + mode.label.slice(1)}</span>
+            </span>
+          ))
         }
         footerEnd={
           <>
