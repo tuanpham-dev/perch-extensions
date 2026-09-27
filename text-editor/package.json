@@ -2,7 +2,7 @@
   "name": "text-editor",
   "private": true,
   "publisher": "perch",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "displayName": "Text Editor",
   "description": "A Monaco-based editor tab (the VS Code editor) with syntax highlighting that follows the active theme, IntelliSense for TypeScript/JavaScript/JSON/CSS/HTML, and save-back to disk, for quick edits without a round-trip through nvim.",
   "icon": "./icon.svg",
@@ -62,6 +62,16 @@
           "type": "boolean",
           "default": false,
           "description": "Use vim keybindings in the editor, the merge view, and the editable side of a diff. `:w` saves, `:q` closes the tab (`:q!` discards unsaved changes), `:wq` does both. A status line under the editor shows the current mode. Some chords belong to the app and never reach vim - Ctrl+P, Ctrl+W, Ctrl+Shift+P, Ctrl+1-8 and Ctrl+\\ among them - all rebindable in the Keyboard Shortcuts editor (gear menu)."
+        },
+        "textEditor.vimEditorKeys": {
+          "type": "string",
+          "default": "",
+          "description": "Ctrl chords that keep their usual editor meaning while vim is on, instead of going to vim. List the keys separated by spaces, e.g. `c v x a` makes Ctrl+C copy, Ctrl+V paste, Ctrl+X cut and Ctrl+A select all. A bare letter means Ctrl plus that letter; `ctrl+shift+z` and vim's `<C-c>` also work. Filled in for you when you answer the vim-or-editor question. A chord listed here and in Vim Keys goes to the editor. Applies to open tabs immediately."
+        },
+        "textEditor.vimKeys": {
+          "type": "string",
+          "default": "",
+          "description": "Ctrl chords that stay with vim, written the same way as Vim Editor Keys. The first time you press Ctrl+A, C, D, F, U, V, X or Y with vim on, and it is in neither list, the editor asks which side should have it records the answer here or there, and then performs that first press on the side you picked. Chords not asked about stay with vim unless listed in Vim Editor Keys."
         }
       }
     }

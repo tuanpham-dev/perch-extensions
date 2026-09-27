@@ -50,7 +50,17 @@ export interface MonacoChunk {
   monaco: MonacoNs;
   applyHostTheme(colors: Record<string, string>, tokenColors: TokenColorRule[]): Promise<void>;
   initVimMode(editor: unknown, statusNode: HTMLElement | null): VimAdapter;
-  VimMode: { Vim: { defineEx(name: string, short: string, handler: ExHandler): void } };
+  VimMode: {
+    Vim: {
+      defineEx(name: string, short: string, handler: ExHandler): void;
+      /** Runs one key through vim as if typed, e.g. `<C-a>`. `cm` is the
+       * adapter monaco-vim passes its keymap. */
+      handleKey(cm: unknown, key: string, origin?: string): unknown;
+    };
+    /** The keymap every vim adapter consults on keydown. `call` returns the
+     * command to run, or a falsy value to leave the key to Monaco. */
+    keyMap: { vim: { call(this: unknown, key: string, cm: unknown): unknown } };
+  };
 }
 
 let loadPromise: Promise<MonacoNs> | null = null;

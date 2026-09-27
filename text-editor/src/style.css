@@ -98,3 +98,48 @@
   font: inherit;
   width: 60%;
 }
+
+/* The "vim or editor?" question for a Ctrl chord, drawn just above the vim
+   status line (see chordPrompt.ts). Like the status line, it takes only its
+   own height and never squeezes the editor. */
+.text-editor-vim-ask {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border, #333);
+  background: var(--panel-bg, var(--bg, transparent));
+  font-size: 12px;
+  color: var(--fg, #ddd);
+}
+
+.text-editor-vim-ask[hidden] {
+  display: none;
+}
+
+.text-editor-vim-ask-text {
+  margin-right: 2px;
+}
+
+.text-editor-vim-ask-choice,
+.text-editor-vim-ask-close {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.text-editor-vim-ask-choice:hover,
+.text-editor-vim-ask-close:hover {
+  background: var(--list-hover-bg, rgba(128, 128, 128, 0.2));
+}
+
+.text-editor-vim-ask-close {
+  margin-left: auto;
+  border-color: transparent;
+}

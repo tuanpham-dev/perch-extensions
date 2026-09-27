@@ -210,9 +210,51 @@ Shortcuts** editor (gear menu), so if you want `Ctrl+W` back for window commands
 app's binding elsewhere.
 
 Everything else reaches vim, including the chords a vim user misses most: `Ctrl+R` redo,
-`Ctrl+V` visual block, `Ctrl+O`/`Ctrl+I` jumplist and `Ctrl+A`/`Ctrl+X` increment. One chord
-changes hands the other way: `Ctrl+F` normally opens Monaco's find widget, and with vim on it
-becomes vim's page-forward instead. Search with `/` there.
+`Ctrl+O`/`Ctrl+I` jumplist, and, once you've told the editor they're vim's (see below),
+`Ctrl+V` visual block and `Ctrl+A`/`Ctrl+X` increment. Search with `/`, or give `Ctrl+F` to
+the editor for Monaco's find widget.
+
+### Ctrl chords: vim or editor
+
+Several Ctrl chords mean one thing to vim and another to the editor. The first time you
+press one of them with vim on, a bar above the status line asks which side should have it:
+
+| Chord | Vim | Editor |
+|---|---|---|
+| `Ctrl+A` | increment number | select all |
+| `Ctrl+C` | cancel, leave insert mode | copy |
+| `Ctrl+D` | scroll half page down | select next match |
+| `Ctrl+F` | page down | find |
+| `Ctrl+U` | scroll half page up | undo cursor move |
+| `Ctrl+V` | visual block | paste |
+| `Ctrl+X` | decrement number | cut |
+| `Ctrl+Y` | scroll line up | redo |
+
+That first press is held back until you answer, then performed on the side you picked, so
+a key you haven't assigned yet can't change the file behind your back, and you don't have to
+press it twice. The one exception is giving `Ctrl+V` to the editor: pasting on your behalf
+reads the clipboard through the browser's clipboard API, which needs HTTPS (or localhost) and
+may ask for permission. If that is refused, the bar says so and the next `Ctrl+V` pastes
+normally. The **×** closes the bar without answering or performing the key, and the next
+press asks again.
+
+Answers are stored in two settings, which you can also edit by hand:
+
+- `textEditor.vimEditorKeys`: chords that keep their editor meaning, e.g. `c v x a`.
+- `textEditor.vimKeys`: chords that stay with vim, e.g. `d u`.
+
+A bare letter means Ctrl plus that letter; `ctrl+c`, `Ctrl-C`, `<C-c>` and `ctrl+shift+z`
+are accepted too, separated by spaces or commas. Entries that aren't a single key with Ctrl
+(and optionally Shift) are ignored. A chord in both lists goes to the editor. The lists take
+any chord, not only the ones asked about: add `r` to the editor list and `Ctrl+R` stops being
+vim's redo. Chords that aren't asked about and aren't listed stay with vim, as before.
+
+An editor chord skips vim in every mode. Giving `Ctrl+C` to the editor means it no longer
+leaves insert mode (use `Esc` or `Ctrl+[`), and giving it `Ctrl+V` loses visual block
+(`Ctrl+Q` starts it too). Copying works from visual mode, since vim's selection is the
+editor's selection. A selection made by an editor chord, such as `Ctrl+A`, is the editor's
+alone: vim stays in its current mode, so copy, cut or paste over it with editor chords
+rather than vim operators, and press `Esc` to clear it.
 
 ## Language services
 
@@ -242,6 +284,8 @@ extension's. What it does own is how the editor looks:
 | `textEditor.minimap` | `auto` | Whether to draw the minimap, the code overview down the right edge. **Auto** shows it on desktop and hides it on phones and tablets, where it only eats width; **Always show** and **Always hide** override that. Applies to open tabs immediately. Diffs and merge conflicts never show one. |
 | `textEditor.lineNumbers` | `auto` | How lines are numbered. **Auto** follows the vim setting — relative when it is on, absolute when it is off; **Absolute**, **Relative** and **Hidden** pin it. Relative counts distance from the cursor, whose own line still shows its absolute number. Applies to open tabs immediately, and to the merge view; a diff numbers both sides absolutely regardless. |
 | `textEditor.vim` | `false` | Vim keybindings in the editor, the merge view, and a diff's editable side. See [Vim mode](#vim-mode). Applies to open tabs immediately. |
+| `textEditor.vimEditorKeys` | *(empty)* | Ctrl chords that skip vim and keep their editor meaning, e.g. `c v x a`. See [Ctrl chords: vim or editor](#ctrl-chords-vim-or-editor). Applies to open tabs immediately. |
+| `textEditor.vimKeys` | *(empty)* | Ctrl chords that stay with vim without being asked, e.g. `d u`. Same section. |
 
 Files over 2MB, or files that look binary, show a refusal message instead of loading —
 open those in another viewer.

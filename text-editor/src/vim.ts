@@ -15,7 +15,8 @@
 import { useEffect } from "react";
 import { getLoadedChunk, type ExParams, type VimAdapter } from "./monacoLoader";
 import type { CodeEditor } from "./monacoNs";
-import { onSettingsChange, vimEnabled } from "./settings";
+import { ASKED_CHORDS, createChordPrompt, type ChordPrompt } from "./chordPrompt";
+import { chordOwner, onSettingsChange, setChordOwner, vimEnabled, type ChordOwner } from "./settings";
 
 export interface VimActions {
   /** Saves; resolves false when the save failed, so `:wq` can refuse to close. */
@@ -29,6 +30,10 @@ export interface VimActions {
 // Actions for every editor currently running vim, keyed by the editor itself,
 // so the global Ex handlers can look up whichever one has focus.
 const actionsByEditor = new Map<CodeEditor, VimActions>();
+
+// The "vim or editor?" prompt of every editor running vim, so the shared keymap
+// can ask in whichever editor the chord was pressed.
+const promptsByEditor = new Map<CodeEditor, ChordPrompt>();
 
 let exCommandsRegistered = false;
 
@@ -99,6 +104,77 @@ function registerExCommands(): void {
   vim.defineEx("xit", "x", writeQuit);
 }
 
+let keymapWrapped = false;
+
+// A no-op command: returning it tells monaco-vim the key was handled, so the
+// event is swallowed and neither vim nor the editor acts on it.
+const swallow = () => {};
+
+/**
+ * Performs a chord whose keypress was swallowed to ask about it, on the side
+ * the user just chose. Vim gets the key fed through its own handler, skipping
+ * this keymap (which would only ask again); the editor gets the chord's action
+ * run directly, since the original keydown is long gone and can't be re-sent.
+ * Called straight from the answer's click, before any await, so the editor's
+ * copy and cut still run inside a user gesture.
+ */
+function replayChord(chord: string, owner: ChordOwner, cm: unknown, editor: CodeEditor): boolean | Promise<boolean> {
+  if (owner === "editor") return ASKED_CHORDS.get(chord)?.runInEditor(editor) ?? false;
+  const vim = getLoadedChunk()?.VimMode?.Vim;
+  if (!vim) return false;
+  // `Ctrl-a` -> `<C-a>`, vim's own spelling of the key.
+  vim.handleKey(cm, `<C-${chord.slice(-1)}>`);
+  return true;
+}
+
+/**
+ * Decides, per Ctrl chord, whether vim or the editor gets it, like VS Code
+ * Vim's handleKeys: `textEditor.vimEditorKeys` lists the chords that keep
+ * their editor meaning (Ctrl+C copies, Ctrl+V pastes), `textEditor.vimKeys`
+ * the ones vim keeps. A chord in neither that means something to both sides
+ * (ASKED_CHORDS) raises a prompt the first time it is pressed. That press is
+ * held back until the user answers, then performed on the chosen side
+ * (replayChord), so neither side acts on a key before it has an owner.
+ *
+ * monaco-vim asks its keymap's `call` for a command on every keydown, and only
+ * swallows the event when it gets one back. Answering "nothing" for an editor
+ * chord therefore hands it on untouched: Monaco's own keybindings and the
+ * browser's default action (the native copy and paste events) run exactly as
+ * they do with vim off. Blocking the event before vim sees it would not work,
+ * since preventDefault is what cancels the native clipboard action.
+ *
+ * The prompt is decided before vim is consulted, from the chord alone: asking
+ * vim whether it would handle a key updates its pending-key state, which a
+ * swallowed key must not do.
+ *
+ * The keymap is shared by every adapter, like the Ex commands, so it is
+ * wrapped once. The settings are read per keypress, so a change applies to
+ * open tabs at once.
+ */
+function wrapKeymap(): void {
+  if (keymapWrapped) return;
+  const keymap = getLoadedChunk()?.VimMode?.keyMap?.vim;
+  if (!keymap) return;
+  keymapWrapped = true;
+  const call = keymap.call;
+  keymap.call = function (key, cm) {
+    // The last character is the key itself; its case depends on Shift and
+    // Caps Lock, neither of which should change whether the chord matches.
+    const chord = key.slice(0, -1) + key.slice(-1).toLowerCase();
+    const owner = chordOwner(chord);
+    if (owner === "editor") return undefined;
+    if (owner === null && ASKED_CHORDS.has(chord)) {
+      const editor = (cm as { editor?: CodeEditor } | null)?.editor;
+      const prompt = editor && promptsByEditor.get(editor);
+      if (prompt) {
+        prompt.ask(chord, (answer) => replayChord(chord, answer, cm, editor));
+        return swallow;
+      }
+    }
+    return call.call(this, key, cm);
+  };
+}
+
 /**
  * Attaches vim to `editor` while the setting is on, and re-attaches when it is
  * toggled — no reload needed. `statusNode` is where monaco-vim draws the mode
@@ -119,18 +195,25 @@ export function useVimMode(
   useEffect(() => {
     if (!editor || !statusNode) return;
     let adapter: VimAdapter | null = null;
+    let prompt: ChordPrompt | null = null;
 
     const attach = () => {
       const chunk = getLoadedChunk();
       if (adapter || !chunk || !vimEnabled()) return;
       registerExCommands();
+      wrapKeymap();
       actionsByEditor.set(editor, actions);
       adapter = chunk.initVimMode(editor, statusNode);
+      prompt = createChordPrompt(statusNode, setChordOwner, () => editor.focus());
+      promptsByEditor.set(editor, prompt);
     };
 
     const detach = () => {
       adapter?.dispose();
       adapter = null;
+      prompt?.dispose();
+      prompt = null;
+      promptsByEditor.delete(editor);
       actionsByEditor.delete(editor);
       // Each attach builds a fresh StatusBar that appends its spans to this
       // node without clearing it first, so leaving the old ones behind would
@@ -142,6 +225,8 @@ export function useVimMode(
     const unsubscribe = onSettingsChange(() => {
       if (vimEnabled()) attach();
       else detach();
+      // Answered elsewhere (another pane, another device, Settings): stop asking.
+      prompt?.refresh((chord) => chordOwner(chord) !== null);
     });
 
     return () => {
