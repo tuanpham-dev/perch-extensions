@@ -1,36 +1,36 @@
-// Server hook for the Remote Desktop extension: runs launch.sh (Xvfb, a
-// desktop session and quicdesk-server, or just the server in existing mode)
-// inside its own terminal session, so the streaming port is owned by a
-// terminal's process tree; the core proxy only forwards ports it can
-// attribute to a terminal (server/src/ports.ts's getTunnelablePorts), and a
-// plain detached child here would get a 403 from /proxy/<port>/. The session
-// is created, typed into and killed through the host session API, so this
-// works on whichever terminal backend runs it. Ground truth for "running" is
-// what answers on the port, never an in-memory flag.
+// Server hook for the Remote Desktop extension: runs quicdesk-server inside
+// its own terminal session, so the streaming port is owned by a terminal's
+// process tree; the core proxy only forwards ports it can attribute to a
+// terminal (server/src/ports.ts's getTunnelablePorts), and a plain detached
+// child here would get a 403 from /proxy/<port>/. In managed mode the server
+// itself starts Xvfb and the desktop session (--spawn-xvfb, --desktop) and
+// takes them down when it exits, however it exits, so stopping the session
+// is all the cleanup there is. The session is created, typed into and killed
+// through the host session API, so this works on whichever terminal backend
+// runs it. Ground truth for "running" is what answers on the port, never an
+// in-memory flag.
 import { execFile } from "node:child_process";
-import { access, chmod, constants as fsConstants, readFile, rm } from "node:fs/promises";
+import { access, chmod, constants as fsConstants } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SESSION_NAME = "remote-desktop";
-// Per display: two Perch instances on one host (a dev and a production
-// one, say) each run their own session, and one's Stop must never read the
-// other's pidfile. A display number is unique on a host, so it keys this.
-function runtimeDir(display) {
-  const safe = String(display).replace(/[^0-9A-Za-z.]/g, "") || "default";
-  return `/tmp/perch-remote-desktop-${process.getuid()}-${safe}`;
-}
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
-const LAUNCH_SCRIPT = path.join(EXTENSION_DIR, "launch.sh");
 const START_TIMEOUT_MS = 15000;
 const START_POLL_INTERVAL_MS = 250;
+// The server tears its Xvfb and desktop down before it exits, which frees
+// the port; Stop waits for that so the next Start finds the display free.
+const STOP_TIMEOUT_MS = 5000;
 const STATUS_TIMEOUT_MS = 800;
 const BIN_CHECK_TIMEOUT_MS = 5000;
 const MAX_PORT_SCAN = 200;
 const MAX_COMMAND_LENGTH = 500;
 const INITIAL_SIZE = "1920x1080";
+// The largest display a tab may ask for (8K); the server tiles anything
+// above one encoder's 4096x2304.
+const XVFB_FRAMEBUFFER = "7680x4320x24";
 // Applied when a setting is missing from the settings document (a fresh
 // install before the Settings UI ever wrote it).
 const DEFAULTS = {
@@ -115,6 +115,16 @@ async function waitForStatus(port, totalMs = START_TIMEOUT_MS) {
   return null;
 }
 
+// True once nothing answers on the port any more.
+async function waitForSilence(port, totalMs = STOP_TIMEOUT_MS) {
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    if (!(await probeStatus(port))) return true;
+    await new Promise((r) => setTimeout(r, START_POLL_INTERVAL_MS));
+  }
+  return false;
+}
+
 function readSettings(raw) {
   const get = (key, fallback) => {
     const v = raw[`remoteDesktop.${key}`];
@@ -170,7 +180,7 @@ async function findServerBinary(serverPath) {
   for (const candidate of candidates) {
     try {
       const help = await run(candidate, ["--help"]);
-      if (!help.includes("--ws-listen")) {
+      if (!help.includes("--spawn-xvfb")) {
         binaryCache = { key, result: { installed: false, path: candidate, reason: "outdated" } };
         return binaryCache.result;
       }
@@ -221,33 +231,14 @@ export function activate({ router, log, getSettings, host }) {
     return NOT_RUNNING;
   }
 
-  async function killFromPidfile(display) {
-    const pidfile = path.join(runtimeDir(display), "pids");
-    let pids = [];
-    try {
-      pids = (await readFile(pidfile, "utf8")).split("\n").map((l) => Number(l.trim())).filter((n) => Number.isInteger(n) && n !== 0);
-    } catch {
-      return;
-    }
-    // Negative entries are process groups (see launch.sh); process.kill
-    // takes them the same way kill(2) does.
-    for (const pid of pids) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // already gone
-      }
-    }
-    await rm(pidfile, { force: true }).catch(() => {});
-  }
-
+  // Killing the session hangs up the server's terminal; the server takes
+  // its Xvfb and desktop down on that and exits, which closes the port.
   async function stopEverything() {
-    const { display } = readSettings(await getSettings());
+    const { port } = await getRunningInfo();
     await host.sessions.kill(SESSION_NAME).catch(() => {});
-    // The launch script's trap handles the normal case; this covers a shell
-    // that was killed before its trap ran.
-    await new Promise((r) => setTimeout(r, 300));
-    await killFromPidfile(display);
+    if (port && !(await waitForSilence(port))) {
+      log(`quicdesk-server on ${port} did not exit after its session was killed`);
+    }
     lastPort = null;
   }
 
@@ -277,7 +268,7 @@ export function activate({ router, log, getSettings, host }) {
         res.status(400).json({
           error:
             binary.reason === "outdated"
-              ? `${binary.path} is too old (no --ws-listen); rebuild it from the QuicDesk repository.`
+              ? `${binary.path} is too old (no --spawn-xvfb); rebuild it from the QuicDesk repository.`
               : "quicdesk-server was not found. Install it (see this extension's README) or set its path in Settings.",
         });
         return;
@@ -292,23 +283,31 @@ export function activate({ router, log, getSettings, host }) {
       }
       const port = await pickPort(settings.port);
       const args = [
-        settings.mode,
-        settings.display,
-        String(port),
-        String(settings.fps),
-        String(settings.bitrateKbps * 1000),
-        String(settings.dpi),
-        settings.keyboardLayout,
-        settings.desktopCommand,
-        binary.path,
-        INITIAL_SIZE,
-        runtimeDir(settings.display),
-        path.join(EXTENSION_DIR, "apply-scale.sh"),
+        "--display", settings.display,
+        "--listen", "127.0.0.1:0",
+        "--ws-listen", `127.0.0.1:${port}`,
+        "--fps", String(settings.fps),
+        "--bitrate", String(settings.bitrateKbps * 1000),
       ];
+      if (settings.mode === "managed") {
+        // The server owns Xvfb and the desktop: it starts them, resizes the
+        // display to the tab, and ends them with itself. The scale hook
+        // gets the desktop's session bus from the server.
+        args.push(
+          "--spawn-xvfb",
+          "--xvfb-screen", XVFB_FRAMEBUFFER,
+          "--dpi", String(settings.dpi),
+          "--keyboard-layout", settings.keyboardLayout,
+          "--desktop", settings.desktopCommand,
+          "--initial-size", INITIAL_SIZE,
+          "--on-scale", `bash ${shellQuote(path.join(EXTENSION_DIR, "apply-scale.sh"))}`,
+        );
+      }
       await host.sessions.create(SESSION_NAME, os.homedir(), true);
-      // `exec` makes the script the window's own process, so the window
-      // (and with it the single-window session) ends when it does.
-      const line = ["exec", "bash", shellQuote(LAUNCH_SCRIPT), ...args.map(shellQuote)].join(" ");
+      // `exec` makes the server the window's own process, so the window
+      // (and with it the single-window session) ends when it does, and
+      // killing the window hangs the server up.
+      const line = ["exec", shellQuote(binary.path), ...args.map(shellQuote)].join(" ");
       await host.sessions.sendText(SESSION_NAME, line, true);
       lastPort = port;
 

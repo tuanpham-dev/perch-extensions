@@ -23,10 +23,17 @@ sudo apt install -y xvfb x11-xserver-utils xfce4 dbus-x11
 ## Usage
 
 1. Open the **Remote Desktop** sidebar tab.
-2. **Start Remote Desktop**. In managed mode this brings up a virtual display and the desktop session in the background, inside a `remote-desktop` terminal session that shows up like any other session; open it to read the server's own output, which is also where to look if something fails to start.
+2. **Start Remote Desktop**. This runs `quicdesk-server` inside a `remote-desktop` terminal session that shows up like any other session; in managed mode the server brings up the virtual display and the desktop session itself. Open that session to read the server's output, which is also where to look if something fails to start.
 3. **Open Display** opens a tab with the live desktop. Click into it and type; it behaves like a screen.
 4. Optional: type a command (e.g. `xterm`, `firefox`) and **Launch** to run it on the managed display, in the active project's working directory.
-5. **Stop** when done.
+5. **Stop** when done. It ends the session; the server takes the desktop and the display down with it.
+
+Outside Perch, the same managed display is one command:
+
+```sh
+quicdesk-server --display :101 --spawn-xvfb --desktop xfce4-session --keyboard-layout us \
+  --listen 127.0.0.1:0 --ws-listen 127.0.0.1:14600 --initial-size 1920x1080
+```
 
 The tab pauses the stream while it is hidden (another Perch tab active, or the browser tab in the background) and resumes with a fresh keyframe when you return.
 
@@ -38,7 +45,7 @@ The desktop scale follows the driver's `remoteDesktop.pixelRatio`: on a managed 
 
 ## Managed and existing displays
 
-- **Managed** (default): the extension starts `Xvfb` on the configured display, applies the keyboard layout, starts the desktop command and then the server. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later.
+- **Managed** (default): the server starts `Xvfb` on the configured display, applies the keyboard layout and starts the desktop command with a D-Bus session bus of its own, then captures that display. It refuses a display that is already in use. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later. Everything the server started ends with it, so **Stop** (or a Perch restart, or the server being killed) leaves no Xvfb or desktop behind.
 - **Existing**: the server attaches to a display that already runs, such as `:0` on a desktop machine. Keyboard and mouse go to that real screen. The size is never changed; a screen larger than the tab is scaled down to fit, never up. Launch is not offered in this mode.
 
 ## Settings

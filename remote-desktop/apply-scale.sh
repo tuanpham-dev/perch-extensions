@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Scale hook for quicdesk-server (--on-scale): makes the managed desktop
-# match the driver's pixel ratio. SCALE and DISPLAY come from the server;
-# DBUS_SESSION_BUS_ADDRESS from launch.sh, so xfconf reaches the desktop.
+# match the driver's pixel ratio. SCALE, DISPLAY and the desktop's
+# DBUS_SESSION_BUS_ADDRESS come from the server, so xfconf reaches the
+# running desktop.
 #
 # GTK 3 and 4 and XFCE itself follow xsettings live: an integer window
 # scale (2 from ratio 2 up) plus fonts at the remaining fraction through
