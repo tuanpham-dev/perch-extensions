@@ -243,6 +243,12 @@ function parseAgentTitle(title) {
 // Claude Code ----
 
 const MAX_HOOK_EVENTS = 200;
+// The AGENTS panel view's feed: the last hook events as they arrived, newest
+// last here and reversed on the way out. Kept beside the per-pane state map
+// rather than derived from it, because the map holds one record per pane
+// and the feed wants every event.
+const MAX_RECENT_EVENTS = 200;
+const recentEvents = [];
 const hookEvents = new Map(); // paneId -> record from hookStatus.mjs's reduceHookEvent
 
 function recordHookEvent(event) {
@@ -489,6 +495,15 @@ export function activate({ router, getSettings, host }) {
   host.agentHooks?.subscribe({
     events: ["session-start", "prompt-submit", "tool-start", "tool-end", "permission", "stop"],
     onEvent(event) {
+      recentEvents.push({
+        at: typeof event.receivedAt === "number" ? event.receivedAt : Date.now(),
+        // Core's name when it has one, else what the agent called it.
+        event: event.event ?? event.rawEvent,
+        agent: event.agent,
+        paneId: event.paneId,
+        sessionName: event.sessionName,
+      });
+      if (recentEvents.length > MAX_RECENT_EVENTS) recentEvents.shift();
       const kind = recordHookEvent(event);
       if (!kind) return;
       // Taken now: by the time the settings and agent list are read, a
@@ -540,6 +555,11 @@ export function activate({ router, getSettings, host }) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // The feed, newest first.
+  router.get("/events", (_req, res) => {
+    res.json({ events: [...recentEvents].reverse() });
   });
 
   // Which project a folder belongs to, for a folder with no agent running in

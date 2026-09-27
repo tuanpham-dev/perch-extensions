@@ -37,6 +37,40 @@ export const host: {
   settings: SettingsApi | null;
 } = { serverFetch: null, app: null, settings: null };
 
+// One row of core's GET /api/agent-hooks: which agents exist and whether
+// their hooks are installed - what the AGENTS view's notice is built from.
+export interface HookStateRow {
+  agentId: string;
+  label: string;
+  enabled: boolean;
+  // The CLI is on this machine.
+  installed: boolean;
+  state: "unsupported" | "not-installed" | "installed" | "stale";
+}
+
+// Core's own routes, not this extension's: the app serves them at /api and
+// other registry extensions already read them the same way.
+export async function fetchHookStates(): Promise<HookStateRow[]> {
+  const res = await fetch("/api/agent-hooks");
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const body = (await res.json()) as HookStateRow[] | { agents?: HookStateRow[]; states?: HookStateRow[] };
+  if (Array.isArray(body)) return body;
+  return body.agents ?? body.states ?? [];
+}
+
+// The same install Settings → AI Providers runs.
+export async function installHooks(agentId: string): Promise<void> {
+  const res = await fetch("/api/agent-hooks/install", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agentId }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error || `${res.status} ${res.statusText}`);
+  }
+}
+
 export async function getJson<T>(path: string): Promise<T> {
   if (!host.serverFetch) throw new Error("agent-monitor is not active");
   const res = await host.serverFetch(path);

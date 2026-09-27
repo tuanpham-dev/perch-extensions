@@ -603,3 +603,203 @@
 .agent-monitor-statusbar-waiting {
   color: var(--agent-monitor-waiting, #f59e0b);
 }
+
+/* ---- The AGENTS bottom-panel view (AgentsPanelView.tsx) ---- */
+
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  font-size: 12px;
+}
+
+.agent-panel-notice,
+.agent-panel-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+}
+
+.agent-panel-notice {
+  border-color: var(--agent-monitor-waiting, #f59e0b);
+}
+
+.agent-panel-notice > span,
+.agent-panel-error > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-panel-button {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-panel-button:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.agent-panel-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-panel-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+}
+
+.agent-panel-table th,
+.agent-panel-table td {
+  padding: 4px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.agent-panel-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  color: var(--fg-inactive);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-panel-row {
+  cursor: pointer;
+}
+
+.agent-panel-row:hover td {
+  background: var(--list-hover-bg);
+}
+
+/* An inline flex span inside the cell, not the cell itself: a td that is a
+   flex container leaves the table's row layout, and its bottom border no
+   longer lines up with its neighbours'. */
+.agent-panel-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+.agent-panel-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg-inactive);
+  cursor: pointer;
+}
+
+.agent-panel-dismiss:hover {
+  background: var(--list-hover-bg);
+  color: var(--fg);
+}
+
+.agent-panel-icon {
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.agent-panel-project {
+  color: var(--fg-inactive);
+}
+
+.agent-panel-sep {
+  margin: 0 4px;
+  color: var(--fg-inactive);
+}
+
+.agent-panel-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The marks are the PROJECTS-row ones; a waiting row's label carries the
+   same amber so the table's "who needs me" scan works on color alone. */
+.agent-panel-state-waiting {
+  color: var(--agent-monitor-waiting, #f59e0b);
+}
+
+.agent-panel-since {
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-panel-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-inactive);
+}
+
+.agent-panel-feed {
+  margin-top: 8px;
+  padding: 0 10px 8px;
+  font-family: var(--mono-font, monospace);
+}
+
+.agent-panel-feed-title {
+  padding: 6px 0 4px;
+  color: var(--fg-inactive);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-panel-feed-empty {
+  color: var(--fg-inactive);
+}
+
+.agent-panel-event {
+  display: grid;
+  grid-template-columns: 70px minmax(80px, 140px) minmax(120px, 1fr) auto;
+  gap: 10px;
+  padding: 1px 0;
+  color: var(--fg);
+}
+
+.agent-panel-event.clickable {
+  cursor: pointer;
+}
+
+.agent-panel-event.clickable:hover {
+  background: var(--list-hover-bg);
+}
+
+.agent-panel-event-time,
+.agent-panel-event-where {
+  color: var(--fg-inactive);
+}
+
+.agent-panel-event-where,
+.agent-panel-event-agent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

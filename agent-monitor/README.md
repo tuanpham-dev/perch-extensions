@@ -78,6 +78,24 @@ Opening it again focuses the tab already there.
 Scope, the ticked projects, the grouping and the card order are remembered per browser,
 not synced: they are how you like to look at the board, not settings.
 
+## The AGENTS panel view
+
+On a Perch that has bottom-panel views, the extension adds an **AGENTS** tab
+to the bottom panel beside TERMINAL and OUTPUT (`Panel: Show Agents` in the
+palette). It is the board's data as a table: one row per agent window across
+every project, with the agent, the project and window, the same state the
+PROJECTS marks and the board show (working, waiting, done, interrupted, idle;
+waiting rows sort first), and how long ago it was last active. Clicking a
+row opens that window. Under the table, a feed lists the last 200 hook
+events the extension received, newest first; a row whose window is still
+open is clickable too. When an enabled agent has no hooks installed, a
+notice at the top says so and offers the same **Install hooks** the
+Settings page does.
+
+The view polls only while its tab is showing. On an older Perch without
+panel views nothing changes: the board and the status bar icon are what they
+were.
+
 ## How it works
 
 A server-side poll reads the app's own session list and classifies every window running one of the

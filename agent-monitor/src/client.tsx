@@ -14,6 +14,7 @@ import "./style.css";
 import { useEffect, useState, type ComponentType } from "react";
 import { injectStylesheet } from "./injectStylesheet";
 import BoardView from "./BoardView";
+import AgentsPanelView from "./AgentsPanelView";
 import Icon from "./Icon";
 import { attentionSummary, labelOf, markOf } from "./boardModel";
 import { host, type AppApi, type SettingsApi } from "./host";
@@ -113,6 +114,14 @@ interface ExtensionContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registerFileViewer(viewer: { id: string; extensions: string[]; component: ComponentType<any> }): void;
   registerCommand(command: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
+  // Optional: an older host has no bottom-panel views.
+  registerPanelView?(view: {
+    id: string;
+    title: string;
+    icon?: string;
+    order?: number;
+    component: typeof AgentsPanelView;
+  }): void;
   // Optional: an older host has no status bar for extensions to contribute to.
   registerStatusBarItem?(item: {
     id: string;
@@ -205,6 +214,16 @@ export function activate(ctx: ExtensionContext): void {
     placement: "left",
     order: 3,
     component: AgentBoardStatusItem,
+  });
+
+  // The AGENTS view in the bottom panel: the same rows as the board, as a
+  // table with the hook-event feed under it. Only on a host that has views.
+  ctx.registerPanelView?.({
+    id: "agents",
+    title: "Agents",
+    icon: "robot",
+    order: 20,
+    component: AgentsPanelView,
   });
 
   refreshDecorations = ctx.registerSessionDecorationProvider({
