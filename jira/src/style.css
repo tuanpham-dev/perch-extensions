@@ -1482,6 +1482,12 @@
   line-height: 18px;
 }
 
+.jira-sortdir .codicon,
+.jira-sorthead .codicon {
+  font-size: 12px;
+  vertical-align: -2px;
+}
+
 /* ---- Grouping ---- */
 
 .jira-group {
@@ -3418,7 +3424,7 @@
 .jira-handoff-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
 .jira-handoff-rows { list-style: none; margin: 0; padding: 0; }
 .jira-handoff-rows li { display: grid; grid-template-columns: 5.5rem 1.2rem 1fr; gap: 6px; padding: 3px 0; align-items: baseline; }
-.jira-handoff-mark { text-align: center; font-weight: 600; }
+.jira-handoff-mark { display: flex; align-items: center; justify-content: center; align-self: center; }
 .jira-handoff-rows li.ok .jira-handoff-mark { color: var(--good, #5cc48b); }
 .jira-handoff-rows li.failed .jira-handoff-mark, .jira-handoff-rows li.failed .jira-handoff-text { color: var(--error, #f48771); }
 .jira-handoff-rows li.pending .jira-handoff-text { color: var(--fg-inactive, #999); }

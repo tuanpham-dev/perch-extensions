@@ -2561,7 +2561,12 @@ function SortHead({
         onClick={() => sortBy(list, field)}
       >
         {label}
-        {active && <span aria-hidden="true">{view.sort.dir === "asc" ? " \u2191" : " \u2193"}</span>}
+        {active && (
+          <span aria-hidden="true">
+            {" "}
+            <Icon name={view.sort.dir === "asc" ? "arrow-up" : "arrow-down"} />
+          </span>
+        )}
       </button>
     </span>
   );

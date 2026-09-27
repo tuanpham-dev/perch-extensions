@@ -2,6 +2,7 @@
 // Jira, which failed and why. One row per ticket, so a half-finished run is
 // legible and the bar's "Hand off" button - which only sends the ones still
 // owed - reads as the retry it is.
+import Icon from "./Icon";
 import KeyLink from "./KeyLink";
 import type { Batch } from "./batchTypes";
 
@@ -24,7 +25,9 @@ export default function HandoffPanel({ batch }: { batch: Batch }) {
         {rows.map((row) => (
           <li key={row.key} className={row.handoff ? (row.handoff.ok ? "ok" : "failed") : "pending"}>
             <KeyLink issueKey={row.key} url={batch.tickets[row.key]?.url} />
-            <span className="jira-handoff-mark">{row.handoff ? (row.handoff.ok ? "✓" : "✗") : "·"}</span>
+            <span className="jira-handoff-mark">
+              <Icon name={row.handoff ? (row.handoff.ok ? "check" : "close") : "circle-small"} />
+            </span>
             <span className="jira-handoff-text">
               {row.handoff ? (row.handoff.ok ? "moved to QA, assigned, commented" : row.handoff.error) : "not yet"}
             </span>

@@ -93,7 +93,7 @@ function optionsFor(facet: FacetKey, facets: Facets | null, showAssignee: boolea
 // The sort field, its direction and the grouping, as one small cluster used
 // both in the popover and inline in the editor tab's filter row.
 function ViewControls({ view, onView, compact }: { view: ListView; onView: (view: ListView) => void; compact: boolean }) {
-  const arrow = view.sort.dir === "asc" ? "\u2191" : "\u2193";
+  const arrow = <Icon name={view.sort.dir === "asc" ? "arrow-up" : "arrow-down"} />;
   return (
     <div className={`jira-viewcontrols${compact ? " compact" : ""}`}>
       <label className="jira-viewcontrol">
@@ -116,7 +116,8 @@ function ViewControls({ view, onView, compact }: { view: ListView; onView: (view
         title={`${sortLabel(view.sort.field)}, ${view.sort.dir === "asc" ? "ascending" : "descending"} - click to flip`}
         onClick={() => onView({ ...view, sort: { ...view.sort, dir: view.sort.dir === "asc" ? "desc" : "asc" } })}
       >
-        {compact ? arrow : `${arrow} ${view.sort.dir === "asc" ? "Ascending" : "Descending"}`}
+        {arrow}
+        {!compact && ` ${view.sort.dir === "asc" ? "Ascending" : "Descending"}`}
       </button>
       <label className="jira-viewcontrol">
         <span>Group</span>
