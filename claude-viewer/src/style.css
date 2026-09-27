@@ -966,7 +966,7 @@
    covers it instead of the composer. */
 .cv-strip-head { flex-shrink: 0; display: flex; align-items: flex-start; gap: 6px; padding: 0 12px; min-height: 26px; border-top: 1px solid var(--cv-border); background: var(--cv-panel); cursor: pointer; user-select: none; }
 .cv-strip-head:hover { background: var(--hover); }
-.cv-strip-head-toggle { height: 26px; flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--cv-dim); font-size: 12px; padding: 0; }
+.cv-strip-head-toggle { height: 26px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: none; border: none; cursor: pointer; color: var(--cv-dim); font-size: 12px; padding: 0; }
 .cv-strip-head-toggle:hover { color: var(--cv-text); }
 .cv-strip-head-toggle .codicon { font-size: 14px; }
 .cv-strip-head-attn .cv-strip-head-toggle { color: var(--cv-attn); }
