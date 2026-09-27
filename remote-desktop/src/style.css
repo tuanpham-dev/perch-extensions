@@ -1,0 +1,323 @@
+/* ---- Remote Desktop sidebar panel ---- */
+
+.rd-panel {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.rd-panel-status,
+.rd-panel-muted {
+  font-size: 12px;
+  opacity: 0.8;
+  line-height: 1.45;
+}
+
+.rd-panel-status code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+
+.rd-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rd-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--vscode-charts-green, #3fb950);
+}
+
+.rd-panel-warning {
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 136, 0, 0.15));
+  border: 1px solid var(--vscode-inputValidation-warningBorder, rgba(204, 136, 0, 0.5));
+}
+
+.rd-panel-error {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.rd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #fff);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rd-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rd-btn-primary {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+.rd-launch-form {
+  display: flex;
+  gap: 6px;
+}
+
+.rd-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background: var(--vscode-input-background, #313131);
+  color: var(--vscode-input-foreground, #ccc);
+  font: inherit;
+}
+
+/* ---- viewer tab ---- */
+
+.rd-view-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.rd-view-empty {
+  display: grid;
+  place-items: center;
+  background: transparent;
+}
+
+.rd-view-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.rd-view-error {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.rd-view-canvas {
+  position: absolute;
+  display: block;
+  outline: none;
+  touch-action: none;
+  image-rendering: auto;
+}
+
+.rd-view-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #ddd;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.rd-view-overlay-soft {
+  inset: auto 0 0 0;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.rd-view-banner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #ffd27a;
+  background: rgba(60, 40, 0, 0.85);
+  pointer-events: none;
+}
+
+.rd-view-notice {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.75);
+  pointer-events: none;
+}
+
+.rd-view-stats {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.4;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
+.rd-view-stats-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+
+.rd-view-fullscreen {
+  background: #000;
+}
+
+.rd-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.rd-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.rd-tool:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.rd-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.rd-tool-on {
+  opacity: 1;
+  background: var(--vscode-toolbar-activeBackground, rgba(99, 102, 103, 0.31));
+}
+
+.rd-tool-attention {
+  opacity: 1;
+  color: var(--vscode-charts-yellow, #e2c08d);
+}
+
+.rd-view-follow {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.rd-btn-small {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* ---- View settings popover ----
+   The surface (background, border, radius, shadow, fixed position, z-index)
+   comes from the host's .status-bar-popover; this only lays out the rows,
+   in the host's menu-row rhythm. */
+
+.rd-popover {
+  min-width: 260px;
+  overflow-y: auto;
+}
+
+.rd-popover-section {
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+}
+
+.rd-popover-section + .rd-popover-section {
+  border-top: 1px solid var(--border);
+}
+
+.rd-popover-title {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-inactive);
+}
+
+.rd-popover-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.rd-popover-option:hover {
+  background: var(--list-hover-bg);
+  color: var(--fg-bright);
+}
+
+.rd-popover-option input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.rd-popover-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 12px;
+  color: var(--fg-inactive);
+}
+
+.rd-popover-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-inactive);
+}
+

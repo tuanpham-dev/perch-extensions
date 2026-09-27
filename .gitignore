@@ -4,3 +4,5 @@ node_modules/
 full-keyboard/dist/
 ghostty-engine/dist/
 plans/
+# Server binaries, built from the QuicDesk repository (scripts/build-release.sh).
+remote-desktop/bin/
