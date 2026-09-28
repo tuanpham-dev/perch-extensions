@@ -44,6 +44,12 @@ import {
   markQaMerged,
   markQaFixing,
   markQaFixed,
+  reviseQaReport,
+  hasReportFields,
+  requestQaRefine,
+  markQaRefined,
+  clearQaRefine,
+  reopenTicket,
   approveQa,
   excludeFromQa,
   markQaConflict,
@@ -1003,4 +1009,105 @@ test("the QA agent can leave a note, and it clears a wait", () => {
   assert.equal(batch.qa!.notes.length, 1);
   assert.equal(batch.qa!.awaiting, null);
   assert.equal(addQaNote(running("CAP-9"), "x", NOW).ok, false, "no QA run, no note");
+});
+
+test("the QA agent's revision replaces what it restates and keeps the rest", () => {
+  const batch = qaStarted("CAP-1");
+  recordQa(
+    batch,
+    batch.clusters[0].id,
+    "CAP-1",
+    { status: "pass", problem: ["nav overlaps logo"], fix: ["flex row"], steps: ["open at 900px"], before: { ext: "png" }, after: { ext: "png" } },
+    NOW + 4,
+  );
+  markQaMerging(batch, "CAP-1", NOW + 5);
+  markQaMerged(batch, "CAP-1", "abc123", NOW + 6);
+  markQaFixing(batch, "CAP-1", "keep the logo left", NOW + 7);
+  assert.equal(hasReportFields({ what: "moved it" }), false, "a bare fix report is not a revision");
+  assert.equal(hasReportFields({ fix: ["logo pinned left"] }), true);
+
+  const out = reviseQaReport(batch, "CAP-1", { fix: ["logo pinned left"], after: { ext: "webp" }, change: "keep the logo left" }, NOW + 8);
+  assert.equal(out.ok, true);
+  const ticket = batch.ticketStates["CAP-1"];
+  assert.deepEqual(ticket.qa.fix, ["logo pinned left"]);
+  assert.deepEqual(ticket.qa.problem, ["nav overlaps logo"], "a list it did not restate carries over");
+  assert.equal(ticket.qa.status, "pass");
+  assert.equal(ticket.qa.before?.ext, "png", "the before shot carries over");
+  assert.equal(ticket.qa.after?.ext, "webp");
+  assert.equal(ticket.qa.source, "qa-agent");
+  assert.equal(ticket.qa.change, "keep the logo left");
+  assert.equal(ticket.qaHistory.length, 1, "the replaced report is kept");
+  assert.deepEqual(ticket.qaHistory[0].fix, ["flex row"]);
+});
+
+test("a refine request waits for its answer, and approving or merging again clears it", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  assert.equal(requestQaRefine(batch, "CAP-1", "img fpo", "qa-agent", NOW + 5).ok, false, "not while it is being merged");
+  markQaMerged(batch, "CAP-1", "abc123", NOW + 6);
+  assert.equal(requestQaRefine(batch, "CAP-1", "  ", "qa-agent", NOW + 7).ok, false, "nothing to refine");
+  assert.equal(markQaRefined(batch, "CAP-1", { text: "x" }, NOW + 7).ok, false, "an answer nobody asked for");
+
+  assert.equal(requestQaRefine(batch, "CAP-1", "img fpo", "qa-agent", NOW + 8).ok, true);
+  const integration = batch.ticketStates["CAP-1"].integration;
+  assert.equal(integration.refine?.state, "pending");
+  markQaRefined(batch, "CAP-1", { text: "The hero image is a placeholder." }, NOW + 9);
+  assert.deepEqual(
+    { state: integration.refine?.state, refined: integration.refine?.refined, asWritten: integration.refine?.asWritten },
+    { state: "done", refined: "The hero image is a placeholder.", asWritten: false },
+  );
+
+  requestQaRefine(batch, "CAP-1", "maybe client", "qa-agent", NOW + 10);
+  markQaRefined(batch, "CAP-1", { asWritten: true }, NOW + 11);
+  assert.equal(integration.refine?.refined, "maybe client", "as written posts the note as typed");
+  assert.equal(integration.refine?.asWritten, true);
+  markQaRefined(batch, "CAP-1", { text: "AS-WRITTEN" }, NOW + 11);
+  assert.equal(integration.refine?.asWritten, true, "the model's AS-WRITTEN answer reads the same");
+
+  assert.equal(clearQaRefine(batch, "CAP-1", NOW + 12).ok, true);
+  assert.equal(integration.refine, null);
+  requestQaRefine(batch, "CAP-1", "img fpo", "model", NOW + 13);
+  approveQa(batch, "CAP-1", { note: "img fpo", postedNote: "img fpo" }, NOW + 14);
+  assert.equal(batch.ticketStates["CAP-1"].integration.refine, null, "approval settles it");
+
+  const doc = normalizeDocument(JSON.parse(JSON.stringify({ version: 1, batches: { bat_1: batch } })), NOW);
+  assert.equal(doc.batches.bat_1.ticketStates["CAP-1"].integration.refine, null);
+});
+
+test("an approval can be taken back until the branch ships, and the ticket is verified again", () => {
+  const batch = qaStarted("CAP-1", "CAP-2");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "abc123", NOW + 5);
+  assert.equal(reopenTicket(batch, "CAP-1", NOW + 6).ok, false, "only a done ticket reopens");
+  approveQa(batch, "CAP-1", { note: "fpo", postedNote: "The image is a placeholder." }, NOW + 6);
+
+  const out = reopenTicket(batch, "CAP-1", NOW + 7);
+  assert.deepEqual(out, { ok: true, wasApproved: true });
+  const ticket = batch.ticketStates["CAP-1"];
+  assert.equal(ticket.state, "review");
+  assert.equal(ticket.history.at(-1)?.note, "reopened");
+  assert.equal(ticket.integration.state, "merged");
+  assert.equal(ticket.integration.commit, "abc123", "the commit stays on the branch");
+  assert.equal(ticket.integration.postedNote, "", "the old approval's note goes with it");
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"], "a reopened ticket blocks shipping again");
+
+  // The amend that was in flight still lands its sha.
+  assert.equal(markQaMerged(batch, "CAP-1", "def456", NOW + 8).ok, true);
+  assert.equal(ticket.integration.state, "merged");
+  assert.equal(ticket.integration.commit, "def456");
+
+  // Approve again, ship, and the verdict is final.
+  approveQa(batch, "CAP-1", {}, NOW + 9);
+  excludeFromQa(batch, "CAP-2", "later", NOW + 9);
+  assert.equal(markQaShipped(batch, "main", NOW + 10).ok, true);
+  const refused = reopenTicket(batch, "CAP-1", NOW + 11);
+  assert.equal(refused.ok, false);
+  assert.match(String(refused.error), /already merged into main/);
+});
+
+test("a ticket accepted on the board reopens to review", () => {
+  const batch = reviewed("CAP-1");
+  accept(batch, "CAP-1", NOW + 4);
+  assert.deepEqual(reopenTicket(batch, "CAP-1", NOW + 5), { ok: true, wasApproved: false });
+  assert.equal(batch.ticketStates["CAP-1"].state, "review");
 });

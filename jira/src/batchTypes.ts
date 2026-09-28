@@ -58,6 +58,10 @@ export interface QaShot extends QaImage {
 
 export interface QaReport {
   status: QaStatus;
+  // Set when the QA agent revised the report after a change the reviewer
+  // asked for on the QA branch; `change` is that request.
+  source?: "qa-agent";
+  change?: string;
   problem: string[];
   fix: string[];
   steps: string[];
@@ -270,7 +274,46 @@ export interface TicketIntegration {
   why: string;
   files: string[];
   handoff: { url: string; ok: boolean; error: string; at: number } | null;
+  // The approval note being restated: by the QA agent (asynchronously,
+  // pending until it answers) or by the extension's model as a fallback.
+  refine: {
+    note: string;
+    state: "pending" | "done";
+    refined: string;
+    asWritten: boolean;
+    by: "qa-agent" | "model";
+    at: number;
+  } | null;
   at: number | null;
+}
+
+// GET /batches/:id/terminal. An agent's screen as plain text; closed when
+// its window is gone or was never made.
+export interface AgentTerminalResponse {
+  agent: string;
+  windowId: string;
+  sessionName: string;
+  text: string;
+  closed: boolean;
+}
+
+// GET /batches/:id/qa/diff. Raw patches: the client parses them
+// (diffModel.mjs), so the server stays a thin git call.
+export interface QaDiffResponse {
+  key: string;
+  state: IntegrationState;
+  // Short shas. base is "" when the ticket's commit is the repository's first.
+  base: string;
+  commit: string;
+  head: string;
+  // The uncommitted edits folded into the one section (the ticket is the tip).
+  combined: boolean;
+  withUncommitted: boolean;
+  // One section, or "Committed" and "Uncommitted" when later tickets sit on
+  // top of this one's commit.
+  sections: { label: string; patch: string }[];
+  truncated: boolean;
+  untrackedSkipped: number;
 }
 
 export interface QaStartResponse extends BatchResponse {

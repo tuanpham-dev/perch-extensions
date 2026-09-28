@@ -51,8 +51,18 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
   qa-merged <KEY> --commit <sha>
       The ticket's commits are squashed onto the branch and the server is
       up again. Say it again with the new sha after amending a fix in.
-  qa-fixing <KEY> [--what <text>]
-      A requested change is made in the worktree and NOT committed.
+  qa-fixing <KEY> [--what <text>] [--status pass|fail|partial|blocked]
+                  [--problem <text>]... [--fix <text>]... [--steps <text>]...
+                  [--notes <text>]... [--files <path>]... [--before <image>]
+                  [--after <image>] [--shot <image>[:<caption>]]...
+      A requested change is made in the worktree and NOT committed. With
+      any of the report flags it also updates the ticket's QA report to the
+      page as it is now, the way `qa` files one; a flag you leave out keeps
+      the old report's value.
+  qa-refined <KEY> --text <text>
+  qa-refined <KEY> --as-written yes
+      The approval note the panel asked you to restate, restated - or
+      --as-written when you cannot do it without guessing what was meant.
   qa-approved <KEY> --commit <sha>
       The fix is amended into the ticket's commit; this is the final sha.
   qa-excluded <KEY> --why <text>
@@ -116,7 +126,7 @@ shift
 
 case "$verb" in
   start | done | fail | qa | note | brief | status) ;;
-  qa-start | qa-merged | qa-fixing | qa-approved | qa-excluded | qa-conflict | qa-shipped | qa-handed) ;;
+  qa-start | qa-merged | qa-fixing | qa-refined | qa-approved | qa-excluded | qa-conflict | qa-shipped | qa-handed) ;;
   *) die "unknown verb \"$verb\" - run: jira-batch help" 2 ;;
 esac
 
@@ -186,7 +196,7 @@ absolute_path() {
 # agent types without being told twice. Uppercased here so a lowercased key
 # never reads as a ticket this cluster does not hold.
 case "$verb" in
-  start | done | fail | qa | qa-merged | qa-fixing | qa-approved | qa-excluded | qa-conflict | qa-handed)
+  start | done | fail | qa | qa-merged | qa-fixing | qa-refined | qa-approved | qa-excluded | qa-conflict | qa-handed)
     [ $# -gt 0 ] || die "$verb needs a ticket key, e.g. jira-batch $verb CAP-12" 2
     case "$1" in
       --*) die "$verb needs a ticket key before any flags, e.g. jira-batch $verb CAP-12" 2 ;;

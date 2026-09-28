@@ -52,12 +52,16 @@ import {
   ticketCounts,
   handoffPending,
   markHandedOff,
+  requestQaRefine,
+  markQaRefined,
+  clearQaRefine,
 } from "./batchModel.mjs";
 import { settingsForProject } from "./projectSettings.mjs";
 import { buildHandoffComment, buildQaRefinePrompt } from "./brief.mjs";
 import { createBatchStore, newId } from "./batchStore.mjs";
 import { buildClusterPrompt, heuristicClusters, parseClusterReply, singleCluster } from "./analysis.mjs";
 import { createBatchRunner } from "./batchRunner.mjs";
+import { buildQaDiff } from "./qaDiff.mjs";
 import { findTicketLinks } from "./links.mjs";
 import { createReviewStore } from "./reviewStore.mjs";
 import { createReviewRunner } from "./reviewRunner.mjs";
@@ -2397,6 +2401,64 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     await runner.qaShip(id);
   });
 
+  // What one ticket changed on the QA branch: its commit against the one
+  // before it, plus the worktree's uncommitted edits while a change it asked
+  // for is being made (they are its, and approval amends them in). Read from
+  // the QA worktree each time, since those edits move under the reviewer.
+  // What an agent's terminal shows right now: its screen plus some history
+  // above it, as plain text, so the batch view can show what the agent is
+  // doing without opening its terminal. `agent` is a cluster id, or "qa" for
+  // the QA agent. Only windows this batch started can be read - the id is
+  // looked up on the batch, never taken from the request.
+  const TERMINAL_LINES_MAX = 2000;
+  router.get(
+    "/batches/:id/terminal",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const agent = typeof req.query.agent === "string" ? req.query.agent : "";
+      const owner = agent === "qa" ? batch.qa : batch.clusters.find((cluster) => cluster.id === agent);
+      if (!owner) throw notFound(agent === "qa" ? "this batch has no QA agent" : `no cluster ${agent}`);
+      const windowId = owner.windowId ?? "";
+      const lines = Math.min(TERMINAL_LINES_MAX, Math.max(0, Number(req.query.lines) || 300));
+      res.setHeader("cache-control", "no-store");
+      if (!windowId) {
+        res.json({ agent, windowId: "", sessionName: owner.sessionName ?? "", text: "", closed: true });
+        return;
+      }
+      if (typeof host?.sessions?.capture !== "function") throw tooOld("this Perch cannot read terminal screens - update it");
+      try {
+        const text = await host.sessions.capture(windowId, { scrollback: lines });
+        res.json({ agent, windowId, sessionName: owner.sessionName ?? "", text, closed: false });
+      } catch {
+        // The window is gone (the agent's terminal was closed) or the backend
+        // could not read it: either way there is no screen to show.
+        res.json({ agent, windowId, sessionName: owner.sessionName ?? "", text: "", closed: true });
+      }
+    }),
+  );
+
+  router.get(
+    "/batches/:id/qa/diff",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const key = typeof req.query.key === "string" ? req.query.key.toUpperCase() : "";
+      if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+      const integration = batch.ticketStates[key]?.integration;
+      if (!integration?.commit) throw conflict(`${key} has no commit on the QA branch`);
+      const cwd = batch.qa?.worktreePath;
+      if (!cwd || !fs.existsSync(cwd)) throw conflict("the QA worktree is not there any more");
+      const diff = await buildQaDiff({
+        git,
+        cwd,
+        commit: integration.commit,
+        withUncommitted: integration.state === "fixing",
+        readFile: (file) => fs.promises.readFile(path.join(cwd, file)),
+      });
+      res.setHeader("cache-control", "no-store");
+      res.json({ key, state: integration.state, ...diff });
+    }),
+  );
+
   router.post(
     "/batches/:id/qa/handoff",
     route(async (req, res) => {
@@ -2435,30 +2497,60 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     }),
   );
 
-  // The note as a teammate will read it, before it is posted anywhere. The
-  // model is the extension's own rather than the QA agent, so the answer is
-  // back in seconds and shown to the user before the approval is final - an
-  // agent round trip would have meant approving first and reading after.
+  // The note as a teammate will read it, before it is posted anywhere. Asked
+  // of the QA agent, which has the ticket's context - it merged and served
+  // the ticket and made the reviewer's changes - and answers through
+  // `jira-batch qa-refined`; the panel shows the request pending until then.
+  // Only a batch whose QA agent has no terminal falls back to the
+  // extension's own model, answered here and now.
+  //
+  // Either way the request and its answer live on the ticket, not in the
+  // form, so leaving the pane while the agent works loses nothing.
   router.post(
     "/batches/:id/qa/refine-note",
     route(async (req, res) => {
-      const batch = batchOr404(await batches.get(), req.params.id);
+      const id = req.params.id;
+      const batch = batchOr404(await batches.get(), id);
       const body = req.body ?? {};
       const key = typeof body.key === "string" ? body.key.toUpperCase() : "";
+      if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
       const note = typeof body.note === "string" ? body.note.trim() : "";
       if (!note) throw bad("nothing to refine");
+
+      if (batch.qa?.windowId) {
+        await runner.qaRefine(id, key, note);
+        res.json({ batch: decorate((await batches.get()).batches[id]) });
+        return;
+      }
+
+      const asked = await batches.update((doc) => requestQaRefine(doc.batches[id], key, note, "model", Date.now()));
+      if (!asked.ok) throw conflict(asked.error);
       const summary = batch.tickets[key]?.summary ?? key;
       let reply = "";
+      let warning = "";
       try {
         reply = String(await ai.run(buildQaRefinePrompt({ key, summary, note }), { timeoutMs: 60_000 })).trim();
       } catch (err) {
         // No model, or a slow one: the note goes as written rather than the
         // approval waiting on it.
-        res.json({ refined: note, asWritten: true, note: `Could not refine the note: ${err.message}` });
-        return;
+        warning = `Could not refine the note: ${err.message}`;
       }
-      const asWritten = !reply || /^AS-WRITTEN\.?$/i.test(reply);
-      res.json({ refined: asWritten ? note : reply, asWritten });
+      await batches.update((doc) => markQaRefined(doc.batches[id], key, { text: reply, asWritten: !reply }, Date.now()));
+      res.json({ batch: decorate((await batches.get()).batches[id]), warning });
+    }),
+  );
+
+  // Dropping the refine request: the reviewer wants to write the note again.
+  router.post(
+    "/batches/:id/qa/refine-clear",
+    route(async (req, res) => {
+      const id = req.params.id;
+      batchOr404(await batches.get(), id);
+      const key = typeof req.body?.key === "string" ? req.body.key.toUpperCase() : "";
+      if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+      const result = await batches.update((doc) => clearQaRefine(doc.batches[id], key, Date.now()));
+      if (!result.ok) throw conflict(result.error);
+      res.json({ batch: decorate((await batches.get()).batches[id]) });
     }),
   );
 
@@ -2503,6 +2595,19 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const result = await batches.update((draft) => accept(batchOr404(draft, req.params.id), req.params.key.toUpperCase(), Date.now()));
       if (!result.ok) throw conflict(result.error);
       res.json({ batch: decorate((await batches.get()).batches[req.params.id]) });
+    }),
+  );
+
+  // A done ticket back to review: an accept, or a QA approval, taken back.
+  router.post(
+    "/batches/:id/tickets/:key/reopen",
+    route(async (req, res) => {
+      const id = req.params.id;
+      batchOr404(await batches.get(), id);
+      const key = req.params.key.toUpperCase();
+      if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+      await runner.reopenTicket(id, key);
+      res.json({ batch: decorate((await batches.get()).batches[id]) });
     }),
   );
 

@@ -16,7 +16,7 @@ import type {
   Proposal,
   SkillsResponse,
   StartResponse,
- QaStartResponse } from "./batchTypes";
+ AgentTerminalResponse, QaDiffResponse, QaStartResponse } from "./batchTypes";
 import type { LookupResponse } from "./batchTypes";
 
 export function lookupIssues(keys: string[] | string): Promise<LookupResponse> {
@@ -121,8 +121,14 @@ export function qaShip(id: string): Promise<BatchResponse> {
 
 // The note as a teammate will read it. `asWritten` means the model could not
 // restate it without guessing, so the original is offered back unchanged.
-export function qaRefineNote(id: string, key: string, note: string): Promise<{ refined: string; asWritten: boolean }> {
-  return apiPost<{ refined: string; asWritten: boolean }>(`/batches/${encodeURIComponent(id)}/qa/refine-note`, { key, note });
+// Asks for the approval note to be restated. The answer arrives on the batch
+// (integration.refine), now for the model fallback, later for the QA agent.
+export function qaRefineNote(id: string, key: string, note: string): Promise<BatchResponse & { warning?: string }> {
+  return apiPost(`/batches/${encodeURIComponent(id)}/qa/refine-note`, { key, note });
+}
+
+export function qaRefineClear(id: string, key: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/refine-clear`, { key });
 }
 
 export function qaHandoff(id: string): Promise<BatchResponse & { results: { key: string; ok: boolean; error: string }[] }> {
@@ -243,4 +249,20 @@ export function subscribeBatchEvents(
     source?.close();
     source = null;
   };
+}
+
+export function getQaDiff(id: string, key: string): Promise<QaDiffResponse> {
+  return apiGet<QaDiffResponse>(`/batches/${encodeURIComponent(id)}/qa/diff?key=${encodeURIComponent(key)}`);
+}
+
+// `agent` is a cluster id, or "qa" for the QA agent.
+export function getAgentTerminal(id: string, agent: string, lines = 300): Promise<AgentTerminalResponse> {
+  return apiGet<AgentTerminalResponse>(
+    `/batches/${encodeURIComponent(id)}/terminal?agent=${encodeURIComponent(agent)}&lines=${lines}`,
+  );
+}
+
+// A done ticket back to review: an accept or a QA approval taken back.
+export function reopenTicket(id: string, key: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/tickets/${encodeURIComponent(key)}/reopen`, {});
 }

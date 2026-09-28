@@ -285,12 +285,36 @@ export function buildQaFixMessage({ key, change }) {
     "",
     change.trim(),
     "",
-    `Make it in this worktree and do not commit. Restart the server, then run \`jira-batch qa-fixing ${key} --what "..."\`.`,
+    `Make it in this worktree and do not commit. Restart the server and check the page.`,
+    "",
+    `Then update ${key}'s QA report to match the page as it is now, in the same call: \`jira-batch qa-fixing ${key} --what "..." --status pass|fail|partial|blocked --problem ... --fix ... --steps ... --after <png> [--before <png>] [--shot <png>:"caption"]...\`.`,
+    "Take fresh screenshots of what the change affects. Restate only what the change made wrong: a field you leave out keeps its old value, so the problem statement and the before shot carry over unless they no longer hold.",
+  ].join("\n");
+}
+
+// The approval note, handed to the QA agent to restate. It has the context -
+// it merged the ticket, served it and made the reviewer's changes - so it can
+// say what "the image" or "24px" refers to where a bare model could only guess.
+export function buildQaRefineMessage({ key, summary, note }) {
+  return [
+    `Refine the approval note for ${key} - ${oneLine(summary)}. The reviewer typed it in shorthand while looking at the page:`,
+    "",
+    note.trim(),
+    "",
+    "Rewrite it as one to three plain sentences a teammate who was not present can act on. Expand shorthand and say what each number or element refers to, from what you know of this ticket and the page. Keep every claim exactly as strong as it was: a possibility stays a possibility, a guess stays a guess, and nothing is added. Change nothing in the worktree.",
+    "",
+    `Answer with \`jira-batch qa-refined ${key} --text "..."\`, or \`jira-batch qa-refined ${key} --as-written yes\` if you cannot restate it without guessing what was meant.`,
   ].join("\n");
 }
 
 export function buildQaApproveMessage({ key }) {
   return `Approve ${key}. If the tree carries an uncommitted fix, amend it into ${key}'s commit; then run \`jira-batch qa-approved ${key} --commit <sha>\`.`;
+}
+
+// An approval taken back. Nothing to do in git - the commit stays, amended
+// or not - only a change of what the panel will ask next.
+export function buildQaReopenMessage({ key }) {
+  return `Reopen ${key}: the reviewer took back its approval, so it is under review again. Leave its commit as it is and wait for the panel - a change request or a new approval may follow.`;
 }
 
 export function buildQaDropMessage({ key, commit, why }) {

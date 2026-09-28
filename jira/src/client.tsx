@@ -49,6 +49,8 @@ import {
   qaExclude,
   qaShip,
   qaRefineNote,
+  qaRefineClear,
+  reopenTicket,
   qaHandoff,
 } from "./batchApi";
 import type { Batch, BatchSummary, ClusterAction, SkillsResponse } from "./batchTypes";
@@ -2099,6 +2101,11 @@ export function acceptBatchTicket(key: string): void {
   batchEdit(() => acceptTicket(state.batch!.id, key));
 }
 
+export function reopenBatchTicket(key: string): void {
+  if (!state.batch) return;
+  batchEdit(() => reopenTicket(state.batch!.id, key));
+}
+
 export function sendBatchFeedback(): void {
   const batch = state.batch;
   if (!batch) return;
@@ -2214,11 +2221,22 @@ export function handOffQa(): void {
   batchEdit(() => qaHandoff(state.batch!.id));
 }
 
-// Not a batch edit: the answer is text for the panel to show, and the
-// document does not change until the reviewer approves with it.
-export function refineQaNote(key: string, note: string): Promise<{ refined: string; asWritten: boolean }> {
-  if (!state.batch) return Promise.resolve({ refined: note, asWritten: true });
-  return qaRefineNote(state.batch.id, key, note);
+// A batch edit: the request, and later the answer, live on the ticket. The
+// QA agent answers through its terminal, and the batch's event stream brings
+// the answer here.
+export function refineQaNote(key: string, note: string): void {
+  if (!state.batch) return;
+  batchEdit(() =>
+    qaRefineNote(state.batch!.id, key, note).then((res) => ({
+      batch: res.batch,
+      warnings: res.warning ? [res.warning] : undefined,
+    })),
+  );
+}
+
+export function clearQaNoteRefine(key: string): void {
+  if (!state.batch) return;
+  batchEdit(() => qaRefineClear(state.batch!.id, key));
 }
 
 export function deleteOpenBatch(): void {
@@ -3179,9 +3197,11 @@ function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
 // project - and reopening it inside a project still focuses the one there.
 const TAB_VIEWER = "board";
 
-function tabPathFor(s: JiraState): string {
-  return s.status?.repo ?? s.cwd ?? "jira";
-}
+// One tab for the whole app, whatever repository is active: the path is
+// only the tab's identity, and JiraTab reads the repository from the active
+// window, not from here. It used to be the repository, which opened a
+// second tab per repo.
+const TAB_PATH = "jira";
 
 let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) => void) | null = null;
 
@@ -3197,7 +3217,7 @@ function tabTitle(s: JiraState): string {
 
 export function openJiraTab(list?: ListId): void {
   if (list) setTabList(list);
-  openViewerTab?.(TAB_VIEWER, tabPathFor(state), { title: tabTitle(state) });
+  openViewerTab?.(TAB_VIEWER, TAB_PATH, { title: tabTitle(state) });
 }
 
 // The subset of the host's FileViewerHostProps the tab uses.
@@ -3378,13 +3398,16 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
                     busy={s.batchBusy}
                     onFeedback={saveFeedbackDraft}
                     onAccept={acceptBatchTicket}
+                    onReopen={reopenBatchTicket}
                     onOpenTerminal={(clusterId) => runClusterAction(clusterId, "open")}
+                    onOpenQaTerminal={openQaTerminal}
                     onOpenShot={(key, which, opener) => openShot(key, which, opener)}
                     onMergeTicket={mergeIntoQa}
                     onRequestChange={requestQaChange}
                     onApproveQa={approveInQa}
                     onExcludeQa={excludeFromQaRun}
                     onRefineNote={refineQaNote}
+                    onClearRefine={clearQaNoteRefine}
                     onOpenReport={(reportPath) => openFileTab?.(reportPath)}
                   />
                   <DetailBody detail={s.focused.detail} error={s.focused.error} />
@@ -3933,6 +3956,9 @@ interface ExtensionContext {
     extensions: string[];
     mode?: "default" | "preview";
     editorFallback?: boolean;
+    // An older core ignores it, and the tab joins whichever project it was
+    // opened from, as before.
+    global?: boolean;
     component: (props: ViewerHostProps) => ReturnType<typeof JiraTab>;
   }): void;
   registerCommand(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
@@ -4106,7 +4132,10 @@ export function activate(ctx: ExtensionContext): void {
   // extensions: [] - the tab is never matched to a file; it is reached only
   // through openViewerTab, from the panes' open-in-tab button or the command
   // below. editorFallback: false, since there is no file to fall back to.
-  ctx.registerFileViewer({ id: TAB_VIEWER, extensions: [], editorFallback: false, component: JiraTab });
+  // Global: the tab follows the active repository by itself, so it belongs
+  // to the app rather than to the project it happened to be opened from -
+  // tied to one, switching worktree hid it with that project's tabs.
+  ctx.registerFileViewer({ id: TAB_VIEWER, extensions: [], editorFallback: false, global: true, component: JiraTab });
 
   // One stream for the page, opened at activation rather than by the board:
   // the badge has to move while you are looking at something else - that is

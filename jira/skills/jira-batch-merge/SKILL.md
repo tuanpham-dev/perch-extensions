@@ -98,10 +98,22 @@ The ticket's own agent is told. You move on to whatever the panel asks next.
 ## 3. A requested change
 
 The panel types `Change <KEY>: <what the reviewer wants>`. Make the change in
-this worktree. **Do not commit.** Restart the server, confirm it answers, and:
+this worktree. **Do not commit.** Restart the server, confirm it answers, and
+look at the page.
+
+The ticket's QA report now describes a page that has moved, so update it in
+the same call: the fix you made, the steps to check it now, and fresh
+screenshots of what the change affects. Restate only what the change made
+wrong - a flag you leave out keeps the old report's value, so the problem
+statement and the before shot carry over unless they no longer hold:
 
 ```sh
-jira-batch qa-fixing LIV-341 --what "hover image no longer resizes"
+jira-batch qa-fixing LIV-341 --what "hover image no longer resizes" \
+  --status pass \
+  --fix "Removed the hover scale on .card__media img" \
+  --steps "Hover a product card at 1280px: the image stays the same size" \
+  --after .backups/qa/LIV-341-after-fix.png \
+  --shot .backups/qa/LIV-341-hover.png:"Hovered card at 1280px"
 ```
 
 A second request before approval is one more edit in the same working tree,
@@ -121,6 +133,14 @@ jira-batch qa-approved LIV-341 --commit "$(git rev-parse HEAD)"
 The commit's subject does not change. If the ticket's commit is not the tip
 (another ticket was merged after it), amend it with a fixup and an autosquash
 rebase over just those commits, and report the ticket's new sha.
+
+### Reopened
+
+The panel may type `Reopen <KEY>` after an approval: the reviewer took it
+back. Leave the commit as it is - amended or not - and wait. A change
+request or a new approval follows the usual way. If an amend was still in
+flight, finish it and report its sha with `qa-approved` as usual; the panel
+records the sha and keeps the ticket under review.
 
 ## 5. Exclusion
 
@@ -152,11 +172,20 @@ push. The reviewer does.
 
 ## 7. Notes on approval
 
-When the reviewer approves with a note, the panel may ask you to restate it
-so a teammate who was not here can act on it. Expand shorthand, name what
-the numbers refer to, keep every claim exactly as strong as it was - "maybe
-the client did it" stays a possibility, never a fact. If you cannot restate
-it without guessing, say so and it is posted as written.
+When the reviewer approves with a note, the panel types `Refine the approval
+note for <KEY>` with the note, so a teammate who was not here can act on it.
+You were there - you merged the ticket, served it and made the changes - so
+use what you know: expand shorthand, name what the numbers and elements
+refer to, keep every claim exactly as strong as it was - "maybe the client
+did it" stays a possibility, never a fact. Change nothing in the worktree.
+Answer with:
+
+```sh
+jira-batch qa-refined LIV-341 --text "The hero image differs from the Figma file; the client may have replaced it."
+```
+
+If you cannot restate it without guessing, answer
+`jira-batch qa-refined LIV-341 --as-written yes` and it is posted as typed.
 
 ## What you do not do
 

@@ -54,7 +54,9 @@ export default function QaBlock({ report, history, issueKey, batchId, onOpenShot
     <section className="jira-qa">
       <header className="jira-qa-head">
         <span className={`jira-qa-status qa-${report.status}`}>{STATUS_LABEL[report.status]}</span>
-        <span className="jira-qa-at">reported {when(report.at)}</span>
+        <span className="jira-qa-at">
+          {report.source === "qa-agent" ? `updated by the QA agent ${when(report.at)}` : `reported ${when(report.at)}`}
+        </span>
         {history.length > 0 && (
           <span className="jira-qa-at" title="An earlier pass was replaced after rework">
             {history.length === 1 ? "1 earlier report" : `${history.length} earlier reports`}
@@ -66,6 +68,12 @@ export default function QaBlock({ report, history, issueKey, batchId, onOpenShot
           </button>
         )}
       </header>
+
+      {report.source === "qa-agent" && report.change && (
+        <p className="jira-qa-revised" title="The change you asked for on the QA branch">
+          After: <span>{report.change}</span>
+        </p>
+      )}
 
       {(report.before || report.after || extras.length > 0) && (
         <div className="jira-qa-shots">

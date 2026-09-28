@@ -3493,17 +3493,19 @@
 /* ---- Reviewing a ticket ----
    The Review split button in the ticket's head, and the Review section above
    the ticket body. Same controls and tokens as the batch detail; the split
-   button's two halves are one control with a shared border. */
-.jira-split {
+   button's two halves are one control with a shared border. Its own prefix:
+   .jira-split is the list and detail layout, and sharing the name made that
+   split shrink to its content, which froze the top-and-bottom divider. */
+.jira-rsplit {
   position: relative;
   display: inline-flex;
   flex: none;
 }
-.jira-split-main {
+.jira-rsplit-main {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-.jira-split-arrow {
+.jira-rsplit-arrow {
   border-left-width: 0;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
@@ -3511,8 +3513,8 @@
   display: inline-flex;
   align-items: center;
 }
-.jira-split-arrow .codicon { font-size: 12px; }
-.jira-split-menu {
+.jira-rsplit-arrow .codicon { font-size: 12px; }
+.jira-rsplit-menu {
   position: absolute;
   top: calc(100% + 3px);
   right: 0;
@@ -3526,7 +3528,7 @@
   display: flex;
   flex-direction: column;
 }
-.jira-split-item {
+.jira-rsplit-item {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3539,11 +3541,11 @@
   text-align: left;
   cursor: pointer;
 }
-.jira-split-item:hover:not(:disabled) { background: var(--list-hover-bg, rgba(255, 255, 255, 0.06)); }
-.jira-split-item:disabled { color: var(--fg-inactive, #999); cursor: default; opacity: 0.7; }
-.jira-split-item:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: -1px; }
-.jira-split-check { width: 14px; display: inline-flex; justify-content: center; }
-.jira-split-check .codicon { font-size: 12px; }
+.jira-rsplit-item:hover:not(:disabled) { background: var(--list-hover-bg, rgba(255, 255, 255, 0.06)); }
+.jira-rsplit-item:disabled { color: var(--fg-inactive, #999); cursor: default; opacity: 0.7; }
+.jira-rsplit-item:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: -1px; }
+.jira-rsplit-check { width: 14px; display: inline-flex; justify-content: center; }
+.jira-rsplit-check .codicon { font-size: 12px; }
 
 .jira-rv {
   /* Flush with the ticket's own content below it, which the pane pads. */
@@ -3639,3 +3641,180 @@
 .jira-rv-post { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .jira-rv-post .codicon { font-size: 12px; vertical-align: -2px; }
 .jira-rv-posted { font-size: 11px; color: var(--fg-inactive, #999); }
+
+/* ---- A ticket's changes on the QA branch ----
+   Folded under its own bar in the QA section. The lines scroll sideways
+   inside each file rather than wrapping: code read wrapped loses its
+   indentation, which is half of what a diff shows. */
+.jira-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.jira-diff .mono { font-family: var(--font-mono, monospace); }
+.jira-diff-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.jira-diff-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.jira-diff-toggle b {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+}
+.jira-diff-toggle:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: 2px; }
+.jira-diff-range { font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-diff-counts { display: inline-flex; gap: 6px; font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-diff-counts .add { color: var(--git-added-fg, #81b88b); }
+.jira-diff-counts .del { color: var(--error, #f48771); }
+.jira-diff-section { display: flex; flex-direction: column; gap: 4px; }
+.jira-diff-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+}
+.jira-diff-file {
+  border: 1px solid var(--jira-hairline);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 0;
+}
+.jira-diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px 3px 4px;
+  border: 0;
+  background: var(--jira-sunken);
+  color: var(--fg, #ccc);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.jira-diff-file-head:hover { background: var(--list-hover-bg, rgba(255, 255, 255, 0.06)); }
+.jira-diff-file-head:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: -1px; }
+.jira-diff-status { flex: none; width: 12px; font-size: 11px; font-weight: 600; text-align: center; }
+.jira-diff-status.s-added { color: var(--git-added-fg, #81b88b); }
+.jira-diff-status.s-deleted { color: var(--error, #f48771); }
+.jira-diff-status.s-modified { color: var(--git-modified-fg, #e2c08d); }
+.jira-diff-status.s-renamed { color: var(--git-renamed-fg, #73c991); }
+.jira-diff-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-diff-file-head .jira-diff-counts { flex: none; }
+.jira-diff-empty { padding: 6px 10px; font-size: 12px; color: var(--fg-inactive, #999); }
+.jira-diff-body { overflow-x: auto; }
+.jira-diff-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.jira-diff-table td { padding: 0; vertical-align: top; }
+.jira-diff-no {
+  width: 1%;
+  min-width: 3ch;
+  padding: 0 6px !important;
+  text-align: right;
+  color: var(--fg-inactive, #999);
+  opacity: 0.7;
+  user-select: none;
+  white-space: nowrap;
+}
+.jira-diff-text { padding-right: 12px !important; white-space: pre; }
+.jira-diff-mark { display: inline-block; width: 2ch; padding-left: 4px; user-select: none; opacity: 0.8; }
+.jira-diff-line.k-add { background: color-mix(in srgb, var(--git-added-fg, #81b88b) 16%, transparent); }
+.jira-diff-line.k-del { background: color-mix(in srgb, var(--error, #f48771) 16%, transparent); }
+.jira-diff-line.k-note .jira-diff-text { color: var(--fg-inactive, #999); font-style: italic; }
+.jira-diff-hunk td {
+  padding: 2px 8px !important;
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 10%, transparent);
+  color: var(--fg-inactive, #999);
+  white-space: pre;
+}
+
+/* ---- An agent's terminal, read-only, in the batch detail ----
+   Sized like a small terminal and resizable by its corner. The text keeps
+   the terminal's own line breaks and scrolls sideways past the pane. */
+.jira-aterm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 0 10px;
+}
+.jira-aterm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.jira-aterm-name { font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-aterm-pick { display: inline-flex; gap: 2px; }
+.jira-aterm-agent {
+  padding: 1px 8px;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 10px;
+  background: none;
+  color: var(--fg-inactive, #999);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.jira-aterm-agent.active {
+  border-color: var(--focus-border, #4a9eff);
+  color: var(--fg-bright, #eee);
+  background: color-mix(in srgb, var(--focus-border, #4a9eff) 14%, transparent);
+}
+.jira-aterm-agent:disabled { opacity: 0.5; cursor: default; }
+.jira-aterm-agent:focus-visible { outline: 1px solid var(--focus-border, #0078d4); outline-offset: 1px; }
+.jira-aterm-live {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+}
+.jira-aterm-live.on { color: var(--good, #5cc48b); }
+.jira-aterm-screen {
+  margin: 0;
+  height: 260px;
+  min-height: 80px;
+  max-height: 80vh;
+  resize: vertical;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 4px;
+  background: var(--jira-sunken);
+  color: var(--fg, #ccc);
+  font-family: var(--terminal-font, var(--font-mono, monospace));
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: pre;
+}
+
+/* A QA report the QA agent revised after a requested change: the request it
+   answers, one line, above the shots. */
+.jira-qa-revised {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-inactive, #999);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-qa-revised span { color: var(--fg, #ccc); }

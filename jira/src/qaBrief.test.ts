@@ -11,6 +11,7 @@ import {
   buildQaFixMessage,
   buildQaMergeMessage,
   buildQaRefinePrompt,
+  buildQaRefineMessage,
   buildQaShipMessage,
   buildHandoffComment,
   buildQaConflictMessage,
@@ -110,4 +111,20 @@ test("a conflict tells the ticket's own agent what would not apply, where, and w
   assert.match(text, /Conflict in: sections\/cart\.liquid/);
   assert.match(text, /two rules disagree/);
   assert.match(text, /jira-batch done LIV-311/);
+});
+
+test("a change asks for the QA report to be brought up to date with fresh screenshots", () => {
+  const text = buildQaFixMessage({ key: "LIV-341", change: "keep the logo left" });
+  assert.match(text, /update LIV-341's QA report/);
+  assert.match(text, /--after <png>/);
+  assert.match(text, /a field you leave out keeps its old value/);
+});
+
+test("refining the approval note goes to the QA agent with the note verbatim and the verb to answer", () => {
+  const text = buildQaRefineMessage({ key: "LIV-271", summary: "Hydrate banner", note: "image is different than in figma (maybe client did it)" });
+  assert.ok(text.includes("image is different than in figma (maybe client did it)"));
+  assert.match(text, /a possibility stays a possibility/);
+  assert.match(text, /Change nothing in the worktree/);
+  assert.match(text, /jira-batch qa-refined LIV-271 --text/);
+  assert.match(text, /--as-written yes/);
 });

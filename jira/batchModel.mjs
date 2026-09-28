@@ -333,6 +333,47 @@ export function recordQa(batch, clusterId, key, raw, now) {
   return { ok: true, status: ticket.qa.status };
 }
 
+// The QA agent's update to a ticket's QA report, after it made a change the
+// reviewer asked for on the QA branch. The page moved, so the report has to
+// follow: what was wrong, what was done and how to check it now, with fresh
+// screenshots. Anything the agent does not restate is kept from the report
+// it replaces - a fix to the button's colour does not make the ticket's
+// problem statement or its before shot wrong. The one it replaces goes to
+// the history, the way a cluster's re-report after rework does.
+const REPORT_LISTS = ["problem", "fix", "steps", "notes", "files"];
+
+export function hasReportFields(raw) {
+  if (!isObject(raw)) return false;
+  if (QA_STATUSES.includes(raw.status)) return true;
+  if (raw.before || raw.after) return true;
+  if (Array.isArray(raw.shots) && raw.shots.length > 0) return true;
+  return REPORT_LISTS.some((name) => asList(raw[name]).length > 0);
+}
+
+export function reviseQaReport(batch, key, raw, now) {
+  const ticket = batch.ticketStates[key];
+  if (!ticket) return { ok: false, error: `${key} has no state yet` };
+  const prev = ticket.qa;
+  const merged = { status: QA_STATUSES.includes(raw.status) ? raw.status : prev?.status };
+  for (const name of REPORT_LISTS) {
+    const given = asList(raw[name]);
+    merged[name] = given.length > 0 ? given : (prev?.[name] ?? []);
+  }
+  merged.before = raw.before ?? prev?.before ?? null;
+  merged.after = raw.after ?? prev?.after ?? null;
+  merged.shots = Array.isArray(raw.shots) && raw.shots.length > 0 ? raw.shots : (prev?.shots ?? []);
+  merged.reportPath = prev?.reportPath ?? "";
+  const next = newQaReport(merged, now);
+  // Who wrote it and what prompted it, so the panel can say this is the QA
+  // agent's revision rather than the cluster's own report.
+  next.source = "qa-agent";
+  next.change = str(raw.change);
+  if (prev) ticket.qaHistory = [...(ticket.qaHistory ?? []), prev].slice(-10);
+  ticket.qa = next;
+  batch.updatedAt = now;
+  return { ok: true, status: next.status };
+}
+
 export function normalizeTicketState(raw) {
   if (!isObject(raw)) return null;
   return {
@@ -934,6 +975,39 @@ export function accept(batch, key, now) {
   return { ok: true };
 }
 
+// Taking a verdict back. A done ticket - accepted on the board, or approved
+// on the QA branch - goes back to review, where feedback, a change request
+// or a fresh verdict can reach it again. On the QA branch it goes back to
+// "verifying": its commit stays, and the note the approval carried is
+// dropped, since it will be written again with the next one.
+//
+// Refused once the QA branch has shipped: the commit is in production then,
+// and reopening the ticket here would not take it back out.
+export function reopenTicket(batch, key, now) {
+  const ticket = batch.ticketStates[key];
+  if (!ticket) return { ok: false, error: `${key} is not being worked` };
+  if (ticket.state !== "done") return { ok: false, error: `${key} is ${ticket.state} - only a done ticket can be reopened` };
+  const integration = ticket.integration;
+  const wasApproved = integration?.state === "approved";
+  if (wasApproved && batch.qa?.state === "shipped") {
+    return {
+      ok: false,
+      error: `${key} is already merged into ${batch.qa.shippedInto || "production"} - reopening it here would not take it back out`,
+    };
+  }
+  if (wasApproved) {
+    integration.state = "merged";
+    integration.note = "";
+    integration.refinedNote = "";
+    integration.postedNote = "";
+    integration.refine = null;
+    integration.at = now;
+  }
+  setTicketState(ticket, "review", now, "reopened");
+  batch.updatedAt = now;
+  return { ok: true, wasApproved };
+}
+
 // ---- Batch-level rules ----
 
 export function canArchive(batch) {
@@ -1027,6 +1101,11 @@ function newIntegration() {
     note: "",
     refinedNote: "",
     postedNote: "",
+    // The approval note being restated by the QA agent, which has the
+    // ticket's context: null until asked, then pending until it answers.
+    // Kept here rather than in the form so it survives the pane going away
+    // while the agent works.
+    refine: null,
     // Why it was excluded, or why the pick would not apply.
     why: "",
     files: [],
@@ -1049,6 +1128,16 @@ function normalizeIntegration(raw) {
     note: str(raw.note),
     refinedNote: str(raw.refinedNote),
     postedNote: str(raw.postedNote),
+    refine: isObject(raw.refine)
+      ? {
+          note: str(raw.refine.note),
+          state: raw.refine.state === "done" ? "done" : "pending",
+          refined: str(raw.refine.refined),
+          asWritten: raw.refine.asWritten === true,
+          by: raw.refine.by === "model" ? "model" : "qa-agent",
+          at: num(raw.refine.at),
+        }
+      : null,
     why: str(raw.why),
     files: Array.isArray(raw.files) ? raw.files.filter((f) => typeof f === "string") : [],
     handoff: isObject(raw.handoff)
@@ -1190,6 +1279,7 @@ export function markQaMerging(batch, key, now) {
   if (refusal) return { ok: false, error: refusal };
   const integration = integrationOf(batch, key);
   integration.state = "merging";
+  integration.refine = null;
   integration.commit = "";
   integration.change = "";
   integration.fixed = "";
@@ -1205,7 +1295,9 @@ export function markQaMerging(batch, key, now) {
 export function markQaMerged(batch, key, commit, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
-  if (!["merging", "fixing", "approved"].includes(integration.state)) {
+  // "merged" too: an approval reopened while its amend was in flight still
+  // gets the amended sha reported, and that sha is the one on the branch.
+  if (!["merging", "merged", "fixing", "approved"].includes(integration.state)) {
     return { ok: false, error: `${key} is ${integration.state}, so "merged" does not apply to it` };
   }
   if (integration.state !== "approved") integration.state = "merged";
@@ -1259,10 +1351,48 @@ export function approveQa(batch, key, { note = "", refinedNote = "", postedNote 
   const accepted = accept(batch, key, now);
   if (!accepted.ok) return accepted;
   integration.state = "approved";
+  integration.refine = null;
   integration.note = str(note);
   integration.refinedNote = str(refinedNote);
   integration.postedNote = str(postedNote) || str(note);
   integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// Asking for the approval note to be restated. Only while the ticket can
+// still be approved: the note is part of approving it.
+export function requestQaRefine(batch, key, note, by, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state !== "merged" && integration.state !== "fixing") {
+    return { ok: false, error: `${key} is ${integration.state} - only a ticket waiting for approval has a note to refine` };
+  }
+  const text = str(note).trim();
+  if (!text) return { ok: false, error: "nothing to refine" };
+  integration.refine = { note: text, state: "pending", refined: "", asWritten: false, by, at: now };
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// The answer, from the QA agent or the fallback model. "As written" means it
+// could not restate the note without guessing, and the note goes as typed.
+export function markQaRefined(batch, key, { text = "", asWritten = false }, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  const refine = integration.refine;
+  if (!refine) return { ok: false, error: `nobody asked for ${key}'s note to be refined` };
+  const reply = str(text).trim();
+  const verbatim = asWritten || !reply || /^AS-WRITTEN\.?$/i.test(reply);
+  integration.refine = { ...refine, state: "done", refined: verbatim ? refine.note : reply, asWritten: verbatim, at: now };
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function clearQaRefine(batch, key, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  integration.refine = null;
   batch.updatedAt = now;
   return { ok: true };
 }
@@ -1275,6 +1405,7 @@ export function excludeFromQa(batch, key, why, now) {
   }
   const wasOnBranch = ["merged", "fixing", "merging"].includes(integration.state) && Boolean(integration.commit);
   integration.state = "excluded";
+  integration.refine = null;
   integration.why = str(why);
   integration.at = now;
   batch.updatedAt = now;

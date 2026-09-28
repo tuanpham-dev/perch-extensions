@@ -4,8 +4,12 @@
 // It sits under the ticket's own detail rather than replacing it, because
 // reviewing means reading both - the ticket says what was asked for, this
 // says what came back.
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { clearSticky, useStickyState } from "./stickyState";
 import QaBlock from "./QaBlock";
+import QaDiff from "./QaDiff";
+import AgentTerminal from "./AgentTerminal";
+import type { AgentTarget } from "./AgentTerminal";
 import KeyLink from "./KeyLink";
 import type { Batch, TicketStateName, BatchQa, IntegrationState, TicketState } from "./batchTypes";
 
@@ -15,13 +19,17 @@ export interface BatchDetailProps {
   busy: boolean;
   onFeedback: (key: string, text: string) => void;
   onAccept: (key: string) => void;
+  // Takes a done ticket back to review - an accept or a QA approval undone.
+  onReopen: (key: string) => void;
   // The QA branch's verdicts. Only offered while a QA agent is running.
   onMergeTicket: (key: string) => void;
   onRequestChange: (key: string, change: string) => void;
   onApproveQa: (key: string, notes: { note: string; refinedNote: string; postedNote: string }) => void;
   onExcludeQa: (key: string, why: string) => void;
-  onRefineNote: (key: string, note: string) => Promise<{ refined: string; asWritten: boolean }>;
+  onRefineNote: (key: string, note: string) => void;
+  onClearRefine: (key: string) => void;
   onOpenTerminal: (clusterId: string) => void;
+  onOpenQaTerminal: () => void;
   // "before", "after", or "shot-<n>" for one of the extras.
   onOpenShot: (key: string, which: string, opener?: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
@@ -47,25 +55,28 @@ export default function BatchDetail({
   busy,
   onFeedback,
   onAccept,
+  onReopen,
   onMergeTicket,
   onRequestChange,
   onApproveQa,
   onExcludeQa,
   onRefineNote,
+  onClearRefine,
   onOpenTerminal,
+  onOpenQaTerminal,
   onOpenShot,
   onOpenReport,
 }: BatchDetailProps) {
   const ticket = batch.ticketStates[issueKey];
   const cluster = batch.clusters.find((entry) => entry.keys.includes(issueKey)) ?? null;
-  const [draft, setDraft] = useState(ticket?.feedbackDraft ?? "");
-
-  // Follow the server's copy when the ticket changes under us (another
-  // browser, or the draft being cleared as it is sent), without fighting what
-  // is being typed here.
-  useEffect(() => {
-    setDraft(batch.ticketStates[issueKey]?.feedbackDraft ?? "");
-  }, [issueKey, batch.ticketStates[issueKey]?.feedbackDraft]);
+  // What is typed in the feedback box, kept outside the component so it
+  // survives the pane unmounting before the blur that saves it. Tied to the
+  // server's copy it was typed over: when that changes (another browser, or
+  // the draft being cleared as it is sent) the server's wins.
+  const serverDraft = ticket?.feedbackDraft ?? "";
+  const [edit, setEdit] = useStickyState<{ text: string; base: string } | null>(`fb:${batch.id}:${issueKey}`, null);
+  const draft = edit && edit.base === serverDraft ? edit.text : serverDraft;
+  const setDraft = (text: string) => setEdit(text === serverDraft ? null : { text, base: serverDraft });
 
   if (!cluster && !ticket) return null;
 
@@ -79,6 +90,14 @@ export default function BatchDetail({
   // Whether what is in the box is what the server holds. The draft saves on
   // blur, so this is the difference between "written" and "kept".
   const saved = Boolean(draft.trim()) && draft === (ticket?.feedbackDraft ?? "");
+
+  // The agents that have worked on this ticket: its cluster's, and the QA
+  // agent once there is one. The one shown first is whichever is acting on
+  // the ticket now - QA while it is on the QA branch.
+  const agents: AgentTarget[] = [];
+  if (cluster) agents.push({ id: cluster.id, label: "Cluster agent", available: Boolean(cluster.windowId) });
+  if (batch.qa) agents.push({ id: "qa", label: "QA agent", available: Boolean(batch.qa.windowId) });
+  const preferredAgent = onQaBranch || !cluster ? "qa" : cluster.id;
 
   return (
     <section className="jira-bdetail">
@@ -101,10 +120,20 @@ export default function BatchDetail({
 
       {!ticket && <p className="jira-bdetail-note">In this batch, but its cluster has not started yet.</p>}
 
+      {ticket && agents.some((a) => a.available) && (
+        <AgentTerminal
+          batchId={batch.id}
+          agents={agents}
+          preferred={preferredAgent}
+          onOpenTerminal={(agent) => (agent === "qa" ? onOpenQaTerminal() : onOpenTerminal(agent))}
+        />
+      )}
+
       {ticket && (
         <>
           {qaRunning && batch.qa && (
             <QaVerdicts
+              batchId={batch.id}
               batchQa={batch.qa}
               ticket={ticket}
               issueKey={issueKey}
@@ -114,6 +143,8 @@ export default function BatchDetail({
               onApprove={(notes) => onApproveQa(issueKey, notes)}
               onExclude={(why) => onExcludeQa(issueKey, why)}
               onRefine={(note) => onRefineNote(issueKey, note)}
+              onClearRefine={() => onClearRefine(issueKey)}
+              onReopen={() => onReopen(issueKey)}
             />
           )}
           {ticket.qa ? (
@@ -173,6 +204,22 @@ export default function BatchDetail({
                 </li>
               ))}
             </ul>
+          )}
+
+          {ticket.state === "done" && !(qaRunning && integration === "approved") && !(integration === "approved" && batch.qa?.state === "shipped") && (
+            <div className="jira-bdetail-actions">
+              <span className="jira-bdetail-hint">
+                {integration === "approved" ? "Approved on the QA branch." : "Accepted."}
+              </span>
+              <button
+                className="jira-selaction"
+                disabled={busy}
+                onClick={() => onReopen(issueKey)}
+                title="Take it back to review, where you can send feedback for rework"
+              >
+                Reopen
+              </button>
+            </div>
           )}
 
           {canReview && !onQaBranch && (
@@ -242,6 +289,7 @@ const INTEGRATION_LABEL: Record<IntegrationState, string> = {
 };
 
 function QaVerdicts({
+  batchId,
   batchQa,
   ticket,
   issueKey,
@@ -251,7 +299,10 @@ function QaVerdicts({
   onApprove,
   onExclude,
   onRefine,
+  onClearRefine,
+  onReopen,
 }: {
+  batchId: string;
   batchQa: BatchQa;
   ticket: TicketState;
   issueKey: string;
@@ -260,56 +311,67 @@ function QaVerdicts({
   onChange: (text: string) => void;
   onApprove: (notes: { note: string; refinedNote: string; postedNote: string }) => void;
   onExclude: (why: string) => void;
-  onRefine: (note: string) => Promise<{ refined: string; asWritten: boolean }>;
+  onRefine: (note: string) => void;
+  onClearRefine: () => void;
+  onReopen: () => void;
 }) {
   const integration = ticket.integration;
   const state = integration?.state ?? "none";
-  const [mode, setMode] = useState<VerdictMode>("idle");
-  const [text, setText] = useState("");
-  // The note's three forms while approving: typed, refined, and the one that
-  // will be posted - which starts as the refined one and becomes whatever the
-  // reviewer edits it into, or their own words if they say so.
-  const [refined, setRefined] = useState<{ text: string; asWritten: boolean } | null>(null);
-  const [posted, setPosted] = useState("");
-  const [refining, setRefining] = useState(false);
+  // The form's state lives outside the component (stickyState), per ticket,
+  // so switching tabs or views mid-sentence keeps what was typed. It is tied
+  // to the QA state it was started in: when that moves under it - merged,
+  // fixed, excluded - the half-written verdict belonged to the previous
+  // situation and is dropped.
+  const prefix = `qav:${batchId}:${issueKey}:`;
+  const [mode, setMode] = useStickyState<VerdictMode>(`${prefix}mode`, "idle");
+  const [text, setText] = useStickyState(`${prefix}text`, "");
+  const [forState, setForState] = useStickyState<string | null>(`${prefix}for`, null);
+  // What will be posted, once the reviewer edits the refined note. Null
+  // means "the refined note as it came back".
+  const [postedEdit, setPostedEdit] = useStickyState<string | null>(`${prefix}posted`, null);
+  const refine = integration?.refine ?? null;
+  const posted = postedEdit ?? refine?.refined ?? "";
 
   useEffect(() => {
-    // A different ticket, or a state change under us, drops any half-typed
-    // verdict: it belonged to the previous situation.
-    setMode("idle");
-    setText("");
-    setRefined(null);
-    setPosted("");
-  }, [issueKey, state]);
+    if (forState !== null && forState !== state) clearSticky(prefix);
+  }, [forState, state, prefix]);
 
-  const reset = () => {
-    setMode("idle");
-    setText("");
-    setRefined(null);
-    setPosted("");
+  const begin = (next: VerdictMode) => {
+    setForState(state);
+    setMode(next);
   };
 
-  const refine = async () => {
+  const reset = () => {
+    clearSticky(prefix);
+    setMode("idle");
+    if (refine) onClearRefine();
+  };
+
+  const startRefine = () => {
     const note = text.trim();
     if (!note) {
       onApprove({ note: "", refinedNote: "", postedNote: "" });
-      reset();
+      clearSticky(prefix);
+      setMode("idle");
       return;
     }
-    setRefining(true);
-    try {
-      const out = await onRefine(note);
-      setRefined({ text: out.refined, asWritten: out.asWritten });
-      setPosted(out.refined);
-    } finally {
-      setRefining(false);
-    }
+    setPostedEdit(null);
+    onRefine(note);
   };
 
   const approveWith = (postedNote: string) => {
-    onApprove({ note: text.trim(), refinedNote: refined?.asWritten ? "" : (refined?.text ?? ""), postedNote });
-    reset();
+    onApprove({
+      note: refine?.note ?? text.trim(),
+      refinedNote: refine && refine.state === "done" && !refine.asWritten ? refine.refined : "",
+      postedNote,
+    });
+    clearSticky(prefix);
+    setMode("idle");
   };
+
+  // A refine request on the ticket is an approval in progress, whatever this
+  // browser's form was doing - it may have been asked from another one.
+  const approving = mode === "approve" || refine !== null;
 
   if (ticket.state !== "review" && state === "none") return null;
 
@@ -333,7 +395,7 @@ function QaVerdicts({
             Merge into QA
           </button>
           <span className="jira-qav-spacer" />
-          <button className="jira-selaction" disabled={busy} onClick={() => setMode("exclude")} title="Leave it out of this run - nothing to drop, it was never merged">
+          <button className="jira-selaction" disabled={busy} onClick={() => begin("exclude")} title="Leave it out of this run - nothing to drop, it was never merged">
             Exclude
           </button>
         </div>
@@ -353,6 +415,14 @@ function QaVerdicts({
           )}
           <span className="jira-qav-hint">Made in the QA worktree, not committed. Approving amends it into {issueKey}'s commit.</span>
         </div>
+      )}
+
+      {integration?.commit && (state === "merged" || state === "fixing" || state === "approved") && (
+        <QaDiff
+          batchId={batchId}
+          issueKey={issueKey}
+          version={`${integration.commit}|${state}|${integration.fixed}|${integration.at ?? ""}`}
+        />
       )}
 
       {state === "conflicted" && (
@@ -390,19 +460,31 @@ function QaVerdicts({
               {integration.handoff.ok ? "Handed off to Jira." : `Hand-off failed: ${integration.handoff.error}`}
             </span>
           )}
+          {batchQa.state !== "shipped" && (
+            <div className="jira-qav-row">
+              <button
+                className="jira-selaction"
+                disabled={busy}
+                onClick={onReopen}
+                title="Take the approval back: the ticket goes back to verifying, where you can request a change or approve it again"
+              >
+                Reopen
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {(state === "merged" || state === "fixing") && mode === "idle" && (
+      {(state === "merged" || state === "fixing") && mode === "idle" && !approving && (
         <div className="jira-qav-row">
-          <button className="jira-selaction primary" disabled={busy} onClick={() => setMode("approve")} title="Keep it, mark the ticket done">
+          <button className="jira-selaction primary" disabled={busy} onClick={() => begin("approve")} title="Keep it, mark the ticket done">
             Approve
           </button>
-          <button className="jira-selaction" disabled={busy} onClick={() => setMode("change")} title="Ask the QA agent to change something, without committing">
+          <button className="jira-selaction" disabled={busy} onClick={() => begin("change")} title="Ask the QA agent to change something, without committing">
             {state === "fixing" ? "Request another change" : "Request a change"}
           </button>
           <span className="jira-qav-spacer" />
-          <button className="jira-selaction" disabled={busy} onClick={() => setMode("exclude")} title="Leave it out of this run">
+          <button className="jira-selaction" disabled={busy} onClick={() => begin("exclude")} title="Leave it out of this run">
             Exclude
           </button>
         </div>
@@ -449,7 +531,7 @@ function QaVerdicts({
         </div>
       )}
 
-      {mode === "approve" && !refined && (
+      {approving && !refine && (
         <div className="jira-qav-form">
           <label className="jira-qav-label">
             Note (optional) - an observation, not a change request
@@ -463,35 +545,76 @@ function QaVerdicts({
             />
           </label>
           <div className="jira-qav-row">
-            <button className="jira-selaction primary" disabled={busy || refining} onClick={() => void refine()}>
-              {refining ? "Refining the note..." : text.trim() ? "Continue" : "Approve"}
+            <button
+              className="jira-selaction primary"
+              disabled={busy}
+              onClick={startRefine}
+              title={text.trim() ? (batchQa.windowId ? "The QA agent restates it for a teammate who was not here" : "Restate it for a teammate who was not here") : undefined}
+            >
+              {text.trim() ? "Continue" : "Approve"}
             </button>
-            <button className="jira-selaction" disabled={busy || refining} onClick={reset}>
+            <button className="jira-selaction" disabled={busy} onClick={reset}>
               Cancel
             </button>
           </div>
         </div>
       )}
 
-      {mode === "approve" && refined && (
+      {refine && refine.state === "pending" && (
         <div className="jira-qav-form">
           <div className="jira-qav-field">
             <b>Your note</b>
-            <span className="jira-qav-note">{text.trim()}</span>
+            <span className="jira-qav-note">{refine.note}</span>
+          </div>
+          <span className="jira-qav-hint">
+            {refine.by === "qa-agent" ? "The QA agent is restating it..." : "Refining the note..."}
+          </span>
+          <div className="jira-qav-row">
+            <button className="jira-selaction" disabled={busy} onClick={() => approveWith(refine.note)} title="Approve now, posting exactly what you typed">
+              Approve with mine as written
+            </button>
+            <button className="jira-selaction" disabled={busy} onClick={reset}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {refine && refine.state === "done" && (
+        <div className="jira-qav-form">
+          <div className="jira-qav-field">
+            <b>Your note</b>
+            <span className="jira-qav-note">{refine.note}</span>
           </div>
           <label className="jira-qav-label">
-            {refined.asWritten ? "Will be posted as written (it could not be restated without guessing)" : `Will be posted to ${issueKey}`}
-            <textarea className="jira-bfeedback-box refined" rows={3} value={posted} onChange={(e) => setPosted(e.target.value)} />
+            {refine.asWritten
+              ? "Will be posted as written (it could not be restated without guessing)"
+              : `Will be posted to ${issueKey}${refine.by === "qa-agent" ? " - restated by the QA agent" : ""}`}
+            <textarea className="jira-bfeedback-box refined" rows={3} value={posted} onChange={(e) => setPostedEdit(e.target.value)} />
           </label>
           <div className="jira-qav-row">
             <button className="jira-selaction primary" disabled={busy || !posted.trim()} onClick={() => approveWith(posted.trim())}>
               Approve
             </button>
-            {!refined.asWritten && posted !== text.trim() && (
-              <button className="jira-selaction" disabled={busy} onClick={() => setPosted(text.trim())} title="Post exactly what you typed">
+            {!refine.asWritten && posted !== refine.note && (
+              <button className="jira-selaction" disabled={busy} onClick={() => setPostedEdit(refine.note)} title="Post exactly what you typed">
                 Post mine as written
               </button>
             )}
+            <button
+              className="jira-selaction"
+              disabled={busy}
+              onClick={() => {
+                setText(refine.note);
+                setPostedEdit(null);
+                setForState(state);
+                setMode("approve");
+                onClearRefine();
+              }}
+              title="Edit your note and restate it again"
+            >
+              Rewrite
+            </button>
             <button className="jira-selaction" disabled={busy} onClick={reset}>
               Cancel
             </button>

@@ -50,9 +50,9 @@ export default function ReviewButton({ links, saved, busy, running, onRun, onSav
   const isRunning = (a: ReviewAction) => tasksFor(a).some((task) => running.has(task));
 
   return (
-    <span className="jira-split" ref={root}>
+    <span className="jira-rsplit" ref={root}>
       <button
-        className="jira-selaction jira-split-main"
+        className="jira-selaction jira-rsplit-main"
         disabled={busy || isRunning(action)}
         title={isRunning(action) ? "Already running - see the Review section" : `Run ${LABEL[action].toLowerCase()} for this ticket`}
         onClick={(e) => onRun(action, e.clientX, e.clientY)}
@@ -60,7 +60,7 @@ export default function ReviewButton({ links, saved, busy, running, onRun, onSav
         Review: {LABEL[action]}
       </button>
       <button
-        className="jira-selaction jira-split-arrow"
+        className="jira-selaction jira-rsplit-arrow"
         disabled={busy}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -70,7 +70,7 @@ export default function ReviewButton({ links, saved, busy, running, onRun, onSav
         <Icon name="chevron-down" />
       </button>
       {open && (
-        <div className="jira-split-menu" role="menu">
+        <div className="jira-rsplit-menu" role="menu">
           {ACTIONS.map((item) => {
             const off = !enabled[item] || isRunning(item);
             return (
@@ -78,7 +78,7 @@ export default function ReviewButton({ links, saved, busy, running, onRun, onSav
                 key={item}
                 role="menuitemradio"
                 aria-checked={item === action}
-                className={`jira-split-item${item === action ? " current" : ""}`}
+                className={`jira-rsplit-item${item === action ? " current" : ""}`}
                 disabled={off}
                 title={!enabled[item] ? WHY_NOT[item] : isRunning(item) ? "Already running" : undefined}
                 onClick={(e) => {
@@ -87,7 +87,7 @@ export default function ReviewButton({ links, saved, busy, running, onRun, onSav
                   onRun(item, e.clientX, e.clientY);
                 }}
               >
-                <span className="jira-split-check">{item === action ? <Icon name="check" /> : null}</span>
+                <span className="jira-rsplit-check">{item === action ? <Icon name="check" /> : null}</span>
                 {LABEL[item]}
               </button>
             );

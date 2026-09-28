@@ -34,6 +34,11 @@ import {
   markQaArtifacts,
   markWorktreeRemoved,
   recordQa,
+  reviseQaReport,
+  hasReportFields,
+  requestQaRefine,
+  markQaRefined,
+  reopenTicket as reopenTicketModel,
   qaSeen,
   setQaPreviewUrl,
   markQaMerged,
@@ -66,6 +71,8 @@ import {
   buildQaBriefLine,
   buildQaMergeMessage,
   buildQaFixMessage,
+  buildQaRefineMessage,
+  buildQaReopenMessage,
   buildQaApproveMessage,
   buildQaDropMessage,
   buildQaShipMessage,
@@ -906,6 +913,41 @@ export function createBatchRunner({
     await tellQaAgent(batchId, buildQaFixMessage({ key, change }));
   }
 
+  // The approval note, to the QA agent: it merged and served the ticket and
+  // made the reviewer's changes, so it knows what the shorthand points at.
+  // Answered asynchronously through `jira-batch qa-refined`; the panel shows
+  // it pending until then.
+  async function qaRefine(batchId, key, note) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return requestQaRefine(batch, key, note, "qa-agent", Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
+    const batch = (await store.get()).batches[batchId];
+    await tellQaAgent(batchId, buildQaRefineMessage({ key, summary: batch.tickets[key]?.summary ?? key, note }));
+  }
+
+  // Taking back a verdict. The QA agent is told when the ticket was approved
+  // on its branch, so its picture of the branch matches the panel's; a batch
+  // whose QA agent has no terminal is reopened all the same, and the agent
+  // reads the state when it is started again.
+  async function reopenTicket(batchId, key) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return reopenTicketModel(batch, key, Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
+    if (result.wasApproved) {
+      try {
+        await tellQaAgent(batchId, buildQaReopenMessage({ key }));
+      } catch (err) {
+        log(`reopened ${key} without telling the QA agent: ${err.message}`);
+      }
+    }
+  }
+
   async function qaApprove(batchId, key, notes) {
     const result = await store.update((doc) => {
       const batch = doc.batches[batchId];
@@ -1001,6 +1043,34 @@ export function createBatchRunner({
       if (!batchId) throw new RunnerError(400, "this shell is not inside a batch's QA worktree");
       return fn(batchId);
     };
+    // A report's screenshots, validated and copied BEFORE touching the store:
+    // a refused image must leave no half-written report behind, which is the
+    // same rule qa-report applies when it refuses to render a missing
+    // screenshot. Extra shots are stored under shot-1, shot-2... rather than
+    // under the caption: a caption is a sentence, and a sentence is not a
+    // filename. The position is what the report and the panel order by.
+    async function storeReportImages(batchId, key, body, { pruneAlways }) {
+      const before = body.before ? await storeImage(batchId, key, "before", String(body.before)) : null;
+      const after = body.after ? await storeImage(batchId, key, "after", String(body.after)) : null;
+      const shots = [];
+      const given = Array.isArray(body.shots) ? body.shots : [];
+      if (given.length > MAX_SHOTS) {
+        throw new RunnerError(400, `--shot given ${given.length} times, over the limit of ${MAX_SHOTS}`);
+      }
+      for (const entry of given) {
+        const file = String(entry?.file ?? entry ?? "");
+        if (!file) continue;
+        const label = `shot-${shots.length + 1}`;
+        const stored = await storeImage(batchId, key, label, file);
+        shots.push({ ...stored, label, caption: String(entry?.caption ?? "").slice(0, 120) });
+      }
+      // A re-report with fewer shots than last time must not leave the
+      // extras behind, or the report grows every rework. A revision that
+      // gives no shots keeps the old ones, so it prunes nothing.
+      if (pruneAlways || given.length > 0) await pruneShots(batchId, key, shots.length);
+      return { before, after, shots };
+    }
+
     const qaVerb = (mutate) => (body) =>
       withBatch(body, async (batchId) => {
         const key = String(body.key ?? "").toUpperCase();
@@ -1054,29 +1124,7 @@ export function createBatchRunner({
       qa: (body) =>
         withCluster(body, async (batchId, clusterId) => {
           const key = String(body.key ?? "").toUpperCase();
-          // Validate and copy BEFORE touching the store: a refused image must
-          // leave no half-written report behind, which is the same rule
-          // qa-report applies when it refuses to render a missing screenshot.
-          const before = body.before ? await storeImage(batchId, key, "before", String(body.before)) : null;
-          const after = body.after ? await storeImage(batchId, key, "after", String(body.after)) : null;
-          // Stored under shot-1, shot-2... rather than under the caption: a
-          // caption is a sentence, and a sentence is not a filename. The
-          // position is what the report and the panel order by anyway.
-          const shots = [];
-          const given = Array.isArray(body.shots) ? body.shots : [];
-          if (given.length > MAX_SHOTS) {
-            throw new RunnerError(400, `--shot given ${given.length} times, over the limit of ${MAX_SHOTS}`);
-          }
-          for (const [i, entry] of given.entries()) {
-            const file = String(entry?.file ?? entry ?? "");
-            if (!file) continue;
-            const label = `shot-${shots.length + 1}`;
-            const stored = await storeImage(batchId, key, label, file);
-            shots.push({ ...stored, label, caption: String(entry?.caption ?? "").slice(0, 120) });
-          }
-          // A re-report with fewer shots than last time must not leave the
-          // extras behind, or the report grows every rework.
-          await pruneShots(batchId, key, shots.length);
+          const { before, after, shots } = await storeReportImages(batchId, key, body, { pruneAlways: true });
           const result = await store.update((doc) => {
             const batch = doc.batches[batchId];
             if (!batch) return { ok: false, error: `no batch ${batchId}` };
@@ -1089,7 +1137,39 @@ export function createBatchRunner({
 
       "qa-start": qaVerb((batch, _key, body, now) => (body.url ? setQaPreviewUrl(batch, String(body.url), now) : { ok: true })),
       "qa-merged": qaVerb((batch, key, body, now) => markQaMerged(batch, key, String(body.commit ?? ""), now)),
-      "qa-fixing": qaVerb((batch, key, body, now) => markQaFixed(batch, key, String(body.what ?? ""), now)),
+      // The fix report, and with it - when the agent restates any of it - the
+      // ticket's QA report brought up to date with the page as it now is.
+      "qa-fixing": async (body) => {
+        const key = String(body.key ?? "").toUpperCase();
+        const batchId = String(body.batchId ?? "");
+        const revising = hasReportFields(body);
+        // Checked before any image is copied: a refused call must not replace
+        // the screenshots of the report that stands.
+        if (revising) {
+          const state = (await store.get()).batches[batchId]?.ticketStates[key]?.integration?.state;
+          if (state !== "merged" && state !== "fixing") {
+            throw new RunnerError(409, `${key} is ${state ?? "not in this batch"} - there is no change in progress`);
+          }
+        }
+        const images = revising ? await storeReportImages(batchId, key, body, { pruneAlways: false }) : null;
+        const out = await qaVerb((batch, k, b, now) => {
+          const fixed = markQaFixed(batch, k, String(b.what ?? ""), now);
+          if (!fixed.ok || !images) return fixed;
+          const integration = batch.ticketStates[k]?.integration;
+          const revised = reviseQaReport(batch, k, { ...b, ...images, change: integration?.change ?? "" }, now);
+          return revised.ok ? { ...fixed, report: revised.status } : revised;
+        })(body);
+        if (images) {
+          const batch = (await store.get()).batches[batchId];
+          const cluster = batch?.clusters.find((entry) => entry.keys.includes(key));
+          if (cluster) await maybeBuildReport(batchId, cluster.id);
+        }
+        return out;
+      },
+      // The QA agent's restatement of an approval note the panel asked about.
+      "qa-refined": qaVerb((batch, key, body, now) =>
+        markQaRefined(batch, key, { text: String(body.text ?? ""), asWritten: /^(yes|true|1)$/i.test(String(body.asWritten ?? "")) }, now),
+      ),
       // The agent's "approved" is the amend landing: the user approved first,
       // through the panel, and this records the sha the branch now carries.
       "qa-approved": qaVerb((batch, key, body, now) => markQaMerged(batch, key, String(body.commit ?? ""), now)),
@@ -1290,6 +1370,8 @@ export function createBatchRunner({
     startQaAgent,
     qaMerge,
     qaChange,
+    qaRefine,
+    reopenTicket,
     qaApprove,
     qaExclude,
     qaShip,
