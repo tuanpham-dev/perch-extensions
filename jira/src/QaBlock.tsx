@@ -4,6 +4,7 @@
 // The pictures are thumbnails on purpose - a reviewer scans the words first
 // and opens an image when a claim needs checking. Clicking one hands off to
 // the tab's viewer, which is where zooming lives.
+import { useState } from "react";
 import Icon from "./Icon";
 import type { QaReport, QaStatus } from "./batchTypes";
 
@@ -17,6 +18,9 @@ export interface QaBlockProps {
   // When the reviewer last sent this ticket back. A report older than that
   // describes the page before the rework.
   lastFeedbackAt?: number | null;
+  // An earlier report, shown under the current one: its pictures come from
+  // where they were kept when it was replaced, and open in a browser tab.
+  historical?: boolean;
   // "before", "after", or "shot-<n>" for one of the extras.
   onOpenShot: (which: string, opener: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
@@ -48,10 +52,18 @@ function when(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function QaBlock({ report, history, issueKey, batchId, lastFeedbackAt, onOpenShot, onOpenReport }: QaBlockProps) {
-  const stale = Boolean(lastFeedbackAt && report.at < lastFeedbackAt);
+export default function QaBlock({ report, history, issueKey, batchId, lastFeedbackAt, historical = false, onOpenShot, onOpenReport }: QaBlockProps) {
+  const stale = !historical && Boolean(lastFeedbackAt && report.at < lastFeedbackAt);
+  const [showHistory, setShowHistory] = useState(false);
+  // The report's time rides on the URL: for the current report it only makes
+  // the address change when the report does, so a replaced picture is
+  // fetched again rather than served from the browser's cache.
   const shotUrl = (which: string) =>
-    `/api/ext/perch.jira/qa/${encodeURIComponent(batchId)}/${encodeURIComponent(issueKey)}/${which}`;
+    `/api/ext/perch.jira/qa/${encodeURIComponent(batchId)}/${encodeURIComponent(issueKey)}/${which}?${historical ? "at" : "v"}=${report.at}`;
+  const openShot = (which: string, opener: HTMLElement) => {
+    if (historical) window.open(shotUrl(which), "_blank", "noopener");
+    else onOpenShot(which, opener);
+  };
   const extras = report.shots ?? [];
 
   return (
@@ -66,10 +78,10 @@ export default function QaBlock({ report, history, issueKey, batchId, lastFeedba
             from before the rework
           </span>
         )}
-        {history.length > 0 && (
-          <span className="jira-qa-at" title="An earlier pass was replaced after rework">
-            {history.length === 1 ? "1 earlier report" : `${history.length} earlier reports`}
-          </span>
+        {!historical && history.length > 0 && (
+          <button className="jira-linkish" aria-expanded={showHistory} onClick={() => setShowHistory(!showHistory)} title="Earlier passes, replaced after rework">
+            {showHistory ? "Hide earlier reports" : history.length === 1 ? "1 earlier report" : `${history.length} earlier reports`}
+          </button>
         )}
         {report.reportPath && (
           <button className="jira-linkish" onClick={() => onOpenReport(report.reportPath)} title={report.reportPath}>
@@ -91,12 +103,12 @@ export default function QaBlock({ report, history, issueKey, batchId, lastFeedba
               where a missing extra is just a shot nobody took. */}
           {(["before", "after"] as const).map((which) =>
             report[which] ? (
-              <button key={which} className="jira-qa-shot" onClick={(event) => onOpenShot(which, event.currentTarget)} title={`Open the ${which} screenshot`}>
+              <button key={which} className="jira-qa-shot" onClick={(event) => openShot(which, event.currentTarget)} title={`Open the ${which} screenshot`}>
                 <span className="jira-qa-shot-label">
                   {which}
                   <Icon name="zoom-in" />
                 </span>
-                <img src={shotUrl(which)} alt={`${issueKey} ${which}`} loading="lazy" />
+                <img src={shotUrl(which)} alt={`${issueKey} ${which}`} loading="lazy" onError={historical ? (e) => { e.currentTarget.style.display = "none"; } : undefined} />
               </button>
             ) : (
               <div key={which} className="jira-qa-shot empty">
@@ -109,14 +121,14 @@ export default function QaBlock({ report, history, issueKey, batchId, lastFeedba
             <button
               key={shot.label}
               className="jira-qa-shot"
-              onClick={(event) => onOpenShot(shot.label, event.currentTarget)}
+              onClick={(event) => openShot(shot.label, event.currentTarget)}
               title={shot.caption || `Open ${shot.label}`}
             >
               <span className="jira-qa-shot-label">
                 <span className="jira-qa-shot-cap">{shot.caption || shot.label}</span>
                 <Icon name="zoom-in" />
               </span>
-              <img src={shotUrl(shot.label)} alt={`${issueKey} ${shot.caption || shot.label}`} loading="lazy" />
+              <img src={shotUrl(shot.label)} alt={`${issueKey} ${shot.caption || shot.label}`} loading="lazy" onError={historical ? (e) => { e.currentTarget.style.display = "none"; } : undefined} />
             </button>
           ))}
         </div>
@@ -139,6 +151,22 @@ export default function QaBlock({ report, history, issueKey, batchId, lastFeedba
         <p className="jira-qa-files" title={report.files.join("\n")}>
           Touched <span className="mono">{report.files.join(", ")}</span>
         </p>
+      )}
+      {showHistory && (
+        <div className="jira-qa-history">
+          {[...history].reverse().map((earlier) => (
+            <QaBlock
+              key={earlier.at}
+              report={earlier}
+              history={[]}
+              issueKey={issueKey}
+              batchId={batchId}
+              historical
+              onOpenShot={onOpenShot}
+              onOpenReport={onOpenReport}
+            />
+          ))}
+        </div>
       )}
     </section>
   );

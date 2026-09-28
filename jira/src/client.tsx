@@ -15,6 +15,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { draftFrom, draftToProposal, moveInDraft, previewBatch, type ProposalDraft } from "./proposalDraft";
 import { readSticky } from "./stickyState";
+import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
 import { apiGet, apiPost, setApiFetcher } from "./api";
@@ -185,6 +186,8 @@ interface SettingsApi {
 // The subset of the host's SidebarPanelHostProps these panes use.
 interface SidebarPanelHostProps {
   showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  // The panel header's actions slot, for the Refresh button.
+  actionsTarget?: HTMLDivElement | null;
 }
 
 let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | null = null;
@@ -658,7 +661,9 @@ function refresh(): void {
   apiGet<StatusResponse>(`/status?cwd=${q}`)
     .then((status) => {
       if (token !== refreshToken) return;
-      setState({ status, error: null });
+      // The repository root is known now: the project list's filters are
+      // the repository's, whichever of its folders the window is in.
+      setState({ status, error: null, ...(status.repo ? loadFiltersFor(cwd, status.repo) : {}) });
       if (!status.configured || !status.authed) {
         setState({ mine: [], project: null, loading: false, facets: null, projects: [] });
         return;
@@ -681,6 +686,14 @@ function refresh(): void {
       if (token !== refreshToken) return;
       setState({ error: err.message, loading: false });
     });
+}
+
+// Everything the lists show, fetched again: the lists only load when the tab
+// opens or the active window changes, so a Jira blip left an error with no
+// way out but switching windows.
+export function reloadAll(): void {
+  refresh();
+  if (state.batch) refreshOpenBatch();
 }
 
 // The two lists on their own, for a filter change. A filter narrows the
@@ -835,7 +848,8 @@ function loadProjects(token: number): void {
 // would only invite hand-editing. filterModel.writeFilters prunes an emptied
 // pane, so the setting can't grow one dead repo path at a time.
 export function applyFilters(list: ListId, filters: IssueFilters): void {
-  const filterStore = state.cwd ? writeFilters(state.filterStore, state.cwd, list, filters) : state.filterStore;
+  const key = listKey(list, state.cwd, state.status?.repo ?? null);
+  const filterStore = key ? writeFilters(state.filterStore, key, list, filters) : state.filterStore;
   setState({ filters: { ...state.filters, [list]: filters }, filterStore });
   if (state.cwd) extSettings?.set("jira.filters", serializeFilterStore(filterStore));
   refreshIssues();
@@ -850,14 +864,25 @@ export function filtersFor(list: ListId): IssueFilters {
 // returns the whole store as well as this repo's slice: applyFilters writes
 // back into that store, so losing it would clobber every other repo's saved
 // filters on the next tick.
-function loadFiltersFor(cwd: string | null): Pick<JiraState, "filters" | "filterStore" | "views" | "viewStore"> {
+// Where each list's filters and view are kept. "Assigned to me" is the same
+// list in every repository, so its filters are too; the project list's
+// belong to the repository - its root once /status has named it, so a
+// subfolder or a second worktree reads the same ones.
+const MINE_KEY = "*";
+
+function listKey(list: ListId, cwd: string | null, repo: string | null): string | null {
+  return list === "mine" ? MINE_KEY : (repo || cwd);
+}
+
+function loadFiltersFor(cwd: string | null, repo: string | null = null): Pick<JiraState, "filters" | "filterStore" | "views" | "viewStore"> {
   const filterStore = parseFilterStore(extSettings?.get("jira.filters"));
   const viewStore = parseViewStore(extSettings?.get("jira.listViews"));
+  const projectKey = listKey("project", cwd, repo);
   return {
     filterStore,
-    filters: { mine: readFilters(filterStore, cwd, "mine"), project: readFilters(filterStore, cwd, "project") },
+    filters: { mine: readFilters(filterStore, MINE_KEY, "mine"), project: readFilters(filterStore, projectKey, "project") },
     viewStore,
-    views: { mine: readView(viewStore, cwd, "mine"), project: readView(viewStore, cwd, "project") },
+    views: { mine: readView(viewStore, MINE_KEY, "mine"), project: readView(viewStore, projectKey, "project") },
   };
 }
 
@@ -868,7 +893,8 @@ function loadFiltersFor(cwd: string | null): Pick<JiraState, "filters" | "filter
 // nothing.
 export function applyView(list: ListId, view: ListView): void {
   const before = state.views[list];
-  const viewStore = state.cwd ? writeView(state.viewStore, state.cwd, list, view) : state.viewStore;
+  const key = listKey(list, state.cwd, state.status?.repo ?? null);
+  const viewStore = key ? writeView(state.viewStore, key, list, view) : state.viewStore;
   setState({ views: { ...state.views, [list]: view }, viewStore });
   if (state.cwd) extSettings?.set("jira.listViews", serializeViewStore(viewStore));
   if (before.sort.field !== view.sort.field || before.sort.dir !== view.sort.dir) refreshIssues();
@@ -1076,6 +1102,7 @@ export function focusIssue(issue: IssueRow, { fresh = false }: { fresh?: boolean
   const cached = fresh ? null : detailCache.get(issue.key);
   const shown = fresh && state.focused?.key === issue.key ? state.focused.detail : null;
   setState({ focused: { key: issue.key, detail: cached ?? shown, error: null } });
+  markReviewSeen(issue.key);
   if (cached) return;
   fetchIssueDetail(issue.key, { fresh })
     .then((detail) => {
@@ -1939,10 +1966,70 @@ export function openShot(key: string, which: string, opener?: HTMLElement | null
 
 export function loadReviews(): void {
   void fetchReviews()
-    .then((doc) => setState({ reviews: doc }))
+    .then((doc) => {
+      // A browser that has never kept marks starts with everything seen, so
+      // installing this doesn't light up every old review at once.
+      if (readReviewSeen() === null) {
+        writeReviewSeen(Object.fromEntries(Object.values(doc.reviews).map((review) => [review.key, reviewEndedAt(review)])));
+      }
+      setState({ reviews: doc });
+      if (state.focused) markReviewSeen(state.focused.key);
+      setHostBadge?.("jira", unseenReviews().size || null);
+    })
     .catch(() => {
       // An older server has no review routes; the section simply stays away.
     });
+}
+
+// ---- Reviews that finished while you were elsewhere ----
+//
+// A review that reported or failed and hasn't been looked at since: counted
+// in the badge and marked on its row, because it used to show only once its
+// ticket was opened. "Seen" is per browser - opening the ticket marks it.
+const REVIEW_SEEN_KEY = "perch.jira.reviewSeen";
+
+function readReviewSeen(): Record<string, number> | null {
+  try {
+    const raw = localStorage.getItem(REVIEW_SEEN_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, number>) : null;
+  } catch {
+    return {};
+  }
+}
+
+function writeReviewSeen(seen: Record<string, number>): void {
+  try {
+    localStorage.setItem(REVIEW_SEEN_KEY, JSON.stringify(seen));
+  } catch {
+    // Blocked storage: the marks just come back next time.
+  }
+}
+
+function reviewEndedAt(review: Review): number {
+  return Math.max(
+    0,
+    ...(["code", "qa"] as const).map((task) => {
+      const current = review.tasks[task];
+      return current && (current.state === "reported" || current.state === "failed") ? (current.endedAt ?? 0) : 0;
+    }),
+  );
+}
+
+export function unseenReviews(): Set<string> {
+  const doc = state.reviews?.reviews ?? {};
+  const seen = readReviewSeen() ?? {};
+  return new Set(Object.values(doc).filter((review) => reviewEndedAt(review) > (seen[review.key] ?? 0)).map((review) => review.key));
+}
+
+export function markReviewSeen(key: string): void {
+  const review = state.reviews?.reviews[key];
+  if (!review) return;
+  const seen = readReviewSeen() ?? {};
+  const ended = reviewEndedAt(review);
+  if (ended <= (seen[key] ?? 0)) return;
+  writeReviewSeen({ ...seen, [key]: ended });
+  setHostBadge?.("jira", unseenReviews().size || null);
+  setState({});
 }
 
 export function reviewOf(key: string): Review | null {
@@ -2703,6 +2790,7 @@ function IssueList({
 }) {
   const { busyKey, popover, selection, selectMode, focused, views, collapsedGroups } = useJira();
   const view = views[list];
+  const unseen = unseenReviews();
   // Sections when grouping by project, in the order each project first shows
   // up in the sorted list.
   const groups = view.groupByProject ? groupByProject(issues) : null;
@@ -2846,7 +2934,10 @@ function IssueList({
                 {issue.key}
               </a>
               <button className="jira-row-main jira-cells" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
-                <span className="jira-title">{issue.summary}</span>
+                <span className="jira-title">
+                  {unseen.has(issue.key) && <span className="jira-review-dot" title="A review finished - open the ticket to read it" />}
+                  {issue.summary}
+                </span>
                 <span>
                   <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
                     {issue.status}
@@ -2860,7 +2951,10 @@ function IssueList({
             </>
           ) : (
             <button className="jira-row-main" title={issue.summary} onClick={(e) => onRowClick(issue, e)}>
-              <span className="jira-title">{issue.summary}</span>
+              <span className="jira-title">
+                {unseen.has(issue.key) && <span className="jira-review-dot" title="A review finished - open the ticket to read it" />}
+                {issue.summary}
+              </span>
               <span className="jira-sub">
                 <span className="jira-key">{issue.key}</span>
                 <span className="jira-chip" data-cat={issue.statusCategory ?? "unknown"}>
@@ -2991,8 +3085,18 @@ function IssueList({
 
 // Every state that isn't "here is a list" is identical in both panes, so it
 // is answered once here and each pane renders its own list underneath.
+// A network failure says "fetch failed" or an errno; what the reader needs is
+// which site could not be reached.
+function readableError(text: string): string {
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network/i.test(text)) {
+    const site = readSetting("jira.siteUrl") || "the Jira site";
+    return `Can't reach ${site}. Check the address in Settings, or your connection, then retry.`;
+  }
+  return text;
+}
+
 function gateMessage(s: JiraState): { kind: "error" | "empty"; text: string } | null {
-  if (s.error) return { kind: "error", text: s.error };
+  if (s.error) return { kind: "error", text: readableError(s.error) };
   if (!s.cwd) return { kind: "empty", text: "No active window." };
   if (!s.status) return { kind: "empty", text: "Loading…" };
   if (!s.status.configured) {
@@ -3003,12 +3107,31 @@ function gateMessage(s: JiraState): { kind: "error" | "empty"; text: string } | 
         : "Not configured. Set jira.siteUrl and jira.email in Settings, then add an API token there.",
     };
   }
-  if (!s.status.authed) return { kind: "error", text: s.status.error ?? "Could not sign in to Jira." };
+  if (!s.status.authed) return { kind: "error", text: readableError(s.status.error ?? "Could not sign in to Jira.") };
   return null;
 }
 
 function Gate({ message }: { message: { kind: "error" | "empty"; text: string } }) {
-  return <div className={message.kind === "error" ? "jira-error" : "jira-empty"}>{message.text}</div>;
+  if (message.kind !== "error") return <div className="jira-empty">{message.text}</div>;
+  return (
+    <div className="jira-error">
+      {message.text}{" "}
+      <button className="jira-linkish" onClick={reloadAll}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+// The Refresh button in a panel's header.
+function PanelRefresh({ target }: { target?: HTMLDivElement | null }) {
+  if (!target) return null;
+  return createPortal(
+    <button className="icon-button" title="Refresh from Jira" onClick={reloadAll}>
+      <Icon name="refresh" />
+    </button>,
+    target,
+  );
 }
 
 // ---- The two panes ----
@@ -3190,13 +3313,14 @@ function hasProject(s: JiraState): boolean {
   return Boolean(s.status?.projectKey) || s.project?.projectSource === "projectJql";
 }
 
-function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
+function AssignedPanel({ showMenu, actionsTarget }: SidebarPanelHostProps) {
   const s = useJira();
   const gate = gateMessage(s);
   const filtered = !filtersAreEmpty(s.filters.mine);
   const picked = s.mine.some((issue) => s.selection.has(issue.key));
   return (
     <div className="jira-panel">
+      <PanelRefresh target={actionsTarget} />
       {!gate && (
         <FilterBar
           filters={s.filters.mine}
@@ -3230,7 +3354,7 @@ function AssignedPanel({ showMenu }: SidebarPanelHostProps) {
   );
 }
 
-function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
+function ProjectPanel({ showMenu, actionsTarget }: SidebarPanelHostProps) {
   const s = useJira();
   const gate = gateMessage(s);
   const filtered = !filtersAreEmpty(s.filters.project);
@@ -3238,6 +3362,7 @@ function ProjectPanel({ showMenu }: SidebarPanelHostProps) {
 
   return (
     <div className="jira-panel">
+      <PanelRefresh target={actionsTarget} />
       {!gate && <ProjectCaption host="project" />}
       {!gate && hasProject(s) && (
         <FilterBar
@@ -3792,6 +3917,9 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
           // Batches view the split being governed is that area's, not this
           // one's, and this one has nothing to measure there.
           <div className="jira-layout-toggle" role="group" aria-label="Layout">
+            <button className="icon-button" title="Refresh from Jira" onClick={reloadAll}>
+              <Icon name="refresh" />
+            </button>
             <button
               className={`icon-button${showing === "row" ? " active" : ""}`}
               aria-pressed={showing === "row"}
@@ -3979,14 +4107,18 @@ function JiraStatusItem() {
     s.batchBadge > 0
       ? `\n${s.batchBadge} batch ${s.batchBadge === 1 ? "ticket needs you or is" : "tickets need you or are"} in review`
       : "";
+  // Reviews that finished while you were elsewhere count too.
+  const reviews = unseenReviews().size;
+  const reviewLine = reviews > 0 ? `\n${reviews} review${reviews === 1 ? "" : "s"} finished, not opened yet` : "";
+  const count = s.batchBadge + reviews;
   return (
     <button
-      className={`status-bar-item jira-statusbar${s.batchBadge > 0 ? " attention" : ""}`}
-      title={`Open Jira${assigned}${waiting}`}
+      className={`status-bar-item jira-statusbar${count > 0 ? " attention" : ""}`}
+      title={`Open Jira${assigned}${waiting}${reviewLine}`}
       onClick={() => openJiraTab()}
     >
       <span className="codicon codicon-project jira-statusbar-icon" aria-hidden="true" />
-      {s.batchBadge > 0 && <span className="jira-statusbar-count">{s.batchBadge}</span>}
+      {count > 0 && <span className="jira-statusbar-count">{count}</span>}
     </button>
   );
 }
@@ -4160,20 +4292,22 @@ export function activate(ctx: ExtensionContext): void {
   disposeBridge = [
     onDidChangeContext?.((active) => {
       if (active.cwd === state.cwd) return;
-      // Each repo reopens under the filters it was left with, and a selection
-      // made in one project has no meaning in the next.
+      // The tab is app-wide, so what is about you stays: the open ticket and
+      // what is ticked in "Assigned to me". What belonged to the previous
+      // repository goes - its project list's selection, its board, a Start
+      // work form for it.
+      const mine = new Set(state.mine.map((issue) => issue.key));
       setState({
         cwd: active.cwd,
         popover: null,
         ...loadFiltersFor(active.cwd),
         facets: null,
-        selection: new Set<string>(),
-        anchor: { mine: null, project: null },
+        selection: new Set([...state.selection].filter((key) => mine.has(key))),
+        anchor: { mine: state.anchor.mine, project: null },
         startForm: null,
         projectPicker: null,
-        // The ticket open in the tab belonged to the previous repo.
-        focused: null,
-        collapsedGroups: new Set<string>(),
+        startError: null,
+        note: null,
         board: null,
       });
       refresh();

@@ -2021,11 +2021,19 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const doc = await batches.get();
       const batch = batchOr404(doc, batchId);
       const upper = key.toUpperCase();
-      const qa = batch.ticketStates[upper]?.qa;
+      // ?at=<time> asks for an earlier report's picture, kept under
+      // hist-<time>/ when that report was replaced. Matched against the
+      // ticket's own history, never passed through.
+      const at = typeof req.query.at === "string" ? Number(req.query.at) : NaN;
+      const ticketState = batch.ticketStates[upper];
+      const earlier = Number.isFinite(at) ? (ticketState?.qaHistory ?? []).find((entry) => entry.at === at) : null;
+      const qa = earlier ?? ticketState?.qa;
       const shot = extra ? (qa?.shots ?? []).find((entry) => entry.label === which) : qa?.[which];
       if (!shot) throw notFound(`no ${which} image for ${upper}`);
 
-      const file = path.join(runner.evidenceDir, batchId, upper, `${which}.${shot.ext}`);
+      const file = earlier
+        ? path.join(runner.evidenceDir, batchId, upper, `hist-${earlier.at}`, `${which}.${shot.ext}`)
+        : path.join(runner.evidenceDir, batchId, upper, `${which}.${shot.ext}`);
       const type = shot.ext === "png" ? "image/png" : shot.ext === "webp" ? "image/webp" : "image/jpeg";
       res.setHeader("content-type", type);
       // The bytes for one report can be replaced when a ticket is re-QA'd

@@ -231,7 +231,7 @@ export interface QaCard {
 }
 
 export interface QaColumn {
-  id: "waiting" | "queue" | "verifying" | "approved" | "excluded" | "conflicted";
+  id: "needs-you" | "working" | "failed" | "accepted" | "queue" | "verifying" | "approved" | "excluded" | "conflicted";
   label: string;
   cards: QaCard[];
 }
@@ -264,11 +264,18 @@ export function qaColumns(batch: Batch): QaColumn[] {
   const queue = qaQueue(batch);
   const by = (states: IntegrationState[]) =>
     Object.keys(batch.ticketStates).filter((key) => states.includes(integrationOf(batch, key)) && !queue.includes(key));
-  const waiting = Object.keys(batch.ticketStates).filter(
-    (key) => integrationOf(batch, key) === "none" && !queue.includes(key),
-  );
+  // Tickets not on the QA branch, by where they actually are: still being
+  // worked, waiting on you, failed, or accepted on the board. They used to
+  // share one "Not yet reviewed" column, which hid a ticket needing you.
+  const off = (states: string[]) =>
+    Object.keys(batch.ticketStates).filter(
+      (key) => integrationOf(batch, key) === "none" && !queue.includes(key) && states.includes(batch.ticketStates[key].state),
+    );
   return [
-    { id: "waiting", label: "Not yet reviewed", cards: waiting.map(card) },
+    { id: "needs-you", label: "Needs you", cards: off(["needs-you"]).map(card) },
+    { id: "working", label: "Working", cards: off(["queued", "in-progress", "rework"]).map(card) },
+    { id: "failed", label: "Failed", cards: off(["failed"]).map(card) },
+    { id: "accepted", label: "Accepted", cards: off(["done"]).map(card) },
     { id: "queue", label: "Queue", cards: queue.map(card) },
     { id: "verifying", label: "Verifying", cards: by(["merging", "merged", "fixing"]).map(card) },
     { id: "approved", label: "Approved", cards: by(["approved"]).map(card) },

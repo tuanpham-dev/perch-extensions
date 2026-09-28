@@ -1006,6 +1006,14 @@ export function addNote(batch, clusterId, text, now) {
   if (!cluster) return { ok: false, error: `no cluster ${clusterId} in this batch` };
   cluster.notes.push({ text: str(text), at: now });
   if (cluster.notes.length > MAX_NOTES) cluster.notes.splice(0, cluster.notes.length - MAX_NOTES);
+  // Also in the history of the ticket it is working, where the reviewer
+  // reads what happened to that ticket.
+  const key = activeKey(batch, cluster);
+  const ticket = key ? batch.ticketStates[key] : null;
+  if (ticket) {
+    ticket.history.push({ state: ticket.state, at: now, note: `note: ${str(text)}` });
+    if (ticket.history.length > 60) ticket.history.splice(0, ticket.history.length - 60);
+  }
   wake(batch, cluster, now);
   batch.updatedAt = now;
   return { ok: true };
@@ -1291,6 +1299,7 @@ function newIntegration() {
     // "amend" (an approved fix to fold into the commit) or "drop" (an
     // excluded ticket's commit to remove). Shipping waits for it.
     pending: null,
+    fixReported: true,
     // The approval note being restated by the QA agent, which has the
     // ticket's context: null until asked, then pending until it answers.
     // Kept here rather than in the form so it survives the pane going away
@@ -1324,6 +1333,8 @@ function normalizeIntegration(raw) {
     refinedNote: str(raw.refinedNote),
     postedNote: str(raw.postedNote),
     pending: raw.pending === "amend" || raw.pending === "drop" ? raw.pending : null,
+    // False from a change request until the agent reports making it.
+    fixReported: raw.fixReported !== false,
     refine: isObject(raw.refine)
       ? {
           id: str(raw.refine.id),
@@ -1574,6 +1585,7 @@ export function markQaFixed(batch, key, what, now) {
   if (integration.state !== "merged" && integration.state !== "fixing") {
     return { ok: false, error: `${key} is ${integration.state} - there is no change in progress` };
   }
+  integration.fixReported = true;
   integration.state = "fixing";
   const text = str(what).trim();
   if (text) integration.fixed = integration.fixed ? `${integration.fixed}\n${text}` : text;
@@ -1590,6 +1602,7 @@ export function markQaFixing(batch, key, change, now) {
   if (integration.state !== "merged" && integration.state !== "fixing") {
     return { ok: false, error: `${key} is ${integration.state} - only a merged ticket can be changed` };
   }
+  integration.fixReported = false;
   integration.state = "fixing";
   // A second request before the first is approved is one more thing to do,
   // not a replacement: both land in the same uncommitted edit.
@@ -1775,10 +1788,25 @@ export function handoffPending(batch) {
 export function qaHookEvent(batch, windowId, event, now) {
   if (!batch.qa || !windowId || batch.qa.windowId !== windowId) return { ok: false, error: "not the QA agent's window" };
   if (event === "permission") batch.qa.awaiting = "waiting on a permission prompt";
-  else if (event === "stop") batch.qa.awaiting = shipBlockers(batch).length > 0 ? "the turn ended without a report" : null;
+  else if (event === "stop") batch.qa.awaiting = qaOwesReport(batch) ? "the turn ended without a report" : null;
   else if (event === "prompt-submit") batch.qa.awaiting = null;
   batch.updatedAt = now;
   return { ok: true };
+}
+
+// Whether the QA agent still owes a report: a pick in flight, a requested
+// change it has not reported making, a note to restate, an amend or drop not
+// confirmed. A merged ticket waiting for YOUR verdict is not the agent's to
+// report, which is what made the old warning show after every normal merge.
+export function qaOwesReport(batch) {
+  return Object.values(batch.ticketStates).some((ticket) => {
+    const integration = ticket.integration;
+    if (!integration) return false;
+    if (integration.state === "merging") return true;
+    if (integration.state === "fixing" && integration.fixReported === false) return true;
+    if (integration.refine?.state === "pending" && integration.refine.by === "qa-agent") return true;
+    return Boolean(integration.pending);
+  });
 }
 
 export function qaSeen(batch, now) {

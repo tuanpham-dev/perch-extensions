@@ -686,22 +686,29 @@ export function createBatchRunner({
     }
     if (!windowId) throw new RunnerError(500, "could not open a window for the resumed agent");
 
-    await store.update((d) => markResumed(d.batches[batchId], clusterId, { sessionName, windowId, now: Date.now() }));
-
     // Same rule as the first launch: whatever the resumed agent must read
     // rides on the line, because nothing typed after it arrives before the
     // process is up.
-    const fresh = await store.get();
-    const freshBatch = fresh.batches[batchId];
-    const freshCluster = clusterOf(freshBatch, clusterId);
     const resumeLine = buildResumeMessage({
-      clusterName: freshCluster.name,
-      remaining: remainingTickets(freshBatch, freshCluster),
+      clusterName: cluster.name,
+      remaining: remainingTickets(batch, cluster),
     }).replace(/\s+/g, " ").trim();
     const line =
       `export JB_SOCK=${shellQuote(socketPath)} JB_BATCH_ID=${shellQuote(batchId)} JB_CLUSTER_ID=${shellQuote(clusterId)}; ` +
       `export PATH=${shellQuote(binDir)}:"$PATH"; ${launch} ${shellQuote(resumeLine)}`;
-    await sendToWindow(windowId, line);
+    // Marked running only once the agent was actually launched: marked
+    // first, a failed send left a "running" cluster with nothing but a shell.
+    try {
+      await sendToWindow(windowId, line);
+    } catch (err) {
+      await store.update((d) => {
+        const target = clusterOf(d.batches[batchId], clusterId);
+        if (target) target.lastError = `could not launch the agent: ${err.message}`;
+        return { ok: true };
+      });
+      throw new RunnerError(500, `could not launch the agent: ${err.message}`);
+    }
+    await store.update((d) => markResumed(d.batches[batchId], clusterId, { sessionName, windowId, now: Date.now() }));
     return { clusterId, sessionName, windowId };
   }
 
@@ -1191,6 +1198,15 @@ export function createBatchRunner({
       await buildClusterReport(batchId, clusterId);
     } catch (err) {
       log(`could not build the QA report for ${clusterId}: ${err.message}`);
+      // Kept on the cluster so the board can say so; it built by itself,
+      // and a silent failure looked like a report that was never due.
+      await store
+        .update((d) => {
+          const target = d.batches[batchId] ? clusterOf(d.batches[batchId], clusterId) : null;
+          if (target) target.lastError = `the QA report could not be built: ${err.message}`;
+          return { ok: true };
+        })
+        .catch(() => {});
     }
   }
 
@@ -1276,6 +1292,21 @@ export function createBatchRunner({
       return { before, after, shots };
     }
 
+    // The report being replaced keeps its own pictures: its images are copied
+    // under hist-<its time>/ before the new ones overwrite the files, so an
+    // earlier report opens with what it actually showed.
+    async function archiveImages(batchId, key, report) {
+      if (!report) return;
+      const dir = path.join(evidenceDir, batchId, key);
+      const target = path.join(dir, `hist-${report.at}`);
+      const files = [];
+      for (const which of ["before", "after"]) if (report[which]?.ext) files.push(`${which}.${report[which].ext}`);
+      for (const shot of report.shots ?? []) if (shot?.ext) files.push(`${shot.label}.${shot.ext}`);
+      if (files.length === 0) return;
+      await mkdir(target, { recursive: true });
+      for (const file of files) await copyFile(path.join(dir, file), path.join(target, file)).catch(() => {});
+    }
+
     const qaVerb = (mutate) => (body) =>
       withBatch(body, async (batchId) => {
         const key = String(body.key ?? "").toUpperCase();
@@ -1339,6 +1370,7 @@ export function createBatchRunner({
             throw new RunnerError(409, `${key} is not in this cluster - it holds ${cluster.keys.join(", ") || "nothing"}`);
           }
           if (!current.ticketStates[key]) throw new RunnerError(409, `${key} has no state yet - this cluster has not started`);
+          await archiveImages(batchId, key, current.ticketStates[key].qa);
           const { before, after, shots } = await storeReportImages(batchId, key, body, { pruneAlways: true });
           // --report arrives as `report`; the model keeps it as reportPath.
           const reportPath = body.reportPath ?? body.report ?? "";
@@ -1378,6 +1410,7 @@ export function createBatchRunner({
             throw new RunnerError(409, `${key} is ${state ?? "not in this batch"} - there is no change in progress`);
           }
         }
+        if (revising) await archiveImages(batchId, key, (await store.get()).batches[batchId]?.ticketStates[key]?.qa);
         const images = revising ? await storeReportImages(batchId, key, body, { pruneAlways: false }) : null;
         const out = await qaVerb((batch, k, b, now) => {
           const fixed = markQaFixed(batch, k, String(b.what ?? ""), now);

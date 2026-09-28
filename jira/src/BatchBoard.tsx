@@ -141,6 +141,15 @@ export default function BatchBoard({
   const owed = handoffPending(batch);
   const qaBoard = qaLive ? qaColumns(batch).filter((column) => column.cards.length > 0 || ["queue", "verifying", "approved"].includes(column.id)) : [];
   const pending = feedbackPending(batch);
+  const notices = batch.clusters.flatMap((cluster) => {
+    const out: { clusterId: string; name: string; color: number; kind: "error" | "stopped" | "note"; text: string }[] = [];
+    const base = { clusterId: cluster.id, name: cluster.name, color: cluster.color };
+    if (cluster.lastError) out.push({ ...base, kind: "error", text: cluster.lastError });
+    if (cluster.state === "stopped" && cluster.stoppedReason) out.push({ ...base, kind: "stopped", text: `stopped: ${cluster.stoppedReason}` });
+    const note = cluster.notes?.[cluster.notes.length - 1];
+    if (note && cluster.state !== "closed") out.push({ ...base, kind: "note", text: `said: ${note.text}` });
+    return out;
+  });
 
   const clusterMenu = (id: string, actions: ClusterAction[], x: number, y: number) => {
     if (!showMenu) return;
@@ -378,6 +387,21 @@ export default function BatchBoard({
           <Icon name="ellipsis" />
         </button>
       </div>
+
+      {/* What each cluster's agent said last, why it stopped, and what went
+          wrong: stored on the server all along, and never shown before, so
+          a stopped cluster only explained itself in its terminal. */}
+      {notices.length > 0 && (
+        <ul className="jira-bnotices">
+          {notices.map((notice) => (
+            <li key={`${notice.clusterId}-${notice.kind}`} className={`is-${notice.kind}`} title={notice.text}>
+              <span className={`jira-bchip-dot jira-bcol-c${notice.color % 8}`} />
+              <b>{notice.name}</b>
+              <span className="jira-bnotice-text">{notice.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {showArchived && archived.length > 0 && (
         <div className="jira-bboard-archived">

@@ -60,6 +60,7 @@ import {
   discardProposal,
   confirmQaExcluded,
   openChange,
+  qaOwesReport,
   markQaShipping,
   setHandoffConfig,
   effectiveHandoff,
@@ -1364,4 +1365,18 @@ test("an answer to an older refine request is ignored", () => {
   assert.equal(batch.ticketStates["CAP-1"].integration.refine?.state, "pending");
   assert.equal(markQaRefined(batch, "CAP-1", { text: "The image is a placeholder.", id: second.id }, NOW + 10).ok, true);
   assert.equal(markQaRefined(batch, "CAP-1", { text: "again" }, NOW + 11).ok, false, "no id, and nothing pending");
+});
+
+test("the QA agent owes a report only for its own unfinished work", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  assert.equal(qaOwesReport(batch), true, "a pick in flight");
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  assert.equal(qaOwesReport(batch), false, "a merged ticket waits for the reviewer, not the agent");
+  markQaFixing(batch, "CAP-1", "bigger", NOW + 6);
+  assert.equal(qaOwesReport(batch), true, "a change not reported yet");
+  markQaFixed(batch, "CAP-1", "made it bigger", NOW + 7);
+  assert.equal(qaOwesReport(batch), false);
+  markQaFixing(batch, "CAP-1", "and bolder", NOW + 8);
+  assert.equal(qaOwesReport(batch), true, "a second change is owed again");
 });

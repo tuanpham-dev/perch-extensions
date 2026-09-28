@@ -295,12 +295,17 @@ test("ship blockers are the tickets on the branch nobody has passed judgement on
   assert.deepEqual(shipBlockers(qaBatch()), ["CAP-4"]);
 });
 
-test("every ticket lands in exactly one QA column, and a working one is 'not yet reviewed' rather than missing", () => {
-  const columns = qaColumns(qaBatch());
+test("every ticket lands in exactly one QA column, and one not on the branch sits by its own state", () => {
+  const b = qaBatch();
+  (b.ticketStates as Record<string, unknown>)["CAP-7"] = { state: "needs-you", integration: { state: "none" } };
+  (b.ticketStates as Record<string, unknown>)["CAP-8"] = { state: "failed", integration: { state: "none" } };
+  const columns = qaColumns(b);
   const placed = columns.flatMap((column) => column.cards.map((card) => card.key)).sort();
-  assert.deepEqual(placed, ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6"]);
+  assert.deepEqual(placed, ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6", "CAP-7", "CAP-8"]);
   const by = Object.fromEntries(columns.map((column) => [column.id, column.cards.map((card) => card.key)]));
-  assert.deepEqual(by.waiting, ["CAP-6"]);
+  assert.deepEqual(by.working, ["CAP-6"]);
+  assert.deepEqual(by["needs-you"], ["CAP-7"]);
+  assert.deepEqual(by.failed, ["CAP-8"]);
   assert.deepEqual(by.queue, ["CAP-2", "CAP-1", "CAP-3"]);
   assert.deepEqual(by.verifying, ["CAP-4"]);
   assert.deepEqual(by.approved, ["CAP-5"]);

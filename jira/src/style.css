@@ -3882,3 +3882,48 @@
   color: hsl(35 80% 50%);
 }
 .jira-rv-previous { margin: 4px 0 0; font-size: 11.5px; color: var(--fg-inactive, #999); }
+
+/* Earlier QA reports, under the current one, set in a little. */
+.jira-qa-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--jira-hairline);
+  opacity: 0.9;
+}
+
+/* One line per cluster that has something to say: an error, why it stopped,
+   or its agent's latest note. */
+.jira-bnotices {
+  list-style: none;
+  margin: 0;
+  padding: 4px 12px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--jira-hairline);
+}
+.jira-bnotices li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.jira-bnotices li b { font-weight: 600; white-space: nowrap; }
+.jira-bnotice-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-inactive, #999); }
+.jira-bnotices li.is-error .jira-bnotice-text { color: var(--error, #f48771); }
+.jira-bnotices li.is-stopped .jira-bnotice-text { color: hsl(35 80% 55%); }
+
+/* A review finished and not opened yet, marked before the ticket's title. */
+.jira-review-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--focus-border, #4a9eff);
+  vertical-align: middle;
+}
