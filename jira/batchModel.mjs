@@ -1151,6 +1151,7 @@ export function reopenTicket(batch, key, now) {
   }
   if (wasApproved) {
     integration.state = "merged";
+    integration.pending = null;
     integration.note = "";
     integration.refinedNote = "";
     integration.postedNote = "";
@@ -1255,6 +1256,10 @@ function newIntegration() {
     note: "",
     refinedNote: "",
     postedNote: "",
+    // Git work the panel asked for and the agent has not confirmed yet:
+    // "amend" (an approved fix to fold into the commit) or "drop" (an
+    // excluded ticket's commit to remove). Shipping waits for it.
+    pending: null,
     // The approval note being restated by the QA agent, which has the
     // ticket's context: null until asked, then pending until it answers.
     // Kept here rather than in the form so it survives the pane going away
@@ -1282,6 +1287,7 @@ function normalizeIntegration(raw) {
     note: str(raw.note),
     refinedNote: str(raw.refinedNote),
     postedNote: str(raw.postedNote),
+    pending: raw.pending === "amend" || raw.pending === "drop" ? raw.pending : null,
     refine: isObject(raw.refine)
       ? {
           note: str(raw.refine.note),
@@ -1332,6 +1338,8 @@ function normalizeQa(raw) {
     // When "Ship" was sent, until the agent reports shipped or stops with a
     // note. The button stays disabled meanwhile so it is not sent twice.
     shipping: typeof raw.shipping === "number" ? raw.shipping : null,
+    // The merge commit on the production branch, as the agent reported it.
+    shippedCommit: str(raw.shippedCommit),
   };
 }
 
@@ -1451,7 +1459,10 @@ export function qaInFlight(batch) {
 }
 
 export function shipBlockers(batch) {
-  return Object.keys(batch.ticketStates).filter((key) => SHIP_BLOCKING.has(batch.ticketStates[key].integration?.state ?? "none"));
+  return Object.keys(batch.ticketStates).filter((key) => {
+    const integration = batch.ticketStates[key].integration;
+    return SHIP_BLOCKING.has(integration?.state ?? "none") || Boolean(integration?.pending);
+  });
 }
 
 // Whether a ticket may be picked now: reviewed, and either untouched or
@@ -1465,12 +1476,22 @@ function mergeable(batch, key) {
   return null;
 }
 
+// The ticket whose requested change is sitting uncommitted in the QA
+// worktree, if any. There is one working tree, so there is at most one: a
+// second open change would be amended into the wrong ticket's commit.
+export function openChange(batch) {
+  return Object.keys(batch.ticketStates).find((key) => batch.ticketStates[key].integration?.state === "fixing") ?? null;
+}
+
 export function markQaMerging(batch, key, now) {
   const missing = requireQa(batch);
   if (missing) return missing;
   const refusal = mergeable(batch, key);
   if (refusal) return { ok: false, error: refusal };
+  const open = openChange(batch);
+  if (open && open !== key) return { ok: false, error: `finish ${open}'s change first - approve it or exclude it` };
   const integration = integrationOf(batch, key);
+  if (integration.pending === "drop") return { ok: false, error: `${key}'s old commit is still being dropped - merge it again once the QA agent confirms` };
   integration.state = "merging";
   integration.refine = null;
   integration.commit = "";
@@ -1497,6 +1518,8 @@ export function markQaMerged(batch, key, commit, now) {
     return { ok: false, error: `${key} is ${integration.state}, so "merged" does not apply to it` };
   }
   if (integration.state !== "approved") integration.state = "merged";
+  // The agent's report after an approval is the amend landing.
+  if (integration.state === "approved" && integration.pending === "amend") integration.pending = null;
   integration.commit = str(commit);
   integration.at = now;
   batch.updatedAt = now;
@@ -1522,6 +1545,8 @@ export function markQaFixed(batch, key, what, now) {
 export function markQaFixing(batch, key, change, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
+  const open = openChange(batch);
+  if (open && open !== key) return { ok: false, error: `finish ${open}'s change first - approve it or exclude it` };
   if (integration.state !== "merged" && integration.state !== "fixing") {
     return { ok: false, error: `${key} is ${integration.state} - only a merged ticket can be changed` };
   }
@@ -1546,14 +1571,18 @@ export function approveQa(batch, key, { note = "", refinedNote = "", postedNote 
   }
   const accepted = accept(batch, key, now);
   if (!accepted.ok) return accepted;
+  // Only a ticket with an uncommitted fix has anything to amend; the caller
+  // tells the agent which of the two it is.
+  const amend = integration.state === "fixing";
   integration.state = "approved";
+  integration.pending = amend ? "amend" : null;
   integration.refine = null;
   integration.note = str(note);
   integration.refinedNote = str(refinedNote);
   integration.postedNote = str(postedNote) || str(note);
   integration.at = now;
   batch.updatedAt = now;
-  return { ok: true };
+  return { ok: true, amend };
 }
 
 // Asking for the approval note to be restated. Only while the ticket can
@@ -1602,7 +1631,9 @@ export function excludeFromQa(batch, key, why, now) {
   const wasOnBranch = ["merged", "fixing", "merging"].includes(integration.state) && Boolean(integration.commit);
   // Excluded mid-pick: there is no sha yet, but the agent may have made one.
   const wasMerging = integration.state === "merging";
+  const drop = (wasOnBranch || wasMerging) && integration.state !== "excluded";
   integration.state = "excluded";
+  integration.pending = drop ? "drop" : null;
   integration.refine = null;
   integration.why = str(why);
   integration.at = now;
@@ -1616,6 +1647,21 @@ export function excludeFromQa(batch, key, why, now) {
 // this ticket's to fix - the agent leaves a note and stops the ship instead.
 // The ticket goes back to rework, so its cluster agent's own reports are
 // accepted while it sorts the conflict out.
+// The agent's `qa-excluded`: the drop landed (or there was nothing to drop).
+// An exclusion the agent made on its own is recorded the same way.
+export function confirmQaExcluded(batch, key, why, now) {
+  const integration = integrationOf(batch, key);
+  if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state !== "excluded") {
+    const result = excludeFromQa(batch, key, why, now);
+    if (!result.ok) return result;
+  }
+  integration.pending = null;
+  integration.at = now;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
 export function markQaConflict(batch, key, { files = [], why = "" }, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
@@ -1633,7 +1679,7 @@ export function markQaConflict(batch, key, { files = [], why = "" }, now) {
   return { ok: true };
 }
 
-export function markQaShipped(batch, into, now) {
+export function markQaShipped(batch, into, now, commit = "") {
   const missing = requireQa(batch);
   if (missing) return missing;
   const blockers = shipBlockers(batch);
@@ -1644,6 +1690,7 @@ export function markQaShipped(batch, into, now) {
   batch.qa.shipping = null;
   batch.qa.shippedAt = now;
   batch.qa.shippedInto = str(into);
+  batch.qa.shippedCommit = str(commit);
   batch.updatedAt = now;
   return { ok: true };
 }

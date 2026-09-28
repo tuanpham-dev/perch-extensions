@@ -58,6 +58,8 @@ import {
   unfinishedCount,
   qaInFlight,
   discardProposal,
+  confirmQaExcluded,
+  openChange,
   markQaShipping,
   setHandoffConfig,
   effectiveHandoff,
@@ -940,6 +942,10 @@ test("excluding removes a ticket from the queue and the blockers, and names the 
   markQaMerged(batch, "CAP-1", "abc123", NOW + 6);
   const merged = excludeFromQa(batch, "CAP-1", "out of scope", NOW + 7);
   assert.equal(merged.dropCommit, "abc123");
+  // Until the agent confirms the drop, the commit may still be on the branch.
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"]);
+  assert.equal(markQaMerging(batch, "CAP-1", NOW + 8).ok, false, "not while its old commit is being dropped");
+  confirmQaExcluded(batch, "CAP-1", "out of scope", NOW + 8);
   assert.deepEqual(shipBlockers(batch), []);
   assert.deepEqual(qaQueue(batch), []);
   // Wanted back: it merges again as a fresh pick.
@@ -1292,4 +1298,55 @@ test("discarding an add proposal takes its untouched tickets back out", () => {
   assert.ok(batch.tickets["CAP-1"], "a ticket already being worked stays");
   assert.equal(batch.pendingProposal, null);
   assert.equal(discardProposal(batch, NOW + 2).ok, false);
+});
+
+test("one change at a time: another ticket can't be merged or changed while one is open", () => {
+  const batch = qaStarted("CAP-1", "CAP-2", "CAP-3");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  markQaMerging(batch, "CAP-2", NOW + 6);
+  markQaMerged(batch, "CAP-2", "b", NOW + 7);
+  markQaFixing(batch, "CAP-1", "bigger", NOW + 8);
+  assert.equal(openChange(batch), "CAP-1");
+  assert.match(String(markQaFixing(batch, "CAP-2", "smaller", NOW + 9).error), /finish CAP-1's change first/);
+  assert.match(String(markQaMerging(batch, "CAP-3", NOW + 9).error), /finish CAP-1's change first/);
+  assert.equal(markQaFixing(batch, "CAP-1", "and bolder", NOW + 9).ok, true, "the open one takes more");
+});
+
+test("an approval with a fix waits for the amend, and shipping waits for it", () => {
+  const batch = qaStarted("CAP-1", "CAP-2");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  markQaMerging(batch, "CAP-2", NOW + 6);
+  markQaMerged(batch, "CAP-2", "b", NOW + 7);
+  assert.deepEqual(approveQa(batch, "CAP-2", {}, NOW + 8), { ok: true, amend: false });
+  assert.equal(batch.ticketStates["CAP-2"].integration.pending, null, "nothing to amend");
+  markQaFixing(batch, "CAP-1", "bigger", NOW + 9);
+  assert.deepEqual(approveQa(batch, "CAP-1", {}, NOW + 10), { ok: true, amend: true });
+  assert.equal(batch.ticketStates["CAP-1"].integration.pending, "amend");
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"]);
+  markQaMerged(batch, "CAP-1", "a2", NOW + 11);
+  assert.equal(batch.ticketStates["CAP-1"].integration.pending, null);
+  assert.deepEqual(shipBlockers(batch), []);
+});
+
+test("an exclusion with a commit waits for the drop", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  excludeFromQa(batch, "CAP-1", "later", NOW + 6);
+  assert.equal(batch.ticketStates["CAP-1"].integration.pending, "drop");
+  assert.deepEqual(shipBlockers(batch), ["CAP-1"]);
+  confirmQaExcluded(batch, "CAP-1", "later", NOW + 7);
+  assert.equal(batch.ticketStates["CAP-1"].integration.pending, null);
+  assert.deepEqual(shipBlockers(batch), []);
+});
+
+test("shipping records the merge commit", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  approveQa(batch, "CAP-1", {}, NOW + 6);
+  markQaShipped(batch, "main", NOW + 7, "m123");
+  assert.equal(batch.qa.shippedCommit, "m123");
 });

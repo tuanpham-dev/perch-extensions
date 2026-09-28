@@ -283,6 +283,7 @@ export interface BatchQa {
   notes: { text: string; at: number }[];
   // When Merge to production was sent, until the agent reports or stops it.
   shipping?: number | null;
+  shippedCommit?: string;
 }
 
 export interface TicketIntegration {
@@ -299,6 +300,8 @@ export interface TicketIntegration {
   handoff: { url: string; ok: boolean; error: string; status?: string; assignee?: string; at: number } | null;
   // The approval note being restated: by the QA agent (asynchronously,
   // pending until it answers) or by the extension's model as a fallback.
+  // Git work asked for and not yet confirmed by the QA agent.
+  pending?: "amend" | "drop" | null;
   refine: {
     note: string;
     state: "pending" | "done";

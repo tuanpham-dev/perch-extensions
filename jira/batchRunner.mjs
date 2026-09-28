@@ -40,6 +40,7 @@ import {
   markQaRefined,
   reopenTicket as reopenTicketModel,
   markStartStep,
+  confirmQaExcluded,
   abandonStarts,
   qaInFlight,
   markQaShipping,
@@ -937,8 +938,12 @@ export function createBatchRunner({
       resumed: worktree.resumed === true,
       inFlight: qaInFlight(fresh),
     });
+    // Logs and screenshots go here, outside the worktree, so staging a fix
+    // can never pick them up.
+    const scratch = path.join(evidenceDir, batchId, "qa-scratch");
+    await mkdir(scratch, { recursive: true }).catch(() => {});
     const line =
-      `export JB_SOCK=${shellQuote(socketPath)} JB_BATCH_ID=${shellQuote(batchId)}; ` +
+      `export JB_SOCK=${shellQuote(socketPath)} JB_BATCH_ID=${shellQuote(batchId)} JB_SCRATCH=${shellQuote(scratch)}; ` +
       `export PATH=${shellQuote(binDir)}:"$PATH"; ${launch} ${shellQuote(briefLine)}`;
     try {
       await sendToWindow(pane.id, line);
@@ -1021,7 +1026,7 @@ export function createBatchRunner({
       return approveQa(batch, key, notes, Date.now());
     });
     if (!result.ok) throw new RunnerError(409, result.error);
-    await tellQaAgent(batchId, buildQaApproveMessage({ key }));
+    await tellQaAgent(batchId, buildQaApproveMessage({ key, amend: result.amend === true }));
   }
 
   async function qaExclude(batchId, key, why) {
@@ -1297,7 +1302,7 @@ export function createBatchRunner({
       // The agent's "approved" is the amend landing: the user approved first,
       // through the panel, and this records the sha the branch now carries.
       "qa-approved": qaVerb((batch, key, body, now) => markQaMerged(batch, key, String(body.commit ?? ""), now)),
-      "qa-excluded": qaVerb((batch, key, body, now) => excludeFromQa(batch, key, String(body.why ?? ""), now)),
+      "qa-excluded": qaVerb((batch, key, body, now) => confirmQaExcluded(batch, key, String(body.why ?? ""), now)),
       "qa-conflict": async (body) => {
         const out = await qaVerb((batch, key, b, now) =>
           markQaConflict(batch, key, { files: Array.isArray(b.files) ? b.files : [], why: String(b.why ?? "") }, now),
@@ -1328,7 +1333,7 @@ export function createBatchRunner({
         }
         return out;
       },
-      "qa-shipped": qaVerb((batch, _key, body, now) => markQaShipped(batch, String(body.into ?? ""), now)),
+      "qa-shipped": qaVerb((batch, _key, body, now) => markQaShipped(batch, String(body.into ?? ""), now, String(body.commit ?? ""))),
       "qa-handed": qaVerb((batch, key, body, now) =>
         markHandedOff(batch, key, { url: String(body.url ?? ""), ok: !body.error, error: String(body.error ?? "") }, now),
       ),

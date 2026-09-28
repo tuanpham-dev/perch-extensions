@@ -296,7 +296,7 @@ export function buildQaFixMessage({ key, change }) {
     "",
     change.trim(),
     "",
-    `Make it in this worktree and do not commit. Restart the server and check the page.`,
+    `Make it in this worktree and do not commit. Keep logs and screenshots out of the worktree (in $JB_SCRATCH, or /tmp if it is unset) so they never end up in a commit. Restart the server and check the page.`,
     "",
     `Then update ${key}'s QA report to match the page as it is now, in the same call: \`jira-batch qa-fixing ${key} --what "..." --status pass|fail|partial|blocked --problem ... --fix ... --steps ... --after <png> [--before <png>] [--shot <png>:"caption"]...\`.`,
     "Take fresh screenshots of what the change affects. Restate only what the change made wrong: a field you leave out keeps its old value, so the problem statement and the before shot carry over unless they no longer hold.",
@@ -318,8 +318,13 @@ export function buildQaRefineMessage({ key, summary, note }) {
   ].join("\n");
 }
 
-export function buildQaApproveMessage({ key }) {
-  return `Approve ${key}. If the tree carries an uncommitted fix, amend it into ${key}'s commit; then run \`jira-batch qa-approved ${key} --commit <sha>\`.`;
+// Only a ticket that had a change open carries a fix to amend. Saying so
+// either way matters: with one working tree, "amend whatever is uncommitted"
+// once folded another ticket's fix into this one's commit.
+export function buildQaApproveMessage({ key, amend = false }) {
+  return amend
+    ? `Approve ${key}. Amend its uncommitted fix into ${key}'s commit - stage only the fix's own files (git add -u, plus any new file the fix added), never git add -A - then run \`jira-batch qa-approved ${key} --commit <sha>\`. If amending rewrote later tickets' commits, report each of them again with \`jira-batch qa-merged <KEY> --commit <sha>\`.`
+    : `Approve ${key}. It has no uncommitted fix, so do not amend anything; run \`jira-batch qa-approved ${key} --commit <sha>\` with its current sha.`;
 }
 
 // An approval taken back. Nothing to do in git - the commit stays, amended
@@ -351,7 +356,7 @@ export function buildRestartNote({ cliPath }) {
 }
 
 export function buildQaShipMessage({ into, branch }) {
-  return `Ship into ${into}. Every merged ticket is approved. Rebase ${branch} onto ${into} if it has moved, then in the primary worktree merge ${branch} into ${into} with --no-ff. Do not push. Run \`jira-batch qa-shipped --into ${into}\`.`;
+  return `Ship into ${into}. Every merged ticket is approved. Rebase ${branch} onto ${into} if it has moved, then in the primary worktree merge ${branch} into ${into} with --no-ff. Do not push. Run \`jira-batch qa-shipped --into ${into} --commit <merge sha>\`.`;
 }
 
 // The wording that reaches the note-refining call. Kept here with the other

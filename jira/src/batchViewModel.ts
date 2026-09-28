@@ -203,8 +203,12 @@ export function qaQueue(batch: Batch): string[] {
 
 const SHIP_BLOCKING = new Set<IntegrationState>(["merging", "merged", "fixing", "conflicted"]);
 
+// Mirrors the server's rule: a ticket mid-way, or one whose amend or drop
+// the QA agent has not confirmed yet.
 export function shipBlockers(batch: Batch): string[] {
-  return Object.keys(batch.ticketStates).filter((key) => SHIP_BLOCKING.has(integrationOf(batch, key)));
+  return Object.keys(batch.ticketStates).filter(
+    (key) => SHIP_BLOCKING.has(integrationOf(batch, key)) || Boolean(batch.ticketStates[key].integration?.pending),
+  );
 }
 
 // The approved tickets still owed a successful hand-off.

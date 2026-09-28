@@ -186,6 +186,11 @@ export default function BatchDetail({
           {batch.qa && (qaRunning || integration !== "none") && (
             <QaVerdicts
               live={qaRunning}
+              otherChange={
+                Object.keys(batch.ticketStates).find(
+                  (key) => key !== issueKey && batch.ticketStates[key].integration?.state === "fixing",
+                ) ?? null
+              }
               onAskAgain={() => onAskAgain(issueKey)}
               batchId={batch.id}
               batchQa={batch.qa}
@@ -307,7 +312,7 @@ export default function BatchDetail({
                       ? "Not saved yet - click outside the box."
                       : "Nothing to send yet."}
                 </span>
-                {(ticket.state === "review" || ticket.state === "failed") && (
+                {(ticket.state === "review" || ticket.state === "failed") && !batch.qa && (
                   <button className="jira-selaction primary" disabled={busy} onClick={() => onAccept(issueKey)}>
                     Accept
                   </button>
@@ -343,6 +348,7 @@ const INTEGRATION_LABEL: Record<IntegrationState, string> = {
 };
 
 function QaVerdicts({
+  otherChange,
   live,
   onAskAgain,
   batchId,
@@ -358,6 +364,8 @@ function QaVerdicts({
   onClearRefine,
   onReopen,
 }: {
+  // Another ticket with a change open in the one QA working tree, if any.
+  otherChange: string | null;
   // Whether the QA agent is running. Without it nothing can be sent, so the
   // section is shown for what it says and its actions wait.
   live: boolean;
@@ -442,6 +450,14 @@ function QaVerdicts({
       <header className="jira-qav-head">
         <span className="jira-bdetail-title">QA branch</span>
         <span className={`jira-qav-state is-${state}`}>{INTEGRATION_LABEL[state]}</span>
+        {integration?.pending && (
+          <span
+            className="jira-qav-state is-pending"
+            title="Waiting for the QA agent to confirm the git work; Merge to production waits for it too"
+          >
+            {integration.pending === "amend" ? "amending..." : "dropping..."}
+          </span>
+        )}
         {integration?.commit && <span className="jira-qav-commit mono" title="Its commit on the QA branch">{integration.commit.slice(0, 7)}</span>}
         {batchQa.previewUrl && (state === "merged" || state === "fixing") && (
           <a className="jira-linkish" href={batchQa.previewUrl} target="_blank" rel="noreferrer" title="The dev server, serving the QA branch">
@@ -453,7 +469,12 @@ function QaVerdicts({
       {state === "none" && ticket.state === "review" && mode === "idle" && (
         <div className="jira-qav-row">
           <span className="jira-qav-hint">Reviewed and not yet on {batchQa.branch}.</span>
-          <button className="jira-selaction primary" disabled={blocked || batchQa.state !== "running"} onClick={onMerge} title={`Cherry-pick ${issueKey} onto ${batchQa.branch} and serve it`}>
+          <button
+            className="jira-selaction primary"
+            disabled={blocked || batchQa.state !== "running" || Boolean(otherChange)}
+            onClick={onMerge}
+            title={otherChange ? `Finish ${otherChange}'s change first - approve it or exclude it` : `Cherry-pick ${issueKey} onto ${batchQa.branch} and serve it`}
+          >
             Merge into QA
           </button>
           <span className="jira-qav-spacer" />
@@ -569,7 +590,12 @@ function QaVerdicts({
           <button className="jira-selaction primary" disabled={blocked} onClick={() => begin("approve")} title="Keep it, mark the ticket done">
             Approve
           </button>
-          <button className="jira-selaction" disabled={blocked} onClick={() => begin("change")} title="Ask the QA agent to change something, without committing">
+          <button
+            className="jira-selaction"
+            disabled={blocked || Boolean(otherChange)}
+            onClick={() => begin("change")}
+            title={otherChange ? `Finish ${otherChange}'s change first - there is one working tree` : "Ask the QA agent to change something, without committing"}
+          >
             {state === "fixing" ? "Request another change" : "Request a change"}
           </button>
           <span className="jira-qav-spacer" />

@@ -51,10 +51,14 @@ test("a change carries the reviewer's words verbatim and says not to commit", ()
   assert.match(text, /qa-fixing LIV-341/);
 });
 
-test("approval amends, and reports the sha", () => {
-  const text = buildQaApproveMessage({ key: "LIV-341" });
-  assert.match(text, /amend it into LIV-341's commit/);
-  assert.match(text, /qa-approved LIV-341 --commit <sha>/);
+test("approval amends only a ticket with a fix, staging only its files, and reports the sha", () => {
+  const withFix = buildQaApproveMessage({ key: "LIV-341", amend: true });
+  assert.match(withFix, /Amend its uncommitted fix into LIV-341's commit/);
+  assert.match(withFix, /never git add -A/);
+  assert.match(withFix, /qa-approved LIV-341 --commit <sha>/);
+  const without = buildQaApproveMessage({ key: "LIV-341" });
+  assert.match(without, /do not amend anything/);
+  assert.match(without, /qa-approved LIV-341 --commit <sha>/);
 });
 
 test("excluding a merged ticket names the commit to drop; a queued one has nothing to drop", () => {

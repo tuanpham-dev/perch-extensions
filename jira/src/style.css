@@ -3863,3 +3863,4 @@
 /* A closed cluster's unfinished ticket, with where it can go. */
 .jira-rescue { flex-wrap: wrap; gap: 6px; }
 .jira-rescue select { max-width: 14rem; }
+.jira-qav-state.is-pending { color: var(--focus-border, #4a9eff); }

@@ -46,7 +46,7 @@ so there is one server and it serves this branch:
 # every theme dev server on this machine, whoever started it
 pgrep -af 'shopify.*theme dev' | awk '{print $1}' | xargs -r kill
 # yours, from this worktree
-shopify theme dev --store=<store> --port=9292 > .qa-dev.log 2>&1 &
+shopify theme dev --store=<store> --port=9292 > "${JB_SCRATCH:-/tmp}/qa-dev.log" 2>&1 &
 ```
 
 Wait until it answers - `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9292/`
@@ -114,8 +114,8 @@ jira-batch qa-fixing LIV-341 --what "hover image no longer resizes" \
   --status pass \
   --fix "Removed the hover scale on .card__media img" \
   --steps "Hover a product card at 1280px: the image stays the same size" \
-  --after .backups/qa/LIV-341-after-fix.png \
-  --shot .backups/qa/LIV-341-hover.png:"Hovered card at 1280px"
+  --after "$JB_SCRATCH/LIV-341-after-fix.png" \
+  --shot "$JB_SCRATCH/LIV-341-hover.png":"Hovered card at 1280px"
 ```
 
 A second request before approval is one more edit in the same working tree,
@@ -123,11 +123,15 @@ reported the same way. Two requests do not become two commits.
 
 ## 4. Approval
 
-The panel types `Approve <KEY>`. If the tree is clean there is nothing to do.
-If it carries an uncommitted fix, fold it into the ticket's commit:
+The panel types `Approve <KEY>` and says whether the ticket has a fix to
+amend. Only one ticket ever has a change open, so an uncommitted fix is
+always that ticket's. Without one, amend nothing and report the current sha.
+With one, fold only the fix's own files into the ticket's commit - never
+`git add -A`, which would sweep in anything else in the tree:
 
 ```sh
-git add -A
+git add -u                       # the fix's changes to tracked files
+git add path/to/new-file.css     # and any new file the fix added
 git commit --amend --no-edit
 jira-batch qa-approved LIV-341 --commit "$(git rev-parse HEAD)"
 ```
@@ -135,6 +139,13 @@ jira-batch qa-approved LIV-341 --commit "$(git rev-parse HEAD)"
 The commit's subject does not change. If the ticket's commit is not the tip
 (another ticket was merged after it), amend it with a fixup and an autosquash
 rebase over just those commits, and report the ticket's new sha.
+
+Any rewrite - a fixup, a drop, a rebase - gives every later ticket a new
+sha. Report each one again with `jira-batch qa-merged <KEY> --commit <sha>`,
+so the panel's diffs point at commits that exist.
+
+Keep logs and screenshots in `$JB_SCRATCH` (outside this worktree; `/tmp`
+if it is unset), never in the worktree itself.
 
 ### Reopened
 
@@ -171,7 +182,7 @@ the repository (not this one):
 ```sh
 git switch <production branch>
 git merge --no-ff <qa branch> -m "Merge <qa branch>"
-jira-batch qa-shipped --into <production branch>
+jira-batch qa-shipped --into <production branch> --commit "$(git rev-parse HEAD)"
 ```
 
 If the production branch moved since the QA branch was cut, rebase the QA

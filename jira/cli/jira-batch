@@ -69,7 +69,7 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
       Left out of this run, and its commit dropped if it had one.
   qa-conflict <KEY> --files <path>... --why <text>
       The pick would not apply and the resolution is a judgement call.
-  qa-shipped --into <branch>
+  qa-shipped --into <branch> [--commit <merge sha>]
       The QA branch is merged into the production branch. Never pushed.
   qa-handed <KEY> --url <preview> [--error <text>]
       Jira has been told, or could not be.

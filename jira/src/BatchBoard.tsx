@@ -68,6 +68,17 @@ const START_STEP: Record<string, string> = {
   session: "starting agent",
 };
 
+// Why Merge to production is disabled: tickets not approved yet, and ones
+// approved or excluded whose amend or drop the QA agent hasn't confirmed.
+function shipBlockMessage(batch: Batch, blockers: string[]): string {
+  const waiting = blockers.filter((key) => batch.ticketStates[key].integration?.pending);
+  const open = blockers.filter((key) => !waiting.includes(key));
+  const parts: string[] = [];
+  if (open.length > 0) parts.push(`Not everything is approved: ${open.join(", ")}`);
+  if (waiting.length > 0) parts.push(`Waiting for the QA agent to confirm the git work on ${waiting.join(", ")}`);
+  return parts.join(". ");
+}
+
 const ACTION_LABEL: Record<ClusterAction, string> = {
   start: "Start this cluster",
   open: "Open terminal",
@@ -301,7 +312,7 @@ export default function BatchBoard({
               qa.shipping
                 ? "The QA agent is merging into production - this clears when it reports shipped or stops with a note"
                 : blockers.length > 0
-                ? `Not everything is approved: ${blockers.join(", ")}`
+                ? shipBlockMessage(batch, blockers)
                 : approvedCount === 0
                   ? "Nothing has been approved yet"
                   : `Merge ${qa.branch} into ${qa.productionBranch}. Nothing is pushed.`

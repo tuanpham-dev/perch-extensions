@@ -2679,6 +2679,10 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   router.post(
     "/batches/:id/tickets/:key/accept",
     route(async (req, res) => {
+      // With a QA run, a ticket finishes by being approved on the QA branch;
+      // one accepted here would never be merged, shipped or handed off.
+      const current = batchOr404(await batches.get(), req.params.id);
+      if (current.qa) throw conflict("this batch has a QA run - merge the ticket into QA and approve it there");
       const result = await batches.update((draft) => accept(batchOr404(draft, req.params.id), req.params.key.toUpperCase(), Date.now()));
       if (!result.ok) throw conflict(result.error);
       res.json({ batch: decorate((await batches.get()).batches[req.params.id]) });
