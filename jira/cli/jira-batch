@@ -59,8 +59,8 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
       any of the report flags it also updates the ticket's QA report to the
       page as it is now, the way `qa` files one; a flag you leave out keeps
       the old report's value.
-  qa-refined <KEY> --text <text>
-  qa-refined <KEY> --as-written yes
+  qa-refined <KEY> [--id <request id>] --text <text>
+  qa-refined <KEY> [--id <request id>] --as-written yes
       The approval note the panel asked you to restate, restated - or
       --as-written when you cannot do it without guessing what was meant.
   qa-approved <KEY> --commit <sha>
@@ -71,8 +71,6 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
       The pick would not apply and the resolution is a judgement call.
   qa-shipped --into <branch> [--commit <merge sha>]
       The QA branch is merged into the production branch. Never pushed.
-  qa-handed <KEY> --url <preview> [--error <text>]
-      Jira has been told, or could not be.
   brief
       Print your cluster's brief again: its tickets, in order, and the rules.
   status
@@ -127,7 +125,7 @@ shift
 
 case "$verb" in
   start | done | fail | qa | note | brief | status) ;;
-  qa-start | qa-merged | qa-fixing | qa-refined | qa-approved | qa-excluded | qa-conflict | qa-shipped | qa-handed) ;;
+  qa-start | qa-merged | qa-fixing | qa-refined | qa-approved | qa-excluded | qa-conflict | qa-shipped) ;;
   *) die "unknown verb \"$verb\" - run: jira-batch help" 2 ;;
 esac
 
@@ -203,7 +201,7 @@ absolute_path() {
 # agent types without being told twice. Uppercased here so a lowercased key
 # never reads as a ticket this cluster does not hold.
 case "$verb" in
-  start | done | fail | qa | qa-merged | qa-fixing | qa-refined | qa-approved | qa-excluded | qa-conflict | qa-handed)
+  start | done | fail | qa | qa-merged | qa-fixing | qa-refined | qa-approved | qa-excluded | qa-conflict)
     [ $# -gt 0 ] || die "$verb needs a ticket key, e.g. jira-batch $verb CAP-12" 2
     case "$1" in
       --*) die "$verb needs a ticket key before any flags, e.g. jira-batch $verb CAP-12" 2 ;;

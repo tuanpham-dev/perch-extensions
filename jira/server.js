@@ -635,8 +635,10 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     return settingsForProject(settings, key);
   }
 
-  async function readConfig(cwd) {
-    const settings = await projectSettingsFor(cwd);
+  // `projectKey` wins over `cwd`: a setting tied to a ticket follows that
+  // ticket's project, not whichever repository the active window is in.
+  async function readConfig(cwd, { projectKey = "" } = {}) {
+    const settings = projectKey ? settingsForProject(await getSettings(), projectKey) : await projectSettingsFor(cwd);
     const rawSite = typeof settings["jira.siteUrl"] === "string" ? settings["jira.siteUrl"].trim() : "";
     const email = typeof settings["jira.email"] === "string" ? settings["jira.email"].trim() : "";
     const apiToken = await store.get(TOKEN_NAME);
@@ -1280,7 +1282,8 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       res.status(400).json({ error: "key must be an issue key like CAP-123" });
       return;
     }
-    const cfg = await readConfig(typeof req.query.cwd === "string" ? req.query.cwd : undefined);
+    // The ticket's own project decides its comment limit and the like.
+    const cfg = await readConfig(undefined, { projectKey: key.split("-")[0].toUpperCase() });
     if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) {
       res.status(400).json({ error: "jira is not configured" });
       return;
@@ -1504,12 +1507,33 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     return { type: "doc", version: 1, content: paragraphs };
   }
 
-  async function handOffIssue(cfg, key, { status, assignee, comment }) {
-    await transitionTo(cfg, key, status);
-    if (assignee) {
-      await jiraFetch(cfg, `/rest/api/3/issue/${key}/assignee`, { method: "PUT", body: JSON.stringify({ accountId: assignee.accountId }) });
+  // Three steps, each recorded as it lands, so a retry after a failure
+  // finishes what is left instead of starting over: a status change that
+  // already happened is not asked for again (Jira has no transition to the
+  // status a ticket is already in), and a comment is never posted twice.
+  // A failure carries the steps done so far on the error.
+  async function handOffIssue(cfg, key, { status, assignee, comment, done = {} }) {
+    const steps = { status: done.status === true, assignee: done.assignee === true || !assignee, comment: done.comment === true };
+    try {
+      if (!steps.status) {
+        const issue = await jiraFetch(cfg, `/rest/api/3/issue/${key}?fields=status`);
+        const current = String(issue?.fields?.status?.name ?? "");
+        if (current.toLowerCase() !== status.toLowerCase()) await transitionTo(cfg, key, status);
+        steps.status = true;
+      }
+      if (!steps.assignee) {
+        await jiraFetch(cfg, `/rest/api/3/issue/${key}/assignee`, { method: "PUT", body: JSON.stringify({ accountId: assignee.accountId }) });
+        steps.assignee = true;
+      }
+      if (!steps.comment) {
+        await jiraFetch(cfg, `/rest/api/3/issue/${key}/comment`, { method: "POST", body: JSON.stringify({ body: adf(comment) }) });
+        steps.comment = true;
+      }
+    } catch (err) {
+      err.steps = steps;
+      throw err;
     }
-    await jiraFetch(cfg, `/rest/api/3/issue/${key}/comment`, { method: "POST", body: JSON.stringify({ body: adf(comment) }) });
+    return steps;
   }
 
   // Always 200, even when a step fails: the worktree already exists by the
@@ -1572,7 +1596,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       res.status(400).json({ error: "key must be an issue key like CAP-123" });
       return;
     }
-    res.json(await progressIssue(await readConfig(typeof req.body?.cwd === "string" ? req.body.cwd : undefined), key));
+    res.json(await progressIssue(await readConfig(undefined, { projectKey: key.split("-")[0].toUpperCase() }), key));
   });
 
   // ---- Batches ----
@@ -2259,8 +2283,9 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         const keys = cluster.keys.filter((key) => outcome.placed.includes(key));
         if (keys.length === 0 || !cluster.windowId) continue;
         try {
-          await runner.handOffAdditional(id, cluster.id, keys);
-          handovers.push({ clusterId: cluster.id, keys });
+          const out = await runner.handOffAdditional(id, cluster.id, keys);
+          if (out?.held) outcome.warnings.push(`${keys.join(", ")} go to "${cluster.name}" once its agent's prompt is answered.`);
+          else handovers.push({ clusterId: cluster.id, keys });
         } catch (err) {
           outcome.warnings.push(`Could not hand ${keys.join(", ")} to "${cluster.name}": ${err.message}`);
         }
@@ -2349,8 +2374,9 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const handovers = [];
       if (to && isStarted(to) && to.windowId) {
         try {
-          await runner.handOffAdditional(req.params.id, to.id, [upper]);
-          handovers.push({ clusterId: to.id, keys: [upper] });
+          const out = await runner.handOffAdditional(req.params.id, to.id, [upper]);
+          if (out?.held) warnings.push(`${upper} goes to "${to.name}" once its agent's prompt is answered.`);
+          else handovers.push({ clusterId: to.id, keys: [upper] });
         } catch (err) {
           warnings.push(`Could not hand ${upper} to "${to.name}": ${err.message}`);
         }
@@ -2528,10 +2554,46 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     }),
   );
 
+  // The exact comment each approved ticket will get, built the same way the
+  // hand-off builds it, so it can be read before it goes out under your name.
+  router.get(
+    "/batches/:id/qa/handoff-preview",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const cfg = await readConfig(batch.repo);
+      const { previewUrl: urlTemplate } = effectiveHandoff(batch.handoffConfig, cfg.settings);
+      const tickets = Object.keys(batch.ticketStates)
+        .filter((key) => batch.ticketStates[key].integration?.state === "approved")
+        .map((key) => {
+          const ticket = batch.ticketStates[key];
+          const url = urlTemplate.replace("{key}", key);
+          return { key, url, comment: buildHandoffComment({ url, qa: ticket.qa, note: ticket.integration?.postedNote ?? "" }) };
+        });
+      res.setHeader("cache-control", "no-store");
+      res.json({ tickets });
+    }),
+  );
+
+  // One hand-off per batch at a time: two clicks, or two tabs, would read the
+  // same list of tickets still owed and post each comment twice.
+  const handoffsRunning = new Set();
+
   router.post(
     "/batches/:id/qa/handoff",
     route(async (req, res) => {
       const id = req.params.id;
+      if (handoffsRunning.has(id)) throw conflict("a hand-off for this batch is already running");
+      handoffsRunning.add(id);
+      try {
+        await runHandoff(req, res, id);
+      } finally {
+        handoffsRunning.delete(id);
+      }
+    }),
+  );
+
+  async function runHandoff(req, res, id) {
+    {
       const batch = batchOr404(await batches.get(), id);
       if (!batch.qa || batch.qa.state !== "shipped") throw conflict("merge to production first - the hand-off says the work is on the main branch");
       const cfg = await readConfig(batch.repo);
@@ -2559,20 +2621,22 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         const comment = buildHandoffComment({ url, qa: ticket.qa, note: ticket.integration?.postedNote ?? "" });
         let ok = true;
         let error = "";
+        let steps;
         try {
-          await handOffIssue(cfg, key, { status, assignee, comment });
+          steps = await handOffIssue(cfg, key, { status, assignee, comment, done: ticket.integration?.handoff?.steps ?? {} });
         } catch (err) {
           ok = false;
           error = scrub(err.message, cfg.apiToken);
+          steps = err.steps;
         }
         await batches.update((draft) =>
-          markHandedOff(batchOr404(draft, id), key, { url, ok, error, status, assignee: assignee?.displayName ?? "" }, Date.now()),
+          markHandedOff(batchOr404(draft, id), key, { url, ok, error, status, assignee: assignee?.displayName ?? "", steps }, Date.now()),
         );
         results.push({ key, ok, error });
       }
       res.json({ batch: decorate((await batches.get()).batches[id]), results, assignee: assignee?.displayName ?? "", status });
-    }),
-  );
+    }
+  }
 
   // The note as a teammate will read it, before it is posted anywhere. Asked
   // of the QA agent, which has the ticket's context - it merged and served

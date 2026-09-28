@@ -14,6 +14,7 @@
 // store below instead of in either component.
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { draftFrom, draftToProposal, moveInDraft, previewBatch, type ProposalDraft } from "./proposalDraft";
+import { readSticky } from "./stickyState";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
 import { apiGet, apiPost, setApiFetcher } from "./api";
@@ -308,6 +309,13 @@ export function readSettingValue(key: string): unknown {
   return Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : extSettings?.get(key);
 }
 
+// The same, for the project a ticket belongs to rather than the active
+// window's: a setting about a ticket follows the ticket.
+export function readTicketSetting(key: string, issueKey: string): unknown {
+  const overrides = overridesFor(extSettings?.get("jira.projectSettings"), issueKey.split("-")[0] || null);
+  return Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : extSettings?.get(key);
+}
+
 export function readSetting(key: string): string {
   const value = readSettingValue(key);
   return typeof value === "string" ? value : "";
@@ -482,6 +490,9 @@ interface JiraState {
   reviews: ReviewDocument | null;
   reviewBusy: boolean;
   reviewError: string | null;
+  // The ticket the busy flag and the error belong to, so neither shows on
+  // (or disables) another ticket's review.
+  reviewKey: string | null;
   // Which pull request and preview a review would use, per ticket, when the
   // user picked something other than the newest.
   reviewPicks: Record<string, { pr?: string; preview?: string }>;
@@ -589,6 +600,7 @@ let state: JiraState = {
   reviews: null,
   reviewBusy: false,
   reviewError: null,
+  reviewKey: null,
   reviewPicks: {},
 };
 
@@ -1949,7 +1961,17 @@ export function pickReviewLink(key: string, kind: "pr" | "preview", url: string)
   setState({ reviewPicks: { ...state.reviewPicks, [key]: { ...state.reviewPicks[key], [kind]: url } } });
 }
 
-export function saveReviewAction(action: ReviewAction): void {
+// Written where it is read from: the ticket's project block when that
+// project overrides the choice, the global setting otherwise - a write to
+// the global one would be shadowed and look like it did nothing.
+export function saveReviewAction(action: ReviewAction, issueKey: string): void {
+  const project = issueKey.split("-")[0];
+  const all = extSettings?.get("jira.projectSettings");
+  const map = all && typeof all === "object" && !Array.isArray(all) ? (all as Record<string, Record<string, unknown>>) : {};
+  if (project && map[project] && Object.prototype.hasOwnProperty.call(map[project], "jira.reviewAction")) {
+    extSettings?.set("jira.projectSettings", { ...map, [project]: { ...map[project], "jira.reviewAction": action } });
+    return;
+  }
   extSettings?.set("jira.reviewAction", action);
 }
 
@@ -1959,7 +1981,7 @@ function reviewFailed(err: unknown): void {
 
 async function launchReview(key: string, links: TicketLinks, tasks: ReviewTaskName[], agentId: string, repoPath = ""): Promise<void> {
   const picks = reviewPicksFor(key, links);
-  setState({ reviewBusy: true, reviewError: null });
+  setState({ reviewBusy: true, reviewError: null, reviewKey: key });
   try {
     await startReview(key, {
       tasks,
@@ -2023,8 +2045,8 @@ export async function runReview(
   await launchReview(key, links, tasks, presets[0]?.id ?? "");
 }
 
-function reviewAction(fn: () => Promise<unknown>): void {
-  setState({ reviewBusy: true, reviewError: null });
+function reviewAction(key: string, fn: () => Promise<unknown>): void {
+  setState({ reviewBusy: true, reviewError: null, reviewKey: key });
   void fn()
     .then(() => {
       setState({ reviewBusy: false });
@@ -2034,12 +2056,12 @@ function reviewAction(fn: () => Promise<unknown>): void {
 }
 
 export function stopReview(key: string, task: ReviewTaskName): void {
-  reviewAction(() => stopReviewTask(key, task));
+  reviewAction(key, () => stopReviewTask(key, task));
 }
 
 export async function closeReview(key: string): Promise<void> {
   const ok = hostConfirm ? await hostConfirm(`Close the review of ${key}? Its worktree and terminals are removed; the reports stay.`, "Close review") : true;
-  if (ok) reviewAction(() => closeReviewOf(key));
+  if (ok) reviewAction(key, () => closeReviewOf(key));
 }
 
 export async function postReview(key: string, where: "pr" | "jira"): Promise<void> {
@@ -2051,7 +2073,7 @@ export async function postReview(key: string, where: "pr" | "jira"): Promise<voi
       : false;
     if (!ok) return;
   }
-  reviewAction(() => (where === "pr" ? postReviewToPr(key, Boolean(already)) : postReviewToJira(key, Boolean(already), window.location.origin)));
+  reviewAction(key, () => (where === "pr" ? postReviewToPr(key, Boolean(already)) : postReviewToJira(key, Boolean(already), window.location.origin)));
 }
 
 export function openReviewTerminal(key: string, task: ReviewTaskName): void {
@@ -2242,14 +2264,24 @@ export function shipQaBranch(): void {
   batchEdit(() => qaShip(state.batch!.id));
 }
 
+// Quietly, without the busy flag: it runs on leaving a field, and a busy
+// board would disable the Hand off button under the click that caused it.
 export function saveHandoffSettings(config: Partial<HandoffConfig>): void {
   if (!state.batch) return;
-  batchEdit(() => saveHandoffConfig(state.batch!.id, config));
+  const id = state.batch.id;
+  void saveHandoffConfig(id, config)
+    .then((res) => {
+      if (state.batch?.id === id) setState({ batch: res.batch });
+    })
+    .catch((err) => setState({ batchError: message(err) }));
 }
 
 export function handOffQa(): void {
   if (!state.batch) return;
-  batchEdit(() => qaHandoff(state.batch!.id));
+  // What the hand-off form shows right now, edits included.
+  const edits = readSticky<Partial<HandoffConfig>>(`handoff:${state.batch.id}`) ?? {};
+  const config = Object.fromEntries(Object.entries(edits).map(([field, value]) => [field, String(value ?? "").trim()]));
+  batchEdit(() => qaHandoff(state.batch!.id, Object.keys(config).length > 0 ? config : undefined));
 }
 
 // A batch edit: the request, and later the answer, live on the ticket. The
@@ -3675,10 +3707,10 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
         {reviewLinks && (
           <ReviewButton
             links={reviewLinks}
-            saved={extSettings?.get("jira.reviewAction")}
-            busy={s.reviewBusy}
+            saved={readTicketSetting("jira.reviewAction", focusedIssue.key)}
+            busy={s.reviewBusy && s.reviewKey === focusedIssue.key}
             running={runningReviewTasks}
-            onSave={saveReviewAction}
+            onSave={(action) => saveReviewAction(action, focusedIssue.key)}
             onRun={(action, x, y) => void runReview(focusedIssue.key, reviewLinks, tasksFor(action), showMenu, x, y)}
           />
         )}
@@ -3859,8 +3891,8 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
                     links={reviewLinks ?? s.focused.detail.links ?? { prs: [], previews: [] }}
                     review={focusedReview}
                     picked={reviewPicksFor(s.focused.key, reviewLinks ?? s.focused.detail.links ?? { prs: [], previews: [] })}
-                    busy={s.reviewBusy}
-                    error={s.reviewError}
+                    busy={s.reviewBusy && s.reviewKey === s.focused.key}
+                    error={s.reviewKey === s.focused.key ? s.reviewError : null}
                     onPick={(kind, url) => pickReviewLink(s.focused!.key, kind, url)}
                     onOpenTerminal={(task) => openReviewTerminal(s.focused!.key, task)}
                     onStop={(task) => stopReview(s.focused!.key, task)}

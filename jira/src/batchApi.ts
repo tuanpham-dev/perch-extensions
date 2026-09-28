@@ -135,8 +135,17 @@ export function qaRefineClear(id: string, key: string): Promise<BatchResponse> {
   return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/refine-clear`, { key });
 }
 
-export function qaHandoff(id: string): Promise<BatchResponse & { results: { key: string; ok: boolean; error: string }[] }> {
-  return apiPost(`/batches/${encodeURIComponent(id)}/qa/handoff`, {});
+// `config` carries the hand-off form's values as shown at the click, so a
+// field still being edited is used rather than the last saved value.
+export function qaHandoff(
+  id: string,
+  config?: Partial<HandoffConfig>,
+): Promise<BatchResponse & { results: { key: string; ok: boolean; error: string }[] }> {
+  return apiPost(`/batches/${encodeURIComponent(id)}/qa/handoff`, config ? { config } : {});
+}
+
+export function getHandoffPreview(id: string): Promise<{ tickets: { key: string; url: string; comment: string }[] }> {
+  return apiGet(`/batches/${encodeURIComponent(id)}/qa/handoff-preview`);
 }
 
 export function moveTicket(id: string, key: string, clusterId: string | null, index: number): Promise<BatchResponse> {

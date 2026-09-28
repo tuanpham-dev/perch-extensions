@@ -212,6 +212,7 @@ export default function BatchDetail({
               history={ticket.qaHistory ?? []}
               issueKey={issueKey}
               batchId={batch.id}
+              lastFeedbackAt={ticket.feedback.at(-1)?.sentAt ?? null}
               onOpenShot={(which, opener) => onOpenShot(issueKey, which, opener)}
               onOpenReport={onOpenReport}
             />

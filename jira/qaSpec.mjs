@@ -16,7 +16,7 @@
 // tired agent to skip near the end of a long run, and rebuilding is just
 // running this again.
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // A ticket nobody QA'd still belongs in the report - as `blocked`, which is
@@ -182,7 +182,14 @@ export async function writeAndRender(batch, cluster, { evidenceDir, qaReportScri
     if (dropped.length > 0) ticket.notes.push(`${dropped.length} screenshot(s) are no longer stored.`);
   }
 
-  const specPath = path.join(specDir, `${slug(cluster.name)}-qa-spec.json`);
+  // Named by cluster AND batch: two batches each with a "Cluster 1" wrote
+  // the same file and overwrote each other's report. The batch part is its
+  // id, so a batch rename doesn't move the file; a cluster rename does, and
+  // the old file is removed so the combiner doesn't merge it in again.
+  const specPath = path.join(specDir, `${slug(cluster.name)}-${String(batch.id).slice(-6)}-qa-spec.json`);
+  if (cluster.qaSpecPath && cluster.qaSpecPath !== specPath && path.dirname(cluster.qaSpecPath) === specDir) {
+    await unlink(cluster.qaSpecPath).catch(() => {});
+  }
   await writeFile(specPath, `${JSON.stringify(spec, null, 2)}\n`);
 
   let reportPath = "";

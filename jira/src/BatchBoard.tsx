@@ -210,6 +210,7 @@ export default function BatchBoard({
                 <span className="jira-bchip-name">{chip.name}</span>
                 <span className="jira-bchip-state">
                   {chip.state === "starting" ? `starting: ${START_STEP[cluster.startStep ?? ""] ?? "preparing"}` : STATE_LABEL[chip.state]}
+                  {cluster.held && cluster.held.length > 0 ? " - message waiting to send" : ""}
                 </span>
                 {cluster.actions.includes("start") ? (
                   <span

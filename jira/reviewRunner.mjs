@@ -323,18 +323,21 @@ export function createReviewRunner({
 
     // The checkout, for a code review, or when an earlier one is still there.
     let workspace = null;
+    let launching = wanted;
+    let checkoutError = "";
     const existing = (await store.get()).reviews[key];
     if (wanted.includes("code")) {
       try {
         workspace = await prepareWorktree(existing, repo, pr);
       } catch (err) {
-        await store.update((doc) => {
-          for (const task of wanted) markTaskFailed(doc, key, task, err.message, Date.now());
-          return { ok: true };
-        });
-        throw err;
+        // Only the code review needs the checkout. The visual QA looks at
+        // the preview, so it still runs.
+        await store.update((doc) => markTaskFailed(doc, key, "code", err.message, Date.now()));
+        if (!wanted.includes("qa")) throw err;
+        launching = wanted.filter((task) => task !== "code");
+        checkoutError = err.message;
       }
-      await store.update((doc) => setWorkspace(doc, key, { worktreePath: workspace.path, branch: workspace.branch }, Date.now()));
+      if (workspace) await store.update((doc) => setWorkspace(doc, key, { worktreePath: workspace.path, branch: workspace.branch }, Date.now()));
     } else if (existing?.worktreePath && (await exists(existing.worktreePath))) {
       workspace = { path: existing.worktreePath, branch: existing.branch };
     }
@@ -342,8 +345,8 @@ export function createReviewRunner({
     const scratch = path.join(configDir, "jira", "review-scratch", key);
     const cwdFor = { code: workspace?.path ?? "", qa: workspace?.path ?? repo ?? scratch };
 
-    const results = await Promise.all(wanted.map((task) => launch(key, task, cwdFor[task], agent)));
-    return { tasks: results, worktreePath: workspace?.path ?? "" };
+    const results = await Promise.all(launching.map((task) => launch(key, task, cwdFor[task], agent)));
+    return { tasks: results, worktreePath: workspace?.path ?? "", ...(checkoutError ? { warning: `The code review could not check out the pull request: ${checkoutError}` } : {}) };
   }
 
   async function launch(key, task, dir, agent) {

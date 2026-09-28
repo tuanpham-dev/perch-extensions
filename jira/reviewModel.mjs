@@ -111,6 +111,9 @@ function normalizeTask(raw, name) {
     endedAt: num(raw.endedAt),
     error: str(raw.error),
     report,
+    // The last run's report while a new run hasn't reported: a rerun that
+    // fails or is stopped must not leave the ticket with no verdict at all.
+    previous: raw.previous ? (name === "code" ? normalizeCodeReport(raw.previous) : normalizeQaReport(raw.previous)) : null,
   };
 }
 
@@ -196,8 +199,10 @@ export function startTask(doc, key, task, { agentId = "", cwd = "", prUrl, previ
   if (prUrl !== undefined) review.prUrl = str(prUrl, 500);
   if (previewUrl !== undefined) review.previewUrl = str(previewUrl, 2000);
   if (repo !== undefined) review.repo = str(repo, 1000);
-  // Run again replaces the report: an older verdict beside a newer run would
-  // be evidence for the wrong pass. What was posted stays posted.
+  // Run again replaces the report once the new one arrives; until then the
+  // old one is kept as `previous`, shown as the last run's. What was posted
+  // stays posted.
+  const before = review.tasks[task];
   review.tasks[task] = {
     state: "running",
     windowId: "",
@@ -207,6 +212,7 @@ export function startTask(doc, key, task, { agentId = "", cwd = "", prUrl, previ
     endedAt: null,
     error: "",
     report: null,
+    previous: before?.report ?? before?.previous ?? null,
   };
   review.updatedAt = now;
   return { ok: true, review };
@@ -248,6 +254,7 @@ export function recordCodeReport(doc, key, raw, now) {
   if (!VERDICTS.includes(raw?.verdict)) return { ok: false, error: `--verdict must be one of ${VERDICTS.join(", ")}` };
   if (!str(raw?.summary).trim()) return { ok: false, error: "--summary is required" };
   current.report = normalizeCodeReport({ ...raw, at: now });
+  current.previous = null;
   current.state = "reported";
   current.endedAt = now;
   review.updatedAt = now;
@@ -259,6 +266,7 @@ export function recordQaReport(doc, key, raw, now) {
   if (error) return { ok: false, error };
   if (!QA_STATUSES.includes(raw?.status)) return { ok: false, error: `--status must be one of ${QA_STATUSES.join(", ")}` };
   current.report = normalizeQaReport({ ...raw, at: now });
+  current.previous = null;
   current.state = "reported";
   current.endedAt = now;
   review.updatedAt = now;

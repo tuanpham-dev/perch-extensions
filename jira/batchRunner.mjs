@@ -40,6 +40,8 @@ import {
   markQaRefined,
   reopenTicket as reopenTicketModel,
   markStartStep,
+  holdMessage,
+  takeHeld,
   confirmQaExcluded,
   abandonStarts,
   qaInFlight,
@@ -124,6 +126,28 @@ function sessionNameFor(branch) {
 // ONE message instead of each newline submitting what came before it.
 function asPaste(text) {
   return text.includes("\n") ? `\u001b[200~${text}\u001b[201~` : text;
+}
+
+// A message as typed at the keyboard rather than pasted, for Claude Code:
+// it files any paste of 20 characters or more away as <pasted_content> and
+// tells the model it is quoted material, so an instruction sent that way was
+// read as something to consider rather than something to do. Control bytes
+// are dropped (they would act as keys), tabs become spaces, and each newline
+// is Esc+Enter, which opens a line in its input box instead of submitting.
+//
+// Only for Claude Code: in other agents' composers Esc may interrupt, so
+// they keep the bracketed paste.
+function typedText(text) {
+  return String(text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "    ")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+    .split("\n")
+    .join("\x1b\r");
+}
+
+function forAgent(agentId, text) {
+  return /claude/i.test(String(agentId ?? "")) ? typedText(text) : asPaste(text);
 }
 
 function shellQuote(value) {
@@ -474,7 +498,8 @@ export function createBatchRunner({
     // brief goes on it too, as the agent's first prompt - see
     // buildClusterBriefLine for why it cannot follow as a second message.
     try {
-      const cfg = await readConfig();
+      // The tickets' own project decides what a brief carries (comment limit).
+      const cfg = await readConfig(undefined, { projectKey: String(cluster.keys[0] ?? "").split("-")[0] });
       const ticketDetails = await details(cfg, cluster.keys);
       const briefLine = buildClusterBriefLine({
         batchName: batch.name,
@@ -496,8 +521,8 @@ export function createBatchRunner({
     // refuses a transition must never read as "the cluster failed to start" -
     // the agent is already working by now.
     if (settings["jira.updateIssueOnStartWork"] === true) {
-      const cfg = await readConfig();
       for (const key of cluster.keys) {
+        const cfg = await readConfig(undefined, { projectKey: key.split("-")[0] });
         try {
           const result = await progressIssue(cfg, key);
           if (result.note) await store.update((d) => addNote(d.batches[batchId], clusterId, `${key}: ${result.note}`, Date.now()));
@@ -535,9 +560,15 @@ export function createBatchRunner({
     const cluster = batch ? clusterOf(batch, clusterId) : null;
     if (!cluster) throw new RunnerError(404, `no cluster ${clusterId}`);
     if (!cluster.windowId) throw new RunnerError(409, `"${cluster.name}" has no terminal to hand tickets to`);
-    const cfg = await readConfig(batch.repo);
+    // At a prompt, the Enter that ends the message would answer it. Held,
+    // and sent once the prompt is gone.
+    if (clusterState(batch, cluster) === "waiting") {
+      await store.update((d) => holdMessage(d.batches[batchId], clusterId, "tickets", keys, Date.now()));
+      return { clusterId, keys, held: true };
+    }
+    const cfg = await readConfig(batch.repo, { projectKey: String(keys[0] ?? "").split("-")[0] });
     const ticketDetails = await details(cfg, keys);
-    await sendToWindow(cluster.windowId, asPaste(buildAdditionalTicketsMessage({ clusterName: cluster.name, details: ticketDetails })));
+    await sendToWindow(cluster.windowId, forAgent(cluster.agentId, buildAdditionalTicketsMessage({ clusterName: cluster.name, details: ticketDetails })));
 
     const settings = cfg.settings;
     if (settings["jira.updateIssueOnStartWork"] === true) {
@@ -571,8 +602,18 @@ export function createBatchRunner({
         skipped.push({ clusterId: cluster.id, clusterName: cluster.name, reason: `it is ${state}`, keys: group.items.map((i) => i.key) });
         continue;
       }
+      if (state === "waiting") {
+        await store.update((d) => holdMessage(d.batches[batchId], cluster.id, "feedback", group.items.map((i) => i.key), Date.now()));
+        skipped.push({
+          clusterId: cluster.id,
+          clusterName: cluster.name,
+          reason: "its agent is waiting on a prompt - it goes as soon as the prompt is answered",
+          keys: group.items.map((i) => i.key),
+        });
+        continue;
+      }
       try {
-        await sendToWindow(cluster.windowId, asPaste(buildFeedbackMessage({ clusterName: cluster.name, items: group.items })));
+        await sendToWindow(cluster.windowId, forAgent(cluster.agentId, buildFeedbackMessage({ clusterName: cluster.name, items: group.items })));
       } catch (err) {
         skipped.push({ clusterId: cluster.id, clusterName: cluster.name, reason: err.message, keys: group.items.map((i) => i.key) });
         continue;
@@ -581,6 +622,34 @@ export function createBatchRunner({
       sent.push({ clusterId: cluster.id, clusterName: cluster.name, keys: group.items.map((i) => i.key) });
     }
     return { sent, skipped };
+  }
+
+  // Held messages go out once the agent is past its prompt. Feedback is
+  // read from the drafts as they are now, so an edit made while it was held
+  // is what gets sent.
+  async function flushHeld(batchId, clusterId) {
+    const before = (await store.get()).batches[batchId];
+    const cluster = before ? clusterOf(before, clusterId) : null;
+    if (!cluster || cluster.held.length === 0 || !cluster.windowId) return;
+    if (clusterState(before, cluster) === "waiting") return;
+    const taken = await store.update((d) => takeHeld(d.batches[batchId], clusterId, Date.now()));
+    for (const entry of taken.held ?? []) {
+      try {
+        if (entry.kind === "tickets") {
+          await handOffAdditional(batchId, clusterId, entry.keys);
+          continue;
+        }
+        const batch = (await store.get()).batches[batchId];
+        const group = sendableFeedback(batch).find((g) => g.clusterId === clusterId);
+        const items = (group?.items ?? []).filter((item) => entry.keys.includes(item.key));
+        if (items.length === 0) continue;
+        await sendToWindow(cluster.windowId, forAgent(cluster.agentId, buildFeedbackMessage({ clusterName: cluster.name, items })));
+        await store.update((d) => markFeedbackSent(d.batches[batchId], clusterId, items.map((i) => i.key), Date.now()));
+      } catch (err) {
+        log(`could not send a held message to "${cluster.name}": ${err.message}`);
+        await store.update((d) => holdMessage(d.batches[batchId], clusterId, entry.kind, entry.keys, Date.now()));
+      }
+    }
   }
 
   // ---- Stopping, resuming, cleaning up ----
@@ -726,6 +795,9 @@ export function createBatchRunner({
       }
       for (const cluster of batch.clusters) {
         if (cluster.state !== "running" || !cluster.windowId) continue;
+        if (cluster.held.length > 0 && clusterState(batch, cluster) !== "waiting") {
+          await flushHeld(batch.id, cluster.id).catch((err) => log(`flushing held messages failed: ${err.message}`));
+        }
         const id = cluster.windowId;
         const reason = !live.has(id) ? "its terminal window is gone" : shellWatch.observe(id, live.get(id), now) ? "the agent exited" : "";
         if (!reason) continue;
@@ -922,7 +994,11 @@ export function createBatchRunner({
       await store.update((d) => markQaFailed(d.batches[batchId], err.message, Date.now()));
       throw new RunnerError(500, err.message);
     }
-    await store.update((d) => markQaAgent(d.batches[batchId], { sessionName: session.name, windowId: pane.id, now: Date.now() }));
+    await store.update((d) => {
+      const marked = markQaAgent(d.batches[batchId], { sessionName: session.name, windowId: pane.id, now: Date.now() });
+      if (d.batches[batchId]?.qa) d.batches[batchId].qa.agentId = agentId;
+      return marked;
+    });
 
     // Every reviewed ticket with the cluster branch its commits live on, so the
     // agent can find them when the panel asks for one.
@@ -959,7 +1035,7 @@ export function createBatchRunner({
   async function tellQaAgent(batchId, text) {
     const batch = (await store.get()).batches[batchId];
     if (!batch?.qa?.windowId) throw new RunnerError(409, "the QA agent has no terminal - start QA first");
-    await sendToWindow(batch.qa.windowId, asPaste(text));
+    await sendToWindow(batch.qa.windowId, forAgent(batch.qa.agentId || batch.agentId, text));
   }
 
   async function qaMerge(batchId, key) {
@@ -996,7 +1072,7 @@ export function createBatchRunner({
     });
     if (!result.ok) throw new RunnerError(409, result.error);
     const batch = (await store.get()).batches[batchId];
-    await tellQaAgent(batchId, buildQaRefineMessage({ key, summary: batch.tickets[key]?.summary ?? key, note }));
+    await tellQaAgent(batchId, buildQaRefineMessage({ key, summary: batch.tickets[key]?.summary ?? key, note, id: result.id }));
   }
 
   // Taking back a verdict. The QA agent is told when the ticket was approved
@@ -1169,19 +1245,29 @@ export function createBatchRunner({
     // under the caption: a caption is a sentence, and a sentence is not a
     // filename. The position is what the report and the panel order by.
     async function storeReportImages(batchId, key, body, { pruneAlways }) {
-      const before = body.before ? await storeImage(batchId, key, "before", String(body.before)) : null;
-      const after = body.after ? await storeImage(batchId, key, "after", String(body.after)) : null;
-      const shots = [];
       const given = Array.isArray(body.shots) ? body.shots : [];
       if (given.length > MAX_SHOTS) {
         throw new RunnerError(400, `--shot given ${given.length} times, over the limit of ${MAX_SHOTS}`);
       }
+      // Every image read and checked before any is written: a bad --after
+      // after a good --before must not leave the report that stands pointing
+      // at a replaced file.
+      const beforeImage = body.before ? await readImage("before", String(body.before)) : null;
+      const afterImage = body.after ? await readImage("after", String(body.after)) : null;
+      const shotImages = [];
       for (const entry of given) {
         const file = String(entry?.file ?? entry ?? "");
         if (!file) continue;
-        const label = `shot-${shots.length + 1}`;
-        const stored = await storeImage(batchId, key, label, file);
-        shots.push({ ...stored, label, caption: String(entry?.caption ?? "").slice(0, 120) });
+        shotImages.push({ image: await readImage(`shot ${shotImages.length + 1}`, file), caption: String(entry?.caption ?? "").slice(0, 120) });
+      }
+      const dir = path.join(evidenceDir, batchId, key);
+      const before = beforeImage ? await writeImage(dir, "before", beforeImage) : null;
+      const after = afterImage ? await writeImage(dir, "after", afterImage) : null;
+      const shots = [];
+      for (const [i, shot] of shotImages.entries()) {
+        const label = `shot-${i + 1}`;
+        const stored = await writeImage(dir, label, shot.image);
+        shots.push({ ...stored, label, caption: shot.caption });
       }
       // A re-report with fewer shots than last time must not leave the
       // extras behind, or the report grows every rework. A revision that
@@ -1243,11 +1329,23 @@ export function createBatchRunner({
       qa: (body) =>
         withCluster(body, async (batchId, clusterId) => {
           const key = String(body.key ?? "").toUpperCase();
+          // The same checks recordQa makes, before any file is touched: a
+          // report for a key this cluster doesn't hold must not replace the
+          // screenshots of the cluster that does.
+          const current = (await store.get()).batches[batchId];
+          const cluster = current ? clusterOf(current, clusterId) : null;
+          if (!cluster) throw new RunnerError(409, `no cluster ${clusterId} in this batch`);
+          if (!cluster.keys.includes(key)) {
+            throw new RunnerError(409, `${key} is not in this cluster - it holds ${cluster.keys.join(", ") || "nothing"}`);
+          }
+          if (!current.ticketStates[key]) throw new RunnerError(409, `${key} has no state yet - this cluster has not started`);
           const { before, after, shots } = await storeReportImages(batchId, key, body, { pruneAlways: true });
+          // --report arrives as `report`; the model keeps it as reportPath.
+          const reportPath = body.reportPath ?? body.report ?? "";
           const result = await store.update((doc) => {
             const batch = doc.batches[batchId];
             if (!batch) return { ok: false, error: `no batch ${batchId}` };
-            return recordQa(batch, clusterId, key, { ...body, before, after, shots }, Date.now());
+            return recordQa(batch, clusterId, key, { ...body, reportPath, before, after, shots }, Date.now());
           });
           if (!result.ok) throw new RunnerError(409, result.error);
           await maybeBuildReport(batchId, clusterId);
@@ -1297,7 +1395,7 @@ export function createBatchRunner({
       },
       // The QA agent's restatement of an approval note the panel asked about.
       "qa-refined": qaVerb((batch, key, body, now) =>
-        markQaRefined(batch, key, { text: String(body.text ?? ""), asWritten: /^(yes|true|1)$/i.test(String(body.asWritten ?? "")) }, now),
+        markQaRefined(batch, key, { text: String(body.text ?? ""), asWritten: /^(yes|true|1)$/i.test(String(body.asWritten ?? "")), id: String(body.id ?? "") }, now),
       ),
       // The agent's "approved" is the amend landing: the user approved first,
       // through the panel, and this records the sha the branch now carries.
@@ -1317,7 +1415,8 @@ export function createBatchRunner({
           try {
             await sendToWindow(
               cluster.windowId,
-              asPaste(
+              forAgent(
+                cluster.agentId,
                 buildQaConflictMessage({
                   key,
                   summary: batch.tickets[key]?.summary ?? "",
@@ -1334,9 +1433,6 @@ export function createBatchRunner({
         return out;
       },
       "qa-shipped": qaVerb((batch, _key, body, now) => markQaShipped(batch, String(body.into ?? ""), now, String(body.commit ?? ""))),
-      "qa-handed": qaVerb((batch, key, body, now) =>
-        markHandedOff(batch, key, { url: String(body.url ?? ""), ok: !body.error, error: String(body.error ?? "") }, now),
-      ),
 
       // A cluster's agent notes against its cluster; the QA agent, which has
       // a batch and no cluster, against the QA run. Same verb, so the skill
@@ -1379,7 +1475,7 @@ export function createBatchRunner({
           const batch = doc.batches[batchId];
           const cluster = batch ? clusterOf(batch, clusterId) : null;
           if (!cluster) throw new RunnerError(404, "this cluster is not in the batch any more");
-          const cfg = await readConfig();
+          const cfg = await readConfig(undefined, { projectKey: String(cluster.keys[0] ?? "").split("-")[0] });
           return { text: `${briefFor(batch, cluster, await details(cfg, cluster.keys))}\n` };
         }),
 
@@ -1451,6 +1547,15 @@ export function createBatchRunner({
           if (event.event === "session-start") {
             void restartNote(event.paneId).catch((err) => log(`could not send the restart note: ${err.message}`));
           }
+          // Past the prompt: anything held for this window can go now. After
+          // the store update below has cleared the wait.
+          if (event.event === "prompt-submit") {
+            setTimeout(() => {
+              void ownerOfWindow(event.paneId)
+                .then((owner) => (owner?.clusterId ? flushHeld(owner.batchId, owner.clusterId) : undefined))
+                .catch((err) => log(`flushing held messages failed: ${err.message}`));
+            }, 500);
+          }
           store
             .update((doc) => {
               for (const batch of Object.values(doc.batches)) {
@@ -1494,7 +1599,8 @@ export function createBatchRunner({
     // A launch fires session-start within seconds of the start; a resume
     // after a restart comes much later.
     if (!running || !startedAt || Date.now() - startedAt < 60_000) return;
-    await sendToWindow(windowId, asPaste(buildRestartNote({ cliPath })));
+    const agentId = owner.clusterId ? clusterOf(batch, owner.clusterId)?.agentId : batch.qa?.agentId || batch.agentId;
+    await sendToWindow(windowId, forAgent(agentId, buildRestartNote({ cliPath })));
   }
 
   async function stop() {

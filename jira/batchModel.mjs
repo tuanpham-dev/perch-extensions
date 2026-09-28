@@ -182,6 +182,14 @@ function normalizeCluster(raw) {
     // waiting on you is never drawn as if it were working.
     awaiting: str(raw.awaiting) || null,
     notes: Array.isArray(raw.notes) ? raw.notes.slice(-MAX_NOTES) : [],
+    // Messages held back because the agent was showing a prompt, where a
+    // typed Enter would have answered it: feedback, or tickets handed to it.
+    // Sent once the prompt is gone.
+    held: Array.isArray(raw.held)
+      ? raw.held
+          .filter((entry) => isObject(entry) && (entry.kind === "feedback" || entry.kind === "tickets"))
+          .map((entry) => ({ kind: entry.kind, keys: Array.isArray(entry.keys) ? entry.keys.filter((k) => typeof k === "string") : [], at: num(entry.at) }))
+      : [],
     // What this cluster actually started with, so a report can be traced to
     // the procedure that produced it even after the setting changes. Null in
     // a slot means the agent's own judgement.
@@ -1033,6 +1041,27 @@ export function hookEvent(batch, windowId, event, now) {
   return { ok: true };
 }
 
+// Holding a message for a cluster whose agent is at a prompt. Keys already
+// held for the same kind are merged rather than queued twice.
+export function holdMessage(batch, clusterId, kind, keys, now) {
+  const cluster = clusterOf(batch, clusterId);
+  if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
+  const existing = cluster.held.find((entry) => entry.kind === kind);
+  if (existing) existing.keys = [...new Set([...existing.keys, ...keys])];
+  else cluster.held.push({ kind, keys: [...keys], at: now });
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+export function takeHeld(batch, clusterId, now) {
+  const cluster = clusterOf(batch, clusterId);
+  if (!cluster || cluster.held.length === 0) return { ok: false, held: [] };
+  const held = cluster.held;
+  cluster.held = [];
+  batch.updatedAt = now;
+  return { ok: true, held };
+}
+
 // How many tickets closing this cluster would strand, for the Close confirm.
 export function unfinishedCount(batch, cluster) {
   return cluster.keys.filter((key) => UNFINISHED.has(batch.ticketStates[key]?.state)).length;
@@ -1201,11 +1230,13 @@ export function ticketCounts(batch) {
 export function remainingTickets(batch, cluster) {
   return cluster.keys
     .filter((key) => UNFINISHED.has(batch.ticketStates[key]?.state))
-    .map((key) => ({
-      key,
-      summary: batch.tickets[key]?.summary ?? "",
-      state: batch.ticketStates[key].state,
-    }));
+    .map((key) => {
+      const ticket = batch.ticketStates[key];
+      // A reworked ticket carries what the reviewer asked for: a fresh agent
+      // never saw the message that sent it back.
+      const feedback = ticket.state === "rework" ? (ticket.feedback.at(-1)?.text ?? "") : "";
+      return { key, summary: batch.tickets[key]?.summary ?? "", state: ticket.state, feedback };
+    });
 }
 
 // Which batches changed between two documents, for the SSE stream. Compared
@@ -1275,6 +1306,11 @@ function newIntegration() {
   };
 }
 
+function normalizeSteps(raw) {
+  const src = isObject(raw) ? raw : {};
+  return { status: src.status === true, assignee: src.assignee === true, comment: src.comment === true };
+}
+
 function normalizeIntegration(raw) {
   const base = newIntegration();
   if (!isObject(raw)) return base;
@@ -1290,6 +1326,7 @@ function normalizeIntegration(raw) {
     pending: raw.pending === "amend" || raw.pending === "drop" ? raw.pending : null,
     refine: isObject(raw.refine)
       ? {
+          id: str(raw.refine.id),
           note: str(raw.refine.note),
           state: raw.refine.state === "done" ? "done" : "pending",
           refined: str(raw.refine.refined),
@@ -1307,6 +1344,7 @@ function normalizeIntegration(raw) {
           error: str(raw.handoff.error),
           status: str(raw.handoff.status),
           assignee: str(raw.handoff.assignee),
+          steps: normalizeSteps(raw.handoff.steps),
           at: num(raw.handoff.at),
         }
       : null,
@@ -1322,6 +1360,8 @@ function normalizeQa(raw) {
     worktreePath: str(raw.worktreePath),
     sessionName: str(raw.sessionName),
     windowId: str(raw.windowId),
+    // Which agent runs it, so messages are sent the way that agent reads them.
+    agentId: str(raw.agentId),
     state: QA_STATES.includes(raw.state) ? raw.state : "idle",
     startedAt: typeof raw.startedAt === "number" ? raw.startedAt : null,
     shippedAt: typeof raw.shippedAt === "number" ? raw.shippedAt : null,
@@ -1595,18 +1635,24 @@ export function requestQaRefine(batch, key, note, by, now) {
   }
   const text = str(note).trim();
   if (!text) return { ok: false, error: "nothing to refine" };
-  integration.refine = { note: text, state: "pending", refined: "", asWritten: false, by, at: now };
+  // An id per request, carried in the message: an answer to a request that
+  // was rewritten since must not land on the new one.
+  const id = `r${now.toString(36)}`;
+  integration.refine = { id, note: text, state: "pending", refined: "", asWritten: false, by, at: now };
   batch.updatedAt = now;
-  return { ok: true };
+  return { ok: true, id };
 }
 
 // The answer, from the QA agent or the fallback model. "As written" means it
 // could not restate the note without guessing, and the note goes as typed.
-export function markQaRefined(batch, key, { text = "", asWritten = false }, now) {
+export function markQaRefined(batch, key, { text = "", asWritten = false, id = "" }, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
   const refine = integration.refine;
   if (!refine) return { ok: false, error: `nobody asked for ${key}'s note to be refined` };
+  if (id ? id !== refine.id : refine.state !== "pending") {
+    return { ok: false, error: `that answer is for an earlier request - ${key}'s note was rewritten since; answer the latest one` };
+  }
   const reply = str(text).trim();
   const verbatim = asWritten || !reply || /^AS-WRITTEN\.?$/i.test(reply);
   integration.refine = { ...refine, state: "done", refined: verbatim ? refine.note : reply, asWritten: verbatim, at: now };
@@ -1695,12 +1741,21 @@ export function markQaShipped(batch, into, now, commit = "") {
   return { ok: true };
 }
 
-export function markHandedOff(batch, key, { url = "", ok = false, error = "", status = "", assignee = "" }, now) {
+export function markHandedOff(batch, key, { url = "", ok = false, error = "", status = "", assignee = "", steps = null }, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
   // What it was moved to and who got it, so the panel says what happened
   // rather than what Settings happens to say now.
-  integration.handoff = { url: str(url), ok: ok === true, error: str(error), status: str(status), assignee: str(assignee), at: now };
+  integration.handoff = {
+    url: str(url),
+    ok: ok === true,
+    error: str(error),
+    status: str(status),
+    assignee: str(assignee),
+    // Which of the three steps landed, so a retry finishes the rest.
+    steps: normalizeSteps(steps),
+    at: now,
+  };
   batch.updatedAt = now;
   return { ok: true };
 }

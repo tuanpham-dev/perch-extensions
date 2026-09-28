@@ -122,6 +122,8 @@ export interface Cluster {
   actions: ClusterAction[];
   working: string | null;
   startedAt: number | null;
+  // Messages held while its agent showed a prompt, sent once it is answered.
+  held?: { kind: "feedback" | "tickets"; keys: string[]; at: number }[];
   // Which step a starting cluster is on: "worktree" or "session".
   startStep?: string;
   launchedAt?: number | null;

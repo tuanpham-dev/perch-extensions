@@ -14,6 +14,9 @@ export interface QaBlockProps {
   history: QaReport[];
   issueKey: string;
   batchId: string;
+  // When the reviewer last sent this ticket back. A report older than that
+  // describes the page before the rework.
+  lastFeedbackAt?: number | null;
   // "before", "after", or "shot-<n>" for one of the extras.
   onOpenShot: (which: string, opener: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
@@ -45,7 +48,8 @@ function when(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function QaBlock({ report, history, issueKey, batchId, onOpenShot, onOpenReport }: QaBlockProps) {
+export default function QaBlock({ report, history, issueKey, batchId, lastFeedbackAt, onOpenShot, onOpenReport }: QaBlockProps) {
+  const stale = Boolean(lastFeedbackAt && report.at < lastFeedbackAt);
   const shotUrl = (which: string) =>
     `/api/ext/perch.jira/qa/${encodeURIComponent(batchId)}/${encodeURIComponent(issueKey)}/${which}`;
   const extras = report.shots ?? [];
@@ -57,6 +61,11 @@ export default function QaBlock({ report, history, issueKey, batchId, onOpenShot
         <span className="jira-qa-at">
           {report.source === "qa-agent" ? `updated by the QA agent ${when(report.at)}` : `reported ${when(report.at)}`}
         </span>
+        {stale && (
+          <span className="jira-qa-stale" title="Filed before the ticket was sent back for rework; a new report replaces it">
+            from before the rework
+          </span>
+        )}
         {history.length > 0 && (
           <span className="jira-qa-at" title="An earlier pass was replaced after rework">
             {history.length === 1 ? "1 earlier report" : `${history.length} earlier reports`}

@@ -1350,3 +1350,18 @@ test("shipping records the merge commit", () => {
   markQaShipped(batch, "main", NOW + 7, "m123");
   assert.equal(batch.qa.shippedCommit, "m123");
 });
+
+test("an answer to an older refine request is ignored", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  const first = requestQaRefine(batch, "CAP-1", "img fpo", "qa-agent", NOW + 6);
+  clearQaRefine(batch, "CAP-1", NOW + 7);
+  const second = requestQaRefine(batch, "CAP-1", "img is fpo (client?)", "qa-agent", NOW + 8);
+  assert.notEqual(first.id, second.id);
+  const late = markQaRefined(batch, "CAP-1", { text: "old answer", id: first.id }, NOW + 9);
+  assert.equal(late.ok, false);
+  assert.equal(batch.ticketStates["CAP-1"].integration.refine?.state, "pending");
+  assert.equal(markQaRefined(batch, "CAP-1", { text: "The image is a placeholder.", id: second.id }, NOW + 10).ok, true);
+  assert.equal(markQaRefined(batch, "CAP-1", { text: "again" }, NOW + 11).ok, false, "no id, and nothing pending");
+});

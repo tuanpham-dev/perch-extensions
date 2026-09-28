@@ -3423,7 +3423,7 @@
 }
 .jira-handoff-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
 .jira-handoff-rows { list-style: none; margin: 0; padding: 0; }
-.jira-handoff-rows li { display: grid; grid-template-columns: 5.5rem 1.2rem 1fr; gap: 6px; padding: 3px 0; align-items: baseline; }
+.jira-handoff-rows li { display: grid; grid-template-columns: 5.5rem 1.2rem 1fr auto; gap: 6px; padding: 3px 0; align-items: baseline; }
 .jira-handoff-mark { display: flex; align-items: center; justify-content: center; align-self: center; }
 .jira-handoff-rows li.ok .jira-handoff-mark { color: var(--good, #5cc48b); }
 .jira-handoff-rows li.failed .jira-handoff-mark, .jira-handoff-rows li.failed .jira-handoff-text { color: var(--error, #f48771); }
@@ -3864,3 +3864,21 @@
 .jira-rescue { flex-wrap: wrap; gap: 6px; }
 .jira-rescue select { max-width: 14rem; }
 .jira-qav-state.is-pending { color: var(--focus-border, #4a9eff); }
+
+/* The comment a hand-off row will post, shown under it. */
+.jira-handoff-preview {
+  grid-column: 1 / -1;
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 4px;
+  background: var(--jira-sunken);
+  font: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.jira-qa-stale {
+  font-size: 11px;
+  color: hsl(35 80% 50%);
+}
+.jira-rv-previous { margin: 4px 0 0; font-size: 11.5px; color: var(--fg-inactive, #999); }

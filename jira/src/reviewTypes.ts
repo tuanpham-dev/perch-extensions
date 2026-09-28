@@ -53,6 +53,8 @@ export interface ReviewTask<R> {
   endedAt: number | null;
   error: string;
   report: R | null;
+  // The last run's report, kept while a rerun has not reported yet.
+  previous?: R | null;
 }
 
 export interface Review {

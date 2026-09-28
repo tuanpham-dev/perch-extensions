@@ -30,3 +30,9 @@ export function useStickyState<T>(key: string, initial: T): [T, (next: T) => voi
 export function clearSticky(prefix: string): void {
   for (const key of [...drafts.keys()]) if (key.startsWith(prefix)) drafts.delete(key);
 }
+
+// Reads a draft without subscribing, for an action that should use what is
+// on screen (a field still being edited when a button is clicked).
+export function readSticky<T>(key: string): T | undefined {
+  return drafts.get(key) as T | undefined;
+}

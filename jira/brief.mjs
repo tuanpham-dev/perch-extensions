@@ -214,7 +214,7 @@ export function buildFeedbackMessage({ clusterName, items }) {
     "",
     "---",
     "",
-    'For each: make the change, commit it as `[<KEY>] ...`, then run `jira-batch done <KEY> --summary "..."` again.',
+    'For each: make the change and commit it as `[<KEY>] ...`. Then QA it again - the page has changed, so the old report and screenshots no longer describe it - and file a fresh report with `jira-batch qa <KEY> ...` before running `jira-batch done <KEY> --summary "..."` again.',
   );
   return lines.join("\n").trimEnd();
 }
@@ -228,7 +228,10 @@ export function buildResumeMessage({ clusterName, remaining }) {
     lines.push("", "Every ticket is reported. Stay at this prompt: feedback may arrive as a new message.");
   } else {
     lines.push("", "Where the tickets stand:");
-    for (const ticket of remaining) lines.push(`- ${ticketLine(ticket)} - ${ticket.state}`);
+    for (const ticket of remaining) {
+      lines.push(`- ${ticketLine(ticket)} - ${ticket.state}`);
+      if (ticket.feedback) lines.push(`  The reviewer asked: ${oneLine(ticket.feedback)} (QA it again with jira-batch qa before done).`);
+    }
     lines.push("", "Carry on with the ones that are not done yet.");
   }
   lines.push("", "Run `jira-batch brief` for the full brief and the rules.");
@@ -306,7 +309,7 @@ export function buildQaFixMessage({ key, change }) {
 // The approval note, handed to the QA agent to restate. It has the context -
 // it merged the ticket, served it and made the reviewer's changes - so it can
 // say what "the image" or "24px" refers to where a bare model could only guess.
-export function buildQaRefineMessage({ key, summary, note }) {
+export function buildQaRefineMessage({ key, summary, note, id = "" }) {
   return [
     `Refine the approval note for ${key} - ${oneLine(summary)}. The reviewer typed it in shorthand while looking at the page:`,
     "",
@@ -314,7 +317,7 @@ export function buildQaRefineMessage({ key, summary, note }) {
     "",
     "Rewrite it as one to three plain sentences a teammate who was not present can act on. Expand shorthand and say what each number or element refers to, from what you know of this ticket and the page. Keep every claim exactly as strong as it was: a possibility stays a possibility, a guess stays a guess, and nothing is added. Change nothing in the worktree.",
     "",
-    `Answer with \`jira-batch qa-refined ${key} --text "..."\`, or \`jira-batch qa-refined ${key} --as-written yes\` if you cannot restate it without guessing what was meant.`,
+    `Answer with \`jira-batch qa-refined ${key}${id ? ` --id ${id}` : ""} --text "..."\`, or \`jira-batch qa-refined ${key}${id ? ` --id ${id}` : ""} --as-written yes\` if you cannot restate it without guessing what was meant.`,
   ].join("\n");
 }
 

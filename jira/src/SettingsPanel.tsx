@@ -53,18 +53,41 @@ export function onTokenChange(cb: () => void): () => void {
 // The site's projects, so the mapping table offers a list rather than a text
 // field. Fetched here rather than threaded from the panes' store: this
 // component is registered separately and may render with no pane open.
-function useProjects(refreshKey: number): { projects: ProjectRow[]; error: string | null } {
+//
+// One request per site and token, shared by every component that needs the
+// list: keyed on the tick of any store change, the three settings components
+// each refetched the whole paged list whenever anything in the tab moved.
+let projectsCache: { key: string; request: Promise<ProjectRow[]> } | null = null;
+let tokenGeneration = 0;
+
+function loadProjects(key: string): Promise<ProjectRow[]> {
+  if (projectsCache?.key === key) return projectsCache.request;
+  const request = serverFetch!("/projects")
+    .then((res) => (res.ok ? res.json() : res.json().then((body) => Promise.reject(new Error(body?.error)))))
+    .then((body: { projects: ProjectRow[] }) => body.projects ?? []);
+  // A failure is not cached, so the next open tries again.
+  request.catch(() => {
+    if (projectsCache?.request === request) projectsCache = null;
+  });
+  projectsCache = { key, request };
+  return request;
+}
+
+function useProjects(): { projects: ProjectRow[]; error: string | null } {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(tokenGeneration);
+  useEffect(() => onTokenChange(() => setGeneration(++tokenGeneration)), []);
+  useBridge();
+  const site = `${String(bridge?.getSetting("jira.siteUrl") ?? "")}|${String(bridge?.getSetting("jira.email") ?? "")}|${generation}`;
 
   useEffect(() => {
     if (!serverFetch) return;
     let alive = true;
-    serverFetch("/projects")
-      .then((res) => (res.ok ? res.json() : res.json().then((body) => Promise.reject(new Error(body?.error)))))
-      .then((body: { projects: ProjectRow[] }) => {
+    loadProjects(site)
+      .then((rows) => {
         if (!alive) return;
-        setProjects(body.projects ?? []);
+        setProjects(rows);
         setError(null);
       })
       .catch((err: Error) => {
@@ -75,7 +98,7 @@ function useProjects(refreshKey: number): { projects: ProjectRow[]; error: strin
     return () => {
       alive = false;
     };
-  }, [refreshKey]);
+  }, [site]);
 
   return { projects, error };
 }
@@ -195,7 +218,7 @@ export default function SettingsPanel() {
 // field sits under jira.email - see client.tsx's registrations.
 export function ProjectSettingsSetting() {
   const tick = useBridge();
-  const { projects, error } = useProjects(tick);
+  const { projects, error } = useProjects();
   if (!bridge) return null;
   const current = bridge;
   return (
@@ -212,7 +235,7 @@ export function ProjectSettingsSetting() {
 
 export function ProjectMapSettings() {
   const tick = useBridge();
-  const { projects, error } = useProjects(tick);
+  const { projects, error } = useProjects();
   if (!bridge) return null;
   return (
     <ProjectMapTable
@@ -230,7 +253,7 @@ export function ProjectMapSettings() {
 // token. Presence only, never the value - the same contract as the token.
 export function StorefrontPasswordSetting() {
   const tick = useBridge();
-  const { projects } = useProjects(tick);
+  const { projects } = useProjects();
   const active = bridge?.getActiveProject() ?? "";
   const [project, setProject] = useState("");
   const [set, setSet] = useState<boolean | null>(null);

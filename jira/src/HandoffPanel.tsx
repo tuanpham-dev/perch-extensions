@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import KeyLink from "./KeyLink";
-import { getHandoffConfig } from "./batchApi";
+import { getHandoffConfig, getHandoffPreview } from "./batchApi";
 import type { Batch, HandoffConfig } from "./batchTypes";
 import type { Facets } from "./types";
 import { useStickyState } from "./stickyState";
@@ -49,9 +49,36 @@ function doneText(handoff: { status?: string; assignee?: string }): string {
 export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPanelProps) {
   const saved: HandoffConfig = batch.handoffConfig ?? { status: "", assignee: "", previewUrl: "" };
   const [defaults, setDefaults] = useState<HandoffConfig | null>(null);
+  // The comment each ticket will get, read before it goes out under your
+  // name. Refetched when the batch changes, since the note and the preview
+  // URL feed it.
+  const [preview, setPreview] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getHandoffPreview(batch.id)
+      .then((res) => {
+        if (!cancelled) setPreview(Object.fromEntries(res.tickets.map((ticket) => [ticket.key, ticket.comment])));
+      })
+      .catch(() => {
+        // No preview is not a reason to block the hand-off itself.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [batch.id, batch.updatedAt]);
   // What is being typed, per field, until it is saved on blur. Kept outside
   // the component so leaving the tab mid-edit loses nothing.
   const [edits, setEdits] = useStickyState<Partial<HandoffConfig>>(`handoff:${batch.id}`, {});
+
+  // Edits the server now holds are no longer edits.
+  useEffect(() => {
+    const settled = (Object.keys(edits) as Field[]).filter((field) => (edits[field] ?? "").trim() === saved[field]);
+    if (settled.length === 0) return;
+    const rest = { ...edits };
+    for (const field of settled) delete rest[field];
+    setEdits(rest);
+  }, [saved.status, saved.assignee, saved.previewUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,12 +102,12 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
   const failed = rows.filter((row) => row.handoff && !row.handoff.ok).length;
 
   const valueOf = (field: Field) => edits[field] ?? saved[field];
+  // Saved when the field is left, but the edit is kept until the batch comes
+  // back with it: a click on Hand off right after typing reads the edits,
+  // and must not find them already gone while the save is in flight.
   const commit = (field: Field) => {
     const value = edits[field];
     if (value === undefined) return;
-    const rest = { ...edits };
-    delete rest[field];
-    setEdits(rest);
     if (value.trim() !== saved[field]) onSave({ [field]: value.trim() });
   };
 
@@ -140,6 +167,17 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
             <span className="jira-handoff-text">
               {row.handoff ? (row.handoff.ok ? doneText(row.handoff) : row.handoff.error) : "not yet"}
             </span>
+            {preview[row.key] && (
+              <button
+                className="jira-linkish"
+                aria-expanded={open === row.key}
+                title="The comment this ticket gets in Jira"
+                onClick={() => setOpen(open === row.key ? null : row.key)}
+              >
+                {open === row.key ? "Hide comment" : "Comment"}
+              </button>
+            )}
+            {open === row.key && preview[row.key] && <pre className="jira-handoff-preview">{preview[row.key]}</pre>}
           </li>
         ))}
       </ul>

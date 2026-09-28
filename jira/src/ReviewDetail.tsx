@@ -275,7 +275,8 @@ export default function ReviewDetail({
         onStop={() => onStop("code")}
         onRunAgain={(x, y) => onRunAgain("code", x, y)}
       />
-      {code?.report && <CodeReportView report={code.report} />}
+      {!code?.report && code?.previous && <p className="jira-rv-previous">From the previous run - the new one hasn't reported yet.</p>}
+      {(code?.report ?? code?.previous) && <CodeReportView report={(code.report ?? code.previous)!} />}
 
       <TaskRow
         name="qa"
@@ -285,7 +286,8 @@ export default function ReviewDetail({
         onStop={() => onStop("qa")}
         onRunAgain={(x, y) => onRunAgain("qa", x, y)}
       />
-      {qa?.report && <QaReportView issueKey={issueKey} report={qa.report} onOpenShot={onOpenShot} />}
+      {!qa?.report && qa?.previous && <p className="jira-rv-previous">From the previous run - the new one hasn't reported yet.</p>}
+      {(qa?.report ?? qa?.previous) && <QaReportView issueKey={issueKey} report={(qa.report ?? qa.previous)!} onOpenShot={onOpenShot} />}
 
       {(code?.report || qa?.report) && (
         <div className="jira-rv-post">

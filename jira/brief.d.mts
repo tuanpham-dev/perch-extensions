@@ -35,7 +35,7 @@ export interface RemainingTicket {
 }
 export declare function buildResumeMessage(input: { clusterName: string; remaining: RemainingTicket[] }): string;
 
-export declare function buildQaRefineMessage(input: { key: string; summary: string; note: string }): string;
+export declare function buildQaRefineMessage(input: { key: string; summary: string; note: string; id?: string }): string;
 export declare function buildQaReopenMessage(input: { key: string }): string;
 export declare function buildQaLateDropMessage(input: { key: string; commit: string }): string;
 export declare function buildRestartNote(input: { cliPath: string }): string;
