@@ -75,6 +75,18 @@ function slug(text: string): string {
   );
 }
 
+// What git's check-ref-format would refuse, in words. The server checks
+// with git itself before starting; this says so before the click.
+function branchProblem(branch: string): string {
+  if (/\s/.test(branch)) return "name has a space in it";
+  if (/\.\.|[~^:?*[\\]|@\{/.test(branch)) return "name has a character git doesn't allow (.., ~ ^ : ? * [ \\ or @{)";
+  if (branch.startsWith("-") || branch.startsWith("/") || branch.endsWith("/") || branch.endsWith(".") || branch.endsWith(".lock")) {
+    return "name can't start with - or /, or end with /, . or .lock";
+  }
+  if (branch.includes("//") || branch.split("/").some((part) => part.startsWith("."))) return "name has an empty or dot-leading part";
+  return "";
+}
+
 function branchFor(template: string, cluster: Cluster): string {
   if (cluster.branch) return cluster.branch;
   return (template.trim() || "{cluster}").replaceAll("{cluster}", slug(cluster.name));
@@ -352,16 +364,21 @@ export default function BatchReview({
   // What the server would refuse, said here instead: an empty branch name
   // reaches `git worktree add -b ""` and surfaces a raw git error, and a
   // cluster with no tickets is refused by name after the worktree exists.
+  // Caught here rather than as a git error after the first worktree exists:
+  // two clusters on one branch, or a name git would refuse.
+  const tickedBranches = tickedIds.map((id) => branchOf(batch.clusters.find((c) => c.id === id)!).trim());
   const blocked = tickedIds
     .map((id) => batch.clusters.find((c) => c.id === id)!)
-    .map((cluster) =>
-      !branchOf(cluster).trim()
-        ? `"${cluster.name}" needs a branch name.`
-        : cluster.keys.length === 0
-          ? `"${cluster.name}" has no tickets.`
-          : "",
-    )
-    .filter(Boolean);
+    .map((cluster) => {
+      const branch = branchOf(cluster).trim();
+      if (!branch) return `"${cluster.name}" needs a branch name.`;
+      if (cluster.keys.length === 0) return `"${cluster.name}" has no tickets.`;
+      const problem = branchProblem(branch);
+      if (problem) return `"${cluster.name}": the branch ${problem}.`;
+      if (tickedBranches.filter((other) => other === branch).length > 1) return `Two clusters would share the branch "${branch}" - give one another name.`;
+      return "";
+    })
+    .filter((text, i, all) => text && all.indexOf(text) === i);
 
   return (
     <div className="jira-batchreview">
@@ -453,7 +470,7 @@ export default function BatchReview({
             their own row. Strung along the end of the title row they pushed
             the primary action onto a second line of its own, which read as
             two half-finished toolbars. */}
-        <div className="jira-breview-choices">
+        <div className="jira-breview-choices" title="For the clusters started from here now. Each cluster keeps what it started with.">
           {skills && (
             <>
               <label className="jira-breview-agent">

@@ -38,6 +38,9 @@ export interface ReviewDetailProps {
   onOpenTerminal: (task: ReviewTaskName) => void;
   onStop: (task: ReviewTaskName) => void;
   onRunAgain: (task: ReviewTaskName, x: number, y: number) => void;
+  // The first review, from here: the header's Review button only shows while
+  // the ticket is in the current list and nothing is ticked.
+  onRunFirst: (x: number, y: number) => void;
   onClose: () => void;
   onPostPr: () => void;
   onPostJira: () => void;
@@ -221,6 +224,20 @@ function QaReportView({
   );
 }
 
+// A short name for what a report covers, so a report beside a newer link
+// says which one it was about.
+function coverLabel(url: string): string {
+  const pr = /\/pull\/(\d+)/.exec(url);
+  if (pr) return `PR #${pr[1]}`;
+  const theme = /preview_theme_id=(\d+)/.exec(url);
+  if (theme) return `preview theme ${theme[1]}`;
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 export default function ReviewDetail({
   issueKey,
   links,
@@ -232,6 +249,7 @@ export default function ReviewDetail({
   onOpenTerminal,
   onStop,
   onRunAgain,
+  onRunFirst,
   onClose,
   onPostPr,
   onPostJira,
@@ -265,7 +283,14 @@ export default function ReviewDetail({
       />
 
       {error && <div className="jira-rv-error">{error}</div>}
-      {!review && <p className="jira-bdetail-note">Not reviewed yet. Review in the header runs it.</p>}
+      {!review && (
+        <div className="jira-bdetail-actions">
+          <span className="jira-bdetail-hint">Not reviewed yet.</span>
+          <button className="jira-selaction primary" disabled={busy} onClick={(e) => onRunFirst(e.clientX, e.clientY)} title="Run the review chosen in the header's Review button">
+            Run review
+          </button>
+        </div>
+      )}
 
       <TaskRow
         name="code"
@@ -276,6 +301,7 @@ export default function ReviewDetail({
         onRunAgain={(x, y) => onRunAgain("code", x, y)}
       />
       {!code?.report && code?.previous && <p className="jira-rv-previous">From the previous run - the new one hasn't reported yet.</p>}
+      {(code?.report ?? code?.previous) && review?.prUrl && <p className="jira-rv-covers">Covers {coverLabel(review.prUrl)}</p>}
       {(code?.report ?? code?.previous) && <CodeReportView report={(code.report ?? code.previous)!} />}
 
       <TaskRow
@@ -287,6 +313,7 @@ export default function ReviewDetail({
         onRunAgain={(x, y) => onRunAgain("qa", x, y)}
       />
       {!qa?.report && qa?.previous && <p className="jira-rv-previous">From the previous run - the new one hasn't reported yet.</p>}
+      {(qa?.report ?? qa?.previous) && review?.previewUrl && <p className="jira-rv-covers">Covers {coverLabel(review.previewUrl)}</p>}
       {(qa?.report ?? qa?.previous) && <QaReportView issueKey={issueKey} report={(qa.report ?? qa.previous)!} onOpenShot={onOpenShot} />}
 
       {(code?.report || qa?.report) && (

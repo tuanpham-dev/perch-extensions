@@ -41,11 +41,12 @@ export function apiGet<T>(path: string): Promise<T> {
   return fetcher(path).then((res) => readJson<T>(res));
 }
 
-export function apiPost<T>(path: string, body: unknown): Promise<T> {
+export function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   if (!fetcher) return Promise.reject(new Error("extension not activated"));
   return fetcher(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   }).then((res) => readJson<T>(res));
 }

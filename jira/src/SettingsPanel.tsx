@@ -121,6 +121,24 @@ export default function SettingsPanel() {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Clearing deletes the stored token at once, so it asks first, in place.
+  const [confirmClear, setConfirmClear] = useState(false);
+  // Whether the stored token actually signs in: "stored" said nothing about
+  // a token pasted with a typo, or for the wrong site.
+  const [signIn, setSignIn] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const checkSignIn = useCallback(() => {
+    if (!serverFetch) return;
+    const cwd = bridge?.getActiveRepo();
+    serverFetch(`/status${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`)
+      .then((res) => res.json())
+      .then((body: { configured?: boolean; authed?: boolean; user?: { displayName?: string } | null; error?: string | null }) => {
+        if (!body.configured) setSignIn(null);
+        else if (body.authed) setSignIn({ ok: true, text: `Signed in as ${body.user?.displayName ?? "you"}` });
+        else setSignIn({ ok: false, text: body.error || "Jira refused this token" });
+      })
+      .catch(() => setSignIn(null));
+  }, []);
 
   const refresh = useCallback(() => {
     if (!serverFetch) return;
@@ -129,9 +147,11 @@ export default function SettingsPanel() {
       .then((body: { set: boolean; supported?: boolean }) => {
         setSet(body.set);
         setSupported(body.supported !== false);
+        if (body.set) checkSignIn();
+        else setSignIn(null);
       })
       .catch((err: Error) => setError(err.message));
-  }, []);
+  }, [checkSignIn]);
 
   useEffect(refresh, [refresh]);
 
@@ -146,8 +166,14 @@ export default function SettingsPanel() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ value: next }),
         });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        if (!res.ok) {
+          // The server's own reason (no secret store on this Perch, say)
+          // rather than just the status line.
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error || `${res.status} ${res.statusText}`);
+        }
         setValue("");
+        setConfirmClear(false);
         refresh();
         for (const cb of tokenListeners) cb();
       } catch (err) {
@@ -202,12 +228,23 @@ export default function SettingsPanel() {
         >
           Save
         </button>
-        {set && (
-          <button className="dialog-button secondary" disabled={busy} onClick={() => void write("")}>
+        {set && !confirmClear && (
+          <button className="dialog-button secondary" disabled={busy} onClick={() => setConfirmClear(true)}>
             Clear
           </button>
         )}
+        {set && confirmClear && (
+          <>
+            <button className="dialog-button primary" disabled={busy} onClick={() => void write("")} title="Delete what is stored">
+              Delete it
+            </button>
+            <button className="dialog-button secondary" disabled={busy} onClick={() => setConfirmClear(false)}>
+              Keep it
+            </button>
+          </>
+        )}
       </div>
+      {signIn && <div className={`settings-hint${signIn.ok ? "" : " settings-error"}`}>{signIn.text}</div>}
       {error && <div className="settings-hint settings-error">{error}</div>}
     </div>
   );
@@ -260,6 +297,7 @@ export function StorefrontPasswordSetting() {
   const [supported, setSupported] = useState(true);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chosen = project || active || projects[0]?.key || "";
 
@@ -287,8 +325,12 @@ export function StorefrontPasswordSetting() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ project: chosen, value: next }),
       });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || `${res.status} ${res.statusText}`);
+      }
       setValue("");
+      setConfirmClear(false);
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -339,10 +381,20 @@ export function StorefrontPasswordSetting() {
         <button className="dialog-button primary" disabled={busy || !supported || !value.trim() || !chosen} onClick={() => void write(value)}>
           Save
         </button>
-        {set && (
-          <button className="dialog-button secondary" disabled={busy} onClick={() => void write("")}>
+        {set && !confirmClear && (
+          <button className="dialog-button secondary" disabled={busy} onClick={() => setConfirmClear(true)}>
             Clear
           </button>
+        )}
+        {set && confirmClear && (
+          <>
+            <button className="dialog-button primary" disabled={busy} onClick={() => void write("")} title="Delete what is stored">
+              Delete it
+            </button>
+            <button className="dialog-button secondary" disabled={busy} onClick={() => setConfirmClear(false)}>
+              Keep it
+            </button>
+          </>
         )}
       </div>
       {error && <div className="settings-hint settings-error">{error}</div>}

@@ -22,6 +22,10 @@ export interface BatchFormProps {
   // With `single`: the name for the cluster, and for a new batch.
   title: string;
   lookupNote: string | null;
+  // Pasted keys being looked up right now.
+  resolving: boolean;
+  // Keys the batch being added to already holds; they are left where they are.
+  already: Set<string>;
   criteria: string;
   readCodebase: boolean;
   canReadCodebase: boolean;
@@ -34,6 +38,10 @@ export interface BatchFormProps {
   onRemoveIssue: (key: string) => void;
   onSubmit: () => void;
   onSubmitWithoutCodebase: () => void;
+  // The AI grouping failed: the ways that don't need it.
+  aiFailed: boolean;
+  onGroupByFields: () => void;
+  onKeepTogether: () => void;
   onCancel: () => void;
 }
 
@@ -45,6 +53,8 @@ export default function BatchForm({
   single,
   title,
   lookupNote,
+  resolving,
+  already,
   criteria,
   readCodebase,
   canReadCodebase,
@@ -57,6 +67,9 @@ export default function BatchForm({
   onRemoveIssue,
   onSubmit,
   onSubmitWithoutCodebase,
+  aiFailed,
+  onGroupByFields,
+  onKeepTogether,
   onCancel,
 }: BatchFormProps) {
   const { ref, style } = usePopoverPosition<HTMLDivElement>(anchor, [issues.length, error, lookupNote, busy]);
@@ -101,6 +114,11 @@ export default function BatchForm({
                 <li key={issue.key}>
                   <span className="jira-key">{issue.key}</span>
                   <span className="jira-batchform-summary">{issue.summary}</span>
+                  {already.has(issue.key) && (
+                    <span className="jira-batchform-already" title="It stays where it is; only the others are placed">
+                      already in this batch
+                    </span>
+                  )}
                   <button
                     className="icon-button"
                     title={`Leave ${issue.key} out`}
@@ -127,6 +145,7 @@ export default function BatchForm({
             // pasted before Analyze is pressed rather than after.
             onBlur={() => onResolveKeys()}
           />
+          {resolving && <div className="jira-batchform-note">Looking up the pasted keys...</div>}
           {lookupNote && <div className="jira-batchform-note">{lookupNote}</div>}
 
           <span className="jira-field-label">How should they be split?</span>
@@ -207,13 +226,25 @@ export default function BatchForm({
                   Analyze without reading the codebase
                 </button>
               )}
+              {aiFailed && !single && (
+                <>
+                  <button className="jira-linkish" onClick={onGroupByFields} disabled={busy}>
+                    Group by epic, component and label
+                  </button>
+                  <button className="jira-linkish" onClick={onKeepTogether} disabled={busy}>
+                    Keep them together in one cluster
+                  </button>
+                </>
+              )}
             </div>
           )}
           {busy && <div className="jira-batchform-busy">{busyLabel}</div>}
         </div>
 
         <div className="jira-pop-actions">
-          <button className="jira-selaction" onClick={onCancel} disabled={busy}>
+          {/* Enabled while analyzing too: a codebase read can run for minutes,
+              and cancelling drops its answer rather than making a batch. */}
+          <button className="jira-selaction" onClick={onCancel}>
             Cancel
           </button>
           <button

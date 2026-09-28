@@ -55,6 +55,7 @@ import {
   qaRefineClear,
   qaAskAgain,
   reopenTicket,
+  saveBatchAgent,
   discardProposal,
   saveHandoffConfig,
   qaHandoff,
@@ -102,7 +103,7 @@ import {
   subscribeReviewEvents,
 } from "./reviewApi";
 import type { Review, ReviewAction, ReviewDocument, ReviewTaskName, TicketLinks } from "./reviewTypes";
-import { tasksFor } from "../reviewModel.mjs";
+import { effectiveAction, tasksFor } from "../reviewModel.mjs";
 import ProjectPicker from "./ProjectPicker";
 import { buildCombinedBrief } from "./brief";
 import { buildBranch, sessionNameFor } from "./naming";
@@ -513,6 +514,8 @@ interface KeyPasteState {
   busy: boolean;
   note: string | null;
   error: string | null;
+  // Pasted keys not in the list, which can be opened on their own.
+  absent: string[];
 }
 
 interface BatchFormState {
@@ -531,6 +534,12 @@ interface BatchFormState {
   // With `single`: the cluster's name, and a new batch's too. Empty takes
   // the first ticket's summary, as before.
   title: string;
+  // Pasted keys being looked up. Kept apart from `busy`: the lookup starts
+  // on the paste box's blur, which is the mousedown of an Analyze click, and
+  // a busy form disabled the button under that click.
+  resolving: boolean;
+  // The AI grouping failed, so the form offers the ways that don't need it.
+  aiFailed: boolean;
   aiHint: string | null;
   busy: boolean;
   error: string | null;
@@ -1517,6 +1526,9 @@ function savedCriteria(): string {
 
 export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId: string | null): Promise<void> {
   const issues = selectedIssues();
+  // Adding to a batch starts from how that batch was split, not from the
+  // last criteria typed anywhere.
+  const target = batchId && state.batch?.id === batchId ? state.batch : null;
   setState({
     batchForm: {
       origin,
@@ -1525,7 +1537,7 @@ export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId
       issues,
       keysText: "",
       lookupNote: null,
-      criteria: savedCriteria(),
+      criteria: target?.criteria || savedCriteria(),
       // Only a CLI agent can read files; the checkbox is settled once the
       // profiles answer, and starts off rather than promising something the
       // configured AI may not be able to do.
@@ -1533,6 +1545,8 @@ export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId
       canReadCodebase: false,
       single: false,
       title: "",
+      resolving: false,
+      aiFailed: false,
       aiHint: null,
       busy: false,
       error: null,
@@ -1553,7 +1567,7 @@ export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId
     const isCli = Boolean(profile.program);
     updateBatchForm({
       canReadCodebase: isCli,
-      readCodebase: isCli,
+      readCodebase: isCli && (target ? target.readCodebase : true),
       aiHint: isCli ? null : `${profile.label} is a keyed API and cannot read files.`,
     });
   } catch {
@@ -1593,7 +1607,12 @@ export function updateBatchForm(patch: Partial<BatchFormState>): void {
   setState({ batchForm: { ...state.batchForm, ...patch } });
 }
 
+// The analysis in flight, so Cancel can abandon it.
+let analyzing: AbortController | null = null;
+
 export function closeBatchForm(): void {
+  analyzing?.abort();
+  analyzing = null;
   setState({ batchForm: null });
 }
 
@@ -1616,7 +1635,7 @@ export function removeFormIssue(key: string): void {
 // quietly added to a count that nothing can act on. That also means no
 // lookup: the keys are read here, and a paste is instant.
 export function openKeyPaste(anchor: PopoverAnchor, origin: Host): void {
-  setState({ keyPaste: { origin, anchor, text: "", busy: false, note: null, error: null } });
+  setState({ keyPaste: { origin, anchor, text: "", busy: false, note: null, error: null, absent: [] } });
 }
 
 export function updateKeyPaste(patch: Partial<KeyPasteState>): void {
@@ -1654,17 +1673,48 @@ export function submitKeyPaste(): void {
   // Nothing matched: keep what was typed, so a typo can be corrected rather
   // than retyped.
   if (picked.length === 0) {
-    updateKeyPaste({ note: notes.join(" ") || "Nothing to select." });
+    updateKeyPaste({ note: notes.join(" ") || "Nothing to select.", absent });
     return;
   }
   setState({ selection, selectMode: true });
-  updateKeyPaste({ text: "", note: notes.join(" ") });
+  updateKeyPaste({ text: "", note: notes.join(" "), absent });
 }
 
-export async function resolvePastedKeys(): Promise<IssueRow[]> {
+// A pasted key that is in no list here: opened in the detail pane on its
+// own, which fetches it from Jira.
+export function openPastedKey(key: string): void {
+  closeKeyPaste();
+  focusIssue({
+    key,
+    summary: key,
+    status: "",
+    statusCategory: null,
+    type: "",
+    assignee: null,
+    priority: null,
+    updated: null,
+    url: "",
+  });
+}
+
+// The lookup in flight, so a submit that follows a blur waits for it rather
+// than starting a second one.
+let resolvingKeys: Promise<IssueRow[] | null> | null = null;
+
+// Null when the lookup failed: the pasted text is kept and the error shown,
+// and a submit must stop rather than carry on without those tickets.
+export function resolvePastedKeys(): Promise<IssueRow[] | null> {
+  if (resolvingKeys) return resolvingKeys;
+  resolvingKeys = lookupPastedKeys().finally(() => {
+    resolvingKeys = null;
+  });
+  return resolvingKeys;
+}
+
+async function lookupPastedKeys(): Promise<IssueRow[] | null> {
   const form = state.batchForm;
   if (!form || !form.keysText.trim()) return form?.issues ?? [];
-  updateBatchForm({ busy: true });
+  updateBatchForm({ resolving: true });
   try {
     const res = await lookupIssues(form.keysText);
     const current = state.batchForm;
@@ -1678,28 +1728,33 @@ export async function resolvePastedKeys(): Promise<IssueRow[]> {
     updateBatchForm({
       issues,
       keysText: "",
-      busy: false,
+      resolving: false,
       lookupNote: notes.length > 0 ? notes.join(" ") : null,
     });
     return issues;
   } catch (err) {
-    updateBatchForm({ busy: false, error: message(err) });
-    return state.batchForm?.issues ?? [];
+    updateBatchForm({ resolving: false, error: `Could not look up the pasted keys: ${message(err)}` });
+    return null;
   }
 }
 
-export async function submitBatchForm(options: { readCodebase?: boolean } = {}): Promise<void> {
+export async function submitBatchForm(options: { readCodebase?: boolean; heuristic?: boolean } = {}): Promise<void> {
   const form = state.batchForm;
   const cwd = state.cwd;
   if (!form || !cwd) return;
   const issues = await resolvePastedKeys();
+  // The lookup failed: its error is on the form and the pasted text is still
+  // in the box. Going on would plan the batch without those tickets.
+  if (issues === null) return;
   if (issues.length === 0) {
     updateBatchForm({ error: "Pick or paste at least one ticket." });
     return;
   }
   const readCodebase = form.single ? false : (options.readCodebase ?? form.readCodebase);
-  updateBatchForm({ busy: true, error: null, fallback: false, readCodebase });
+  updateBatchForm({ busy: true, error: null, fallback: false, aiFailed: false, readCodebase });
   extSettings?.set(CRITERIA_KEY, form.criteria);
+  const controller = new AbortController();
+  analyzing = controller;
   try {
     const res = await analyzeBatch({
       cwd,
@@ -1709,7 +1764,9 @@ export async function submitBatchForm(options: { readCodebase?: boolean } = {}):
       single: form.single,
       title: form.single ? form.title.trim() : "",
       batchId: form.batchId,
-    });
+      heuristic: options.heuristic === true,
+    }, controller.signal);
+    analyzing = null;
     setState({
       batchForm: null,
       batch: res.batch,
@@ -1725,11 +1782,13 @@ export async function submitBatchForm(options: { readCodebase?: boolean } = {}):
     if (res.warnings.length > 0) batchNote(res.warnings.join(" "));
     loadBatches(cwd);
   } catch (err) {
-    const status = (err as { status?: number }).status;
-    // 422 is the server saying "this specific approach will not work here" -
-    // a codebase read on a core that stops at 60s, or a reply it could not
-    // use. The first has an obvious next step, so the form offers it.
-    updateBatchForm({ busy: false, error: message(err), fallback: status === 422 && readCodebase });
+    if (controller.signal.aborted) return;
+    analyzing = null;
+    // The server names what went wrong: a codebase read that ran out of
+    // time has "analyze without it" as its way out; any AI failure also
+    // has the groupings that need no AI.
+    const code = ((err as { body?: { code?: string } }).body ?? {}).code;
+    updateBatchForm({ busy: false, error: message(err), fallback: code === "timeout" && readCodebase, aiFailed: code === "timeout" || code === "ai" });
   }
 }
 
@@ -2039,9 +2098,29 @@ export function reviewOf(key: string): Review | null {
 // The newest of each kind unless the user picked another.
 export function reviewPicksFor(key: string, links: TicketLinks): { pr: string; preview: string } {
   const picks = state.reviewPicks[key] ?? {};
-  const pr = links.prs.find((link) => link.url === picks.pr)?.url ?? links.prs[0]?.url ?? "";
-  const preview = links.previews.find((link) => link.url === picks.preview)?.url ?? links.previews[0]?.url ?? "";
+  // Unpicked, the chips show what the existing review covered - after a
+  // reload they used to jump to the newest link while the report beside
+  // them was about another one.
+  const review = state.reviews?.reviews[key];
+  const pr =
+    links.prs.find((link) => link.url === picks.pr)?.url ??
+    links.prs.find((link) => link.url === review?.prUrl)?.url ??
+    links.prs[0]?.url ??
+    "";
+  const preview =
+    links.previews.find((link) => link.url === picks.preview)?.url ??
+    links.previews.find((link) => link.url === review?.previewUrl)?.url ??
+    links.previews[0]?.url ??
+    "";
   return { pr, preview };
+}
+
+// This Perch's address, for a link in a Jira comment - but not when it is
+// local: a localhost link in a comment teammates read goes nowhere for them.
+function publicOrigin(): string {
+  const host = window.location.hostname;
+  const local = host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host) || /^0\.0\.0\.0$/.test(host) || host.endsWith(".local");
+  return local ? "" : window.location.origin;
 }
 
 export function pickReviewLink(key: string, kind: "pr" | "preview", url: string): void {
@@ -2160,7 +2239,7 @@ export async function postReview(key: string, where: "pr" | "jira"): Promise<voi
       : false;
     if (!ok) return;
   }
-  reviewAction(key, () => (where === "pr" ? postReviewToPr(key, Boolean(already)) : postReviewToJira(key, Boolean(already), window.location.origin)));
+  reviewAction(key, () => (where === "pr" ? postReviewToPr(key, Boolean(already)) : postReviewToJira(key, Boolean(already), publicOrigin())));
 }
 
 export function openReviewTerminal(key: string, task: ReviewTaskName): void {
@@ -2307,7 +2386,7 @@ export function startQaRun(): void {
   if (!batch) return;
   const agentId = batch.agentId || cachedPresets[0]?.id || "";
   setState({ batchBusy: true, batchError: null });
-  void startQa(batch.id, agentId)
+  void startQa(batch.id, agentId, skillOverride("integration", state.integrationSkill))
     .then((res) => {
       holdBatch(res.batch);
       // The agent's terminal, whether it was just made or was already there.
@@ -2408,19 +2487,46 @@ export function deleteOpenBatch(): void {
     .catch((err) => setState({ batchError: message(err) }));
 }
 
+// A skill picker the user didn't touch follows the setting, as the server
+// reads it at start time; one they did is sent. Sending the untouched value
+// too turned a later settings change into an ignored one.
+function skillOverride(slot: SkillSlot, value: string): string | undefined {
+  const key = slot === "execution" ? "jira.executionSkill" : slot === "qa" ? "jira.qaSkill" : "jira.integrationSkill";
+  return value === readSetting(key) ? undefined : value;
+}
+
+// The review's agent choice, saved on the batch quietly (it is a picker,
+// not an action) so a refresh doesn't put the old one back.
+export function chooseBatchAgent(agentId: string): void {
+  const batch = state.batch;
+  if (!batch) return;
+  setState({ batch: { ...batch, agentId } });
+  void saveBatchAgent(batch.id, agentId)
+    .then((res) => {
+      if (state.batch?.id === batch.id) setState({ batch: res.batch });
+    })
+    .catch((err) => setState({ batchError: message(err) }));
+}
+
 export function startBatchClusters(clusterIds: string[], branches: Record<string, string>): void {
   const batch = state.batch;
   if (!batch) return;
   // The picker shows agents[0] when nothing has been chosen, so that is the
   // agent the user is looking at - reading batch.agentId alone refused to
   // start ("Pick an agent first") over a choice the screen said was made.
-  const agentId = batch.agentId || cachedPresets[0]?.id || "";
+  // An agent saved on the batch that has since been disabled is not offered
+  // in the picker, so it is not the one to start either.
+  const saved = cachedPresets.length === 0 || cachedPresets.some((preset) => preset.id === batch.agentId) ? batch.agentId : "";
+  const agentId = saved || cachedPresets[0]?.id || "";
   if (!agentId) {
     setState({ batchError: "No agent is enabled - add one in Settings, AI Providers." });
     return;
   }
   setState({ batchBusy: true, batchError: null });
-  void startClusters(batch.id, clusterIds, agentId, branches, { execution: state.executionSkill, qa: state.qaSkill })
+  void startClusters(batch.id, clusterIds, agentId, branches, {
+    execution: skillOverride("execution", state.executionSkill),
+    qa: skillOverride("qa", state.qaSkill),
+  })
     .then((res) => {
       // Starting several is not all-or-nothing: a branch name that is taken
       // stops that one cluster, and the rest are already working.
@@ -3099,6 +3205,8 @@ function gateMessage(s: JiraState): { kind: "error" | "empty"; text: string } | 
   if (s.error) return { kind: "error", text: readableError(s.error) };
   if (!s.cwd) return { kind: "empty", text: "No active window." };
   if (!s.status) return { kind: "empty", text: "Loading…" };
+  // Configured, but in a way that can't work (an http:// site address).
+  if (!s.status.configured && s.status.error) return { kind: "error", text: s.status.error };
   if (!s.status.configured) {
     return {
       kind: "empty",
@@ -3191,6 +3299,8 @@ function BatchFormFor({ form }: { form: BatchFormState }) {
       issues={form.issues}
       keysText={form.keysText}
       lookupNote={form.lookupNote}
+      resolving={form.resolving}
+      already={new Set(form.batchId && s.batch?.id === form.batchId ? Object.keys(s.batch.tickets) : [])}
       criteria={form.criteria}
       readCodebase={form.readCodebase}
       single={form.single}
@@ -3205,6 +3315,12 @@ function BatchFormFor({ form }: { form: BatchFormState }) {
       onRemoveIssue={removeFormIssue}
       onSubmit={() => void submitBatchForm()}
       onSubmitWithoutCodebase={() => void submitBatchForm({ readCodebase: false })}
+      aiFailed={form.aiFailed}
+      onGroupByFields={() => void submitBatchForm({ heuristic: true })}
+      onKeepTogether={() => {
+        updateBatchForm({ single: true });
+        void submitBatchForm();
+      }}
       onCancel={closeBatchForm}
     />
   );
@@ -3262,6 +3378,8 @@ function Floating({ host }: { host: Host }) {
           busy={s.keyPaste.busy}
           note={s.keyPaste.note}
           error={s.keyPaste.error}
+          absent={s.keyPaste.absent}
+          onOpen={openPastedKey}
           onChange={(text) => updateKeyPaste({ text })}
           onSubmit={submitKeyPaste}
           onClose={closeKeyPaste}
@@ -3339,8 +3457,22 @@ function AssignedPanel({ showMenu, actionsTarget }: SidebarPanelHostProps) {
           so the bar comes with it: "Select all" was otherwise unreachable
           until you had already ticked one by hand. */}
       {(s.selectMode || picked) && <SelectionBarFor showMenu={showMenu} origin="mine" />}
-      {s.startError && <div className="jira-error">{s.startError}</div>}
-      {s.note && <div className="jira-note">{s.note}</div>}
+      {s.startError && (
+        <div className="jira-error">
+          {s.startError}{" "}
+          <button className="jira-linkish" onClick={() => setState({ startError: null })}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {s.note && (
+        <div className="jira-note">
+          {s.note}{" "}
+          <button className="jira-linkish" onClick={() => setState({ note: null })}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {gate ? (
         <Gate message={gate} />
       ) : s.mine.length === 0 ? (
@@ -3550,7 +3682,7 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
           addOnly={addOnly}
           onDiscard={discardPendingProposal}
           agents={agents.map((preset) => ({ id: preset.id, label: preset.name }))}
-          agentId={batch.agentId || agents[0]?.id || ""}
+          agentId={agents.some((preset) => preset.id === batch.agentId) ? batch.agentId : agents[0]?.id || ""}
           skills={s.skills}
           executionSkill={s.executionSkill}
           qaSkill={s.qaSkill}
@@ -3575,7 +3707,7 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
           onAddCluster={addBatchCluster}
           onRemoveCluster={removeBatchCluster}
           onMove={addOnly ? (key, clusterId) => moveInProposal(key, clusterId) : moveBatchTicket}
-          onAgent={(agentId) => setState({ batch: { ...batch, agentId } })}
+          onAgent={(agentId) => chooseBatchAgent(agentId)}
           onReanalyze={reanalyze}
           onStart={(clusterIds, branches) => startBatchClusters(clusterIds, branches)}
           onApply={applyPendingProposal}
@@ -3923,16 +4055,17 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
             <button
               className={`icon-button${showing === "row" ? " active" : ""}`}
               aria-pressed={showing === "row"}
-              title="Details beside the list"
-              onClick={() => chooseLayout("row")}
+              title={layout === "row" ? "Details beside the list - click again for automatic" : "Details beside the list"}
+              // The active one again goes back to automatic (by the tab's width).
+              onClick={() => chooseLayout(layout === "row" ? null : "row")}
             >
               <Icon name="layout-sidebar-right" />
             </button>
             <button
               className={`icon-button${showing === "column" ? " active" : ""}`}
               aria-pressed={showing === "column"}
-              title="Details below the list"
-              onClick={() => chooseLayout("column")}
+              title={layout === "column" ? "Details below the list - click again for automatic" : "Details below the list"}
+              onClick={() => chooseLayout(layout === "column" ? null : "column")}
             >
               <Icon name="layout-panel" />
             </button>
@@ -3954,8 +4087,22 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
           inlineView
         />
       )}
-      {s.startError && <div className="jira-error">{s.startError}</div>}
-      {s.note && <div className="jira-note">{s.note}</div>}
+      {s.startError && (
+        <div className="jira-error">
+          {s.startError}{" "}
+          <button className="jira-linkish" onClick={() => setState({ startError: null })}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {s.note && (
+        <div className="jira-note">
+          {s.note}{" "}
+          <button className="jira-linkish" onClick={() => setState({ note: null })}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {gate ? (
         <Gate message={gate} />
@@ -4024,6 +4171,11 @@ function JiraTab({ showMenu, setTitle }: ViewerHostProps) {
                     onPick={(kind, url) => pickReviewLink(s.focused!.key, kind, url)}
                     onOpenTerminal={(task) => openReviewTerminal(s.focused!.key, task)}
                     onStop={(task) => stopReview(s.focused!.key, task)}
+                    onRunFirst={(x, y) => {
+                      const links = reviewLinks ?? s.focused!.detail?.links ?? { prs: [], previews: [] };
+                      const action = effectiveAction(links, readTicketSetting("jira.reviewAction", s.focused!.key));
+                      if (action) void runReview(s.focused!.key, links, tasksFor(action), showMenu, x, y);
+                    }}
                     onRunAgain={(task, x, y) =>
                       void runReview(s.focused!.key, reviewLinks ?? { prs: [], previews: [] }, [task], showMenu, x, y)
                     }

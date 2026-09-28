@@ -54,6 +54,7 @@ import {
   markHandedOff,
   setHandoffConfig,
   discardProposal,
+  setBatchAgent,
   effectiveHandoff,
   requestQaRefine,
   markQaRefined,
@@ -124,7 +125,8 @@ function route(handler) {
     Promise.resolve(handler(req, res, next)).catch((err) => {
       const status = typeof err?.status === "number" ? err.status : 500;
       if (status >= 500) console.error("[ext:perch.jira]", err?.stack ?? err);
-      if (!res.headersSent) res.status(status).json({ error: err?.message ?? String(err) });
+      // `code` names a refusal the client can offer a way around.
+      if (!res.headersSent) res.status(status).json({ error: err?.message ?? String(err), ...(err?.code ? { code: err.code } : {}) });
       else res.end();
     });
   };
@@ -642,16 +644,22 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     const rawSite = typeof settings["jira.siteUrl"] === "string" ? settings["jira.siteUrl"].trim() : "";
     const email = typeof settings["jira.email"] === "string" ? settings["jira.email"].trim() : "";
     const apiToken = await store.get(TOKEN_NAME);
+    // "your-team.atlassian.net" is what people copy from the address bar's
+    // display; it gets its https://. An http:// address gets its own error
+    // instead of reading as "not configured" when it plainly is.
     let siteUrl = "";
+    let siteError = "";
     if (rawSite) {
+      const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawSite) ? rawSite : `https://${rawSite}`;
       try {
-        const url = new URL(rawSite);
-        if (url.protocol === "https:") siteUrl = rawSite.replace(/\/+$/, "");
+        const url = new URL(withScheme);
+        if (url.protocol === "https:") siteUrl = withScheme.replace(/\/+$/, "");
+        else siteError = `jira.siteUrl must be an https:// address - "${rawSite}" is not`;
       } catch {
-        // Not a URL at all — treated the same as "not configured yet".
+        siteError = `jira.siteUrl "${rawSite}" is not a web address`;
       }
     }
-    return { settings, siteUrl, email, apiToken };
+    return { settings, siteUrl, email, apiToken, siteError };
   }
 
   // A token echoed back inside an Atlassian error message must not reach a
@@ -901,7 +909,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     // deep in a worktree the active session happens to sit.
     const repo = await repoRoot(cwd);
     if (!configured) {
-      res.json({ configured, hasToken, authed: false, user: null, repo, projectKey: key, projectSource: source, error: null });
+      res.json({ configured, hasToken, authed: false, user: null, repo, projectKey: key, projectSource: source, error: cfg.siteError || null });
       return;
     }
     try {
@@ -2125,6 +2133,10 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     route(async (req, res) => {
       const repo = await repoOf(req);
       const body = req.body ?? {};
+      let clientGone = false;
+      res.on("close", () => {
+        if (!res.writableEnded) clientGone = true;
+      });
       const criteria = typeof body.criteria === "string" ? body.criteria : "";
       // Split by hand: no AI call, everything in one cluster. The criteria
       // and the codebase read only exist to inform a model, so neither
@@ -2175,11 +2187,17 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       let heuristic = false;
       if (single) {
         proposal = singleCluster(details, title);
-      } else if (profiles.length === 0) {
+      } else if (profiles.length === 0 || body.heuristic === true) {
         // No AI at all is not an error: the fields a team already fills in
         // are a worse grouping than a model's, and a far better one than none.
+        // Also asked for by name, after an AI grouping failed.
         proposal = heuristicClusters(details);
         heuristic = true;
+        // Tickets with no epic, component or label give no clusters at all.
+        if (proposal.clusters.length === 0) {
+          proposal = singleCluster(details, "");
+          warnings.push("None of these tickets has an epic, component or label, so they are kept together in one cluster.");
+        }
       } else {
         const prompt = buildClusterPrompt({ criteria, readCodebase, repo, tickets: details, existing });
         const settings = await projectSettingsFor(repo);
@@ -2194,19 +2212,25 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
           // the only honest thing to say is which limit was hit and what to
           // do instead - not "the AI failed".
           if (readCodebase && /timed out after 60s/.test(message)) {
-            throw new HttpError(422, "Codebase-aware analysis needs a newer Perch - its AI calls stop after 60 seconds. Analyze without reading the codebase, or update Perch.");
+            throw Object.assign(
+              new HttpError(422, "Codebase-aware analysis needs a newer Perch - its AI calls stop after 60 seconds. Analyze without reading the codebase, or update Perch."),
+              { code: "timeout" },
+            );
           }
           if (readCodebase && /timed out/.test(message)) {
-            throw new HttpError(422, `${message}. Analyze without reading the codebase, or raise jira.batchAnalysisTimeoutSeconds.`);
+            throw Object.assign(new HttpError(422, `${message}. Analyze without reading the codebase, or raise jira.batchAnalysisTimeoutSeconds.`), { code: "timeout" });
           }
-          throw new HttpError(502, message);
+          throw Object.assign(new HttpError(502, message), { code: "ai" });
         }
         const parsed = parseClusterReply(reply, { allowedKeys: fresh, existing });
-        if (!parsed.ok) throw new HttpError(422, parsed.error);
+        if (!parsed.ok) throw Object.assign(new HttpError(422, parsed.error), { code: "ai" });
         proposal = parsed.proposal;
         warnings = parsed.warnings;
       }
 
+      // Cancelled from the form while the AI worked: its answer is dropped
+      // rather than turning into a batch nobody is waiting for.
+      if (clientGone) return;
       const now = Date.now();
       const result = await batches.update((draft) => {
         if (replace) {
@@ -2317,6 +2341,19 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       });
       const doc = await batches.get();
       res.json({ batch: decorate(doc.batches[id]), warnings: outcome.warnings });
+    }),
+  );
+
+  // The agent picked in the review, kept on the batch so a refresh doesn't
+  // put the picker back to the old one.
+  router.post(
+    "/batches/:id/agent",
+    route(async (req, res) => {
+      const id = req.params.id;
+      batchOr404(await batches.get(), id);
+      const agentId = typeof req.body?.agentId === "string" ? req.body.agentId : "";
+      await batches.update((draft) => setBatchAgent(batchOr404(draft, id), agentId, Date.now()));
+      res.json({ batch: decorate((await batches.get()).batches[id]) });
     }),
   );
 

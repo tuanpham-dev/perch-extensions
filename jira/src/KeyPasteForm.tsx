@@ -18,13 +18,16 @@ export interface KeyPasteFormProps {
   text: string;
   busy: boolean;
   note: string | null;
+  // Keys not in this list; each can be opened in the detail pane.
+  absent: string[];
+  onOpen: (key: string) => void;
   error: string | null;
   onChange: (text: string) => void;
   onSubmit: () => void;
   onClose: () => void;
 }
 
-export default function KeyPasteForm({ anchor, text, busy, note, error, onChange, onSubmit, onClose }: KeyPasteFormProps) {
+export default function KeyPasteForm({ anchor, text, busy, note, error, absent, onChange, onSubmit, onClose, onOpen }: KeyPasteFormProps) {
   const { ref, style } = usePopoverPosition<HTMLDivElement>(anchor, [note, error, busy]);
   const box = useRef<HTMLTextAreaElement>(null);
 
@@ -77,6 +80,16 @@ export default function KeyPasteForm({ anchor, text, busy, note, error, onChange
         />
 
         {note && <div className="jira-batchform-note">{note}</div>}
+        {absent.length > 0 && (
+          <div className="jira-batchform-note">
+            Open:{" "}
+            {absent.map((key) => (
+              <button key={key} className="jira-linkish" onClick={() => onOpen(key)} title={`Read ${key} in the detail pane`}>
+                {key}
+              </button>
+            ))}
+          </div>
+        )}
         {error && <div className="jira-batchform-error">{error}</div>}
 
         <div className="jira-pop-actions">

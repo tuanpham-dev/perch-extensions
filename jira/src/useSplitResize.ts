@@ -61,18 +61,20 @@ function subscribeLayout(cb: () => void): () => void {
   };
 }
 
-function chooseLayout(next: Direction): void {
+// Null goes back to automatic: side by side unless the tab is too narrow.
+function chooseLayout(next: Direction | null): void {
   if (next === layoutChoice) return;
   layoutChoice = next;
   try {
-    localStorage.setItem(LAYOUT_KEY, next);
+    if (next === null) localStorage.removeItem(LAYOUT_KEY);
+    else localStorage.setItem(LAYOUT_KEY, next);
   } catch {
     // Blocked storage: the choice still holds for this session.
   }
   for (const cb of layoutListeners) cb();
 }
 
-export function useLayoutChoice(): [Direction | null, (next: Direction) => void] {
+export function useLayoutChoice(): [Direction | null, (next: Direction | null) => void] {
   const layout = useSyncExternalStore(subscribeLayout, currentLayout, currentLayout);
   return [layout, chooseLayout];
 }

@@ -1380,3 +1380,14 @@ test("the QA agent owes a report only for its own unfinished work", () => {
   markQaFixing(batch, "CAP-1", "and bolder", NOW + 8);
   assert.equal(qaOwesReport(batch), true, "a second change is owed again");
 });
+
+test("a card dragged down within its cluster lands where it was dropped", () => {
+  const batch = newBatch({ id: "b", name: "B", repo: "/r", criteria: "", readCodebase: false, tickets: rows("CAP-1", "CAP-2", "CAP-3"), now: NOW });
+  applyProposal(batch, { clusters: [{ id: null, name: "One", rationale: "", files: [], keys: ["CAP-1", "CAP-2", "CAP-3"] }], unclustered: [] }, { makeId: () => "c1", now: NOW });
+  // Dropped in the gap before CAP-3, as drawn: index 2.
+  moveTicket(batch, "CAP-1", "c1", 2, NOW + 1);
+  assert.deepEqual(batch.clusters[0].keys, ["CAP-2", "CAP-1", "CAP-3"]);
+  // Up is unaffected.
+  moveTicket(batch, "CAP-3", "c1", 0, NOW + 2);
+  assert.deepEqual(batch.clusters[0].keys, ["CAP-3", "CAP-2", "CAP-1"]);
+});

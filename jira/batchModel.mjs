@@ -684,6 +684,13 @@ export function discardProposal(batch, now) {
   return { ok: true, removed };
 }
 
+// Which agent this batch's clusters and QA run start with.
+export function setBatchAgent(batch, agentId, now) {
+  batch.agentId = str(agentId);
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
 // The batch's own name. Derived at creation from its first cluster (see
 // server.js), which is a reasonable guess and nothing more - "Cart drawer
 // totals +2" says little once the batch has been worked for a day. An empty
@@ -761,10 +768,15 @@ export function moveTicket(batch, key, clusterId, index, now) {
     return { ok: false, error: `"${to.name}" is ${clusterState(batch, to)} and cannot take more tickets` };
   }
 
+  // The UI gives the drop index in the list as it was drawn, with the card
+  // still in it; moving down within one cluster, removing it first shifts
+  // everything after it up by one.
+  const was = from && to && from === to ? from.keys.indexOf(key) : -1;
   if (from) from.keys = from.keys.filter((k) => k !== key);
   batch.unclustered = batch.unclustered.filter((k) => k !== key);
   if (to) {
-    const at = typeof index === "number" ? Math.max(0, Math.min(index, to.keys.length)) : to.keys.length;
+    const wanted = typeof index === "number" && was >= 0 && index > was ? index - 1 : index;
+    const at = typeof wanted === "number" ? Math.max(0, Math.min(wanted, to.keys.length)) : to.keys.length;
     to.keys.splice(at, 0, key);
     // Same as applyProposal: a ticket dropped onto a cluster that is already
     // running is queued now, or its agent's `jira-batch start` refuses it. A

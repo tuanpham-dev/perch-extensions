@@ -61,8 +61,10 @@ export function analyzeBatch(body: {
   batchId?: string | null;
   // With batchId: re-plan that batch's unstarted tickets in place.
   replace?: boolean;
-}): Promise<AnalyzeResponse> {
-  return apiPost<AnalyzeResponse>("/batches/analyze", body);
+  // Group by epic, component and label instead of asking the AI.
+  heuristic?: boolean;
+}, signal?: AbortSignal): Promise<AnalyzeResponse> {
+  return apiPost<AnalyzeResponse>("/batches/analyze", body, signal);
 }
 
 export function applyProposal(id: string, proposal?: Proposal): Promise<ApplyResponse> {
@@ -95,8 +97,17 @@ export function removeCluster(id: string, clusterId: string): Promise<BatchRespo
 
 // ---- The QA branch ----
 
-export function startQa(id: string, agentId?: string): Promise<QaStartResponse> {
-  return apiPost<QaStartResponse>(`/batches/${encodeURIComponent(id)}/qa/start`, agentId ? { agentId } : {});
+// `integrationSkill` is the review's "Integrates with" choice; left out, the
+// setting decides.
+export function startQa(id: string, agentId?: string, integrationSkill?: string): Promise<QaStartResponse> {
+  return apiPost<QaStartResponse>(`/batches/${encodeURIComponent(id)}/qa/start`, {
+    ...(agentId ? { agentId } : {}),
+    ...(integrationSkill !== undefined ? { integrationSkill } : {}),
+  });
+}
+
+export function saveBatchAgent(id: string, agentId: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/agent`, { agentId });
 }
 
 export function qaMerge(id: string, key: string): Promise<BatchResponse> {

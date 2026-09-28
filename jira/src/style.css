@@ -3927,3 +3927,5 @@
   background: var(--focus-border, #4a9eff);
   vertical-align: middle;
 }
+.jira-batchform-already { flex: none; font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-rv-covers { margin: 2px 0 0; font-size: 11px; color: var(--fg-inactive, #999); }

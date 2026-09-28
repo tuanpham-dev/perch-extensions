@@ -9,6 +9,7 @@
 //
 // Props only - client.tsx imports this file.
 import { useEffect, useState } from "react";
+import { readSticky, useStickyState } from "./stickyState";
 import Icon from "./Icon";
 import StatusPicker from "./StatusPicker";
 import Popover from "./Popover";
@@ -38,7 +39,13 @@ export interface ColumnEditorProps {
 }
 
 export default function ColumnEditor({ anchor, config, statuses, onSave, onCancel }: ColumnEditorProps) {
-  const [draft, setDraft] = useState<BoardConfig>(config);
+  // Kept outside the component: the editor stays open while the tab is away,
+  // and coming back used to show it reset to the saved columns. Forgotten on
+  // save or cancel.
+  const [stored, setStored] = useStickyState<BoardConfig | null>("jira-column-editor", null);
+  const draft = stored ?? config;
+  const setDraft = (next: BoardConfig | ((prev: BoardConfig) => BoardConfig)) =>
+    setStored(typeof next === "function" ? next(readSticky<BoardConfig>("jira-column-editor") ?? config) : next);
   const [error, setError] = useState<string | null>(null);
   // The column whose status picker is open; one at a time keeps the list
   // short enough to read on a phone.
@@ -47,7 +54,7 @@ export default function ColumnEditor({ anchor, config, statuses, onSave, onCance
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") cancel();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -58,6 +65,12 @@ export default function ColumnEditor({ anchor, config, statuses, onSave, onCance
   // exists for - fires changes faster than the editor re-renders, and edits
   // built from a stale draft each overwrote the one before, so all but the
   // last tick were lost.
+  // Leaving the editor either way forgets the draft.
+  const cancel = () => {
+    setStored(null);
+    onCancel();
+  };
+
   const edit = (change: (draft: BoardConfig) => BoardConfig) => {
     setDraft((current) => change(current));
     setError(null);
@@ -69,6 +82,7 @@ export default function ColumnEditor({ anchor, config, statuses, onSave, onCance
       setError(`Column ${unnamed + 1} needs a name.`);
       return;
     }
+    setStored(null);
     onSave(draft);
   };
 
@@ -88,7 +102,7 @@ export default function ColumnEditor({ anchor, config, statuses, onSave, onCance
           <button className="jira-selaction primary" onClick={save}>
             Save
           </button>
-          <button className="icon-button" title="Close without saving" onClick={onCancel}>
+          <button className="icon-button" title="Close without saving" onClick={cancel}>
             <Icon name="close" />
           </button>
         </div>
