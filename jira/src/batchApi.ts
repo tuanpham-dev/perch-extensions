@@ -16,7 +16,7 @@ import type {
   Proposal,
   SkillsResponse,
   StartResponse,
- AgentTerminalResponse, QaDiffResponse, QaStartResponse } from "./batchTypes";
+ AgentTerminalResponse, HandoffConfig, HandoffConfigResponse, QaDiffResponse, QaStartResponse } from "./batchTypes";
 import type { LookupResponse } from "./batchTypes";
 
 export function lookupIssues(keys: string[] | string): Promise<LookupResponse> {
@@ -56,7 +56,11 @@ export function analyzeBatch(body: {
   readCodebase: boolean;
   // Skip the AI: one cluster holding every ticket.
   single?: boolean;
+  // With single: names the cluster, and a new batch.
+  title?: string;
   batchId?: string | null;
+  // With batchId: re-plan that batch's unstarted tickets in place.
+  replace?: boolean;
 }): Promise<AnalyzeResponse> {
   return apiPost<AnalyzeResponse>("/batches/analyze", body);
 }
@@ -265,4 +269,22 @@ export function getAgentTerminal(id: string, agent: string, lines = 300): Promis
 // A done ticket back to review: an accept or a QA approval taken back.
 export function reopenTicket(id: string, key: string): Promise<BatchResponse> {
   return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/tickets/${encodeURIComponent(key)}/reopen`, {});
+}
+
+export function getHandoffConfig(id: string): Promise<HandoffConfigResponse> {
+  return apiGet<HandoffConfigResponse>(`/batches/${encodeURIComponent(id)}/qa/handoff-config`);
+}
+
+export function saveHandoffConfig(id: string, config: Partial<HandoffConfig>): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/handoff-config`, config);
+}
+
+// The merge instruction again, for a ticket whose merge was never reported.
+export function qaAskAgain(id: string, key: string): Promise<BatchResponse> {
+  return apiPost<BatchResponse>(`/batches/${encodeURIComponent(id)}/qa/ask-again`, { key });
+}
+
+// Declines the tickets an "Add to batch" brought; they leave the batch.
+export function discardProposal(id: string): Promise<BatchResponse & { removed: string[] }> {
+  return apiPost(`/batches/${encodeURIComponent(id)}/proposal/discard`, {});
 }

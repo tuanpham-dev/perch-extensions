@@ -253,7 +253,17 @@ const QA_RULES = [
   "Do nothing to a ticket the panel has not asked about.",
 ];
 
-export function buildQaBriefLine({ batchName, branch, productionBranch, tickets, skills = null, resumed = false }) {
+function inFlightLine(inFlight) {
+  if (!inFlight || inFlight.length === 0) return "";
+  const parts = inFlight.map((item) => {
+    if (item.state === "merging") return `${item.key} was being merged (check git log for a [${item.key}] commit; finish or abort the pick, then report it)`;
+    if (item.state === "fixing") return `${item.key} has a requested change open ("${oneLine(item.change ?? "")}"; it may be sitting uncommitted in the tree)`;
+    return `${item.key}'s approval note is waiting to be restated ("${oneLine(item.note ?? "")}"; answer with jira-batch qa-refined ${item.key})`;
+  });
+  return `In flight when the last agent stopped: ${parts.join("; ")}.`;
+}
+
+export function buildQaBriefLine({ batchName, branch, productionBranch, tickets, skills = null, resumed = false, inFlight = [] }) {
   const keys = tickets.map((ticket) => ticket.key);
   let list = tickets.map((ticket) => `${ticket.key} (${ticket.branch})`).join(", ");
   if (list.length > LINE_MAX) list = `${list.slice(0, LINE_MAX)}...`;
@@ -263,6 +273,7 @@ export function buildQaBriefLine({ batchName, branch, productionBranch, tickets,
     `Reviewed tickets, in priority order: ${keys.join(", ")}.`,
     ...skillLines(skills).map((line) => oneLine(line)),
     `Rules: ${QA_RULES.map((rule, i) => `(${i + 1}) ${rule}`).join(" ")}`,
+    inFlightLine(inFlight),
     resumed
       ? "You are replacing an agent that died mid-run: read `git status` and `git log --oneline -10` first, since a fix may be sitting uncommitted, then take over the dev server, report `jira-batch qa-start`, and wait for the panel."
       : "Start by taking over the dev server and reporting `jira-batch qa-start`, then wait for the panel.",
@@ -317,11 +328,26 @@ export function buildQaReopenMessage({ key }) {
   return `Reopen ${key}: the reviewer took back its approval, so it is under review again. Leave its commit as it is and wait for the panel - a change request or a new approval may follow.`;
 }
 
-export function buildQaDropMessage({ key, commit, why }) {
+export function buildQaDropMessage({ key, commit, why, abortMerge = false }) {
   const reason = why ? ` (${oneLine(why)})` : "";
+  if (abortMerge) {
+    return `Exclude ${key}${reason}. It was being merged: abort the pick if it is still in progress (\`git cherry-pick --abort\`), drop any commit you already made for [${key}] on this branch, restart the server, then run \`jira-batch qa-excluded ${key} --why "..."\`.`;
+  }
   return commit
     ? `Exclude ${key}${reason}. Drop its commit ${commit} from this branch, restart the server, then run \`jira-batch qa-excluded ${key} --why "..."\`.`
     : `Exclude ${key}${reason}. It was never merged, so there is nothing to drop; run \`jira-batch qa-excluded ${key} --why "..."\`.`;
+}
+
+// A pick that landed after the ticket was excluded.
+export function buildQaLateDropMessage({ key, commit }) {
+  return `${key} was excluded before your merge landed, so it is not recorded. Drop that commit (${commit}) from this branch, restart the server, then run \`jira-batch qa-excluded ${key} --why "excluded while merging"\`.`;
+}
+
+// Perch restarted and the agent was resumed in a fresh shell, which has lost
+// the PATH entry and the batch variables the launch line set. The CLI finds
+// its batch by the window now; the agent only needs its full path.
+export function buildRestartNote({ cliPath }) {
+  return `Perch restarted, so this shell no longer has jira-batch on its PATH. Call it by its full path from now on: ${cliPath} - it still finds this batch by its terminal window. Carry on where you were.`;
 }
 
 export function buildQaShipMessage({ into, branch }) {

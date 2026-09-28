@@ -203,3 +203,10 @@ test("the rationale says a person chose it, not a model", () => {
   assert.match(why, /by hand/);
   assert.equal(/AI|model|grouped by/i.test(why), false);
 });
+
+test("a title given for the one cluster names it instead, trimmed and capped", () => {
+  const tickets = [{ key: "CAP-3", summary: "Cart drawer totals are stale" }] as never;
+  assert.equal(singleCluster(tickets, "  Cart fixes for launch ").clusters[0].name, "Cart fixes for launch");
+  assert.equal(singleCluster(tickets, "   ").clusters[0].name, "Cart drawer totals are stale", "a blank title is no title");
+  assert.equal(singleCluster(tickets, "x".repeat(90)).clusters[0].name.length, 60);
+});

@@ -15,7 +15,7 @@ export type TicketStateName =
   | "done"
   | "failed";
 
-export type ClusterStateName = "pending" | "running" | "waiting" | "idle" | "stopped" | "closed";
+export type ClusterStateName = "pending" | "starting" | "running" | "waiting" | "idle" | "stopped" | "closed";
 
 export type ClusterAction = "start" | "open" | "stop" | "resume" | "close" | "remove-worktree";
 
@@ -122,6 +122,9 @@ export interface Cluster {
   actions: ClusterAction[];
   working: string | null;
   startedAt: number | null;
+  // Which step a starting cluster is on: "worktree" or "session".
+  startStep?: string;
+  launchedAt?: number | null;
   stoppedReason: string;
   lastError: string;
   lastEventAt: number | null;
@@ -163,6 +166,21 @@ export interface Proposal {
   warnings?: string[];
 }
 
+// The hand-off's status, assignee and preview URL for one batch. Empty means
+// "what Settings says".
+export interface HandoffConfig {
+  status: string;
+  assignee: string;
+  previewUrl: string;
+}
+
+// GET /batches/:id/qa/handoff-config.
+export interface HandoffConfigResponse {
+  config: HandoffConfig;
+  // Settings' answers for this batch's repo, which fill any empty field.
+  defaults: HandoffConfig;
+}
+
 export interface Batch {
   id: string;
   name: string;
@@ -178,6 +196,8 @@ export interface Batch {
   ticketStates: Record<string, TicketState>;
   unclustered: string[];
   pendingProposal: Proposal | null;
+  // Absent on a batch written before it existed; the server fills it in.
+  handoffConfig?: HandoffConfig;
   // The QA branch and the agent that owns it. Null until Start QA; absent on
   // a batch written before it existed.
   qa?: BatchQa | null;
@@ -261,6 +281,8 @@ export interface BatchQa {
   lastError: string;
   awaiting: string | null;
   notes: { text: string; at: number }[];
+  // When Merge to production was sent, until the agent reports or stops it.
+  shipping?: number | null;
 }
 
 export interface TicketIntegration {
@@ -273,7 +295,8 @@ export interface TicketIntegration {
   postedNote: string;
   why: string;
   files: string[];
-  handoff: { url: string; ok: boolean; error: string; at: number } | null;
+  // status and assignee say what the hand-off did; absent on older records.
+  handoff: { url: string; ok: boolean; error: string; status?: string; assignee?: string; at: number } | null;
   // The approval note being restated: by the QA agent (asynchronously,
   // pending until it answers) or by the extension's model as a fallback.
   refine: {

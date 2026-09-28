@@ -26,7 +26,10 @@
 // and "idle" ARE functions of its tickets.
 
 export const TICKET_STATES = ["queued", "in-progress", "needs-you", "review", "rework", "done", "failed"];
-export const CLUSTER_STATES = ["pending", "running", "waiting", "idle", "stopped", "closed"];
+// "starting" is stored while the runner creates the worktree and the agent's
+// session, so every open tab sees the start in progress and a second start of
+// the same cluster is refused rather than racing the first.
+export const CLUSTER_STATES = ["pending", "starting", "running", "waiting", "idle", "stopped", "closed"];
 
 // The cluster states that may take more tickets. A stopped or closed cluster
 // has no agent to hand them to, so "Add to batch" never offers one.
@@ -42,7 +45,7 @@ const NEEDS_ATTENTION = new Set(["needs-you", "review"]);
 
 // A cluster whose stored state is one of these has a worktree and (once) a
 // window; the ones before it never started.
-const STARTED = new Set(["running", "waiting", "idle", "stopped", "closed"]);
+const STARTED = new Set(["starting", "running", "waiting", "idle", "stopped", "closed"]);
 
 export const CLUSTER_ACTIONS = ["start", "open", "stop", "resume", "close", "remove-worktree"];
 
@@ -109,6 +112,42 @@ function normalizeBatch(id, raw, now) {
     unclustered: Array.isArray(raw.unclustered) ? raw.unclustered.filter((k) => typeof k === "string") : [],
     pendingProposal: isObject(raw.pendingProposal) ? raw.pendingProposal : null,
     qa: normalizeQa(raw.qa),
+    handoffConfig: normalizeHandoffConfig(raw.handoffConfig),
+  };
+}
+
+// This batch's own answers to the hand-off's three questions: which status
+// the tickets move to, who they are assigned to, and the preview URL the
+// comment points at. An empty field means "what Settings says", so a batch
+// nobody configured behaves exactly as before, and a Settings change still
+// reaches every field this batch left alone.
+export function normalizeHandoffConfig(raw) {
+  const src = isObject(raw) ? raw : {};
+  return {
+    status: str(src.status).trim(),
+    assignee: str(src.assignee).trim(),
+    previewUrl: str(src.previewUrl).trim(),
+  };
+}
+
+export function setHandoffConfig(batch, raw, now) {
+  const next = normalizeHandoffConfig({ ...batch.handoffConfig, ...(isObject(raw) ? raw : {}) });
+  if (next.previewUrl && !/^https?:\/\//i.test(next.previewUrl)) {
+    return { ok: false, error: "the preview URL must start with http:// or https://" };
+  }
+  batch.handoffConfig = next;
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// What the hand-off will use: this batch's answer where it gave one, the
+// settings' where it did not.
+export function effectiveHandoff(config, settings) {
+  const own = normalizeHandoffConfig(config);
+  return {
+    status: own.status || String(settings?.["jira.qaStatus"] ?? "").trim() || "QA",
+    assignee: own.assignee || String(settings?.["jira.qaAssignee"] ?? "").trim(),
+    previewUrl: own.previewUrl || String(settings?.["jira.previewUrlTemplate"] ?? "").trim(),
   };
 }
 
@@ -128,7 +167,13 @@ function normalizeCluster(raw) {
     agentId: str(raw.agentId),
     state: CLUSTER_STATES.includes(raw.state) ? raw.state : "pending",
     startedAt: typeof raw.startedAt === "number" ? raw.startedAt : null,
+    // When its agent was last launched - by Start or by Resume. An agent
+    // starting up long after this was resumed by Perch after a restart.
+    launchedAt: typeof raw.launchedAt === "number" ? raw.launchedAt : null,
     stoppedReason: str(raw.stoppedReason),
+    // Which step a starting cluster is on ("worktree", "session", "agent"),
+    // shown on its chip while it starts.
+    startStep: str(raw.startStep),
     lastError: str(raw.lastError),
     lastEventAt: typeof raw.lastEventAt === "number" ? raw.lastEventAt : null,
     // What the agent is blocked on with no ticket of its own in flight - a
@@ -210,6 +255,7 @@ export function newBatch({ id, name, repo, criteria, readCodebase, tickets, now 
     pendingProposal: null,
     // The QA branch and the agent that owns it, once one has been started.
     qa: null,
+    handoffConfig: normalizeHandoffConfig(null),
   };
 }
 
@@ -327,8 +373,7 @@ export function recordQa(batch, clusterId, key, raw, now) {
   }
   ticket.qa = newQaReport(raw, now);
 
-  cluster.awaiting = null;
-  cluster.lastEventAt = now;
+  wake(batch, cluster, now);
   batch.updatedAt = now;
   return { ok: true, status: ticket.qa.status };
 }
@@ -611,6 +656,26 @@ export function applyProposal(batch, proposal, { addOnly = false, makeId, now })
   return { placed: [...placed], warnings };
 }
 
+// Declining an "Add to batch" proposal: the tickets it brought are taken
+// back out of the batch. Only the ones nothing has touched - a key that has
+// since been placed or started stays.
+export function discardProposal(batch, now) {
+  const proposal = batch.pendingProposal;
+  if (!proposal) return { ok: false, error: "there is no proposal waiting" };
+  const fresh = Array.isArray(proposal.keys) ? proposal.keys : [];
+  const removed = [];
+  for (const key of fresh) {
+    if (batch.ticketStates[key]) continue;
+    if (batch.clusters.some((cluster) => cluster.keys.includes(key))) continue;
+    delete batch.tickets[key];
+    removed.push(key);
+  }
+  batch.unclustered = batch.unclustered.filter((key) => !removed.includes(key));
+  batch.pendingProposal = null;
+  batch.updatedAt = now;
+  return { ok: true, removed };
+}
+
 // The batch's own name. Derived at creation from its first cluster (see
 // server.js), which is a reasonable guess and nothing more - "Cart drawer
 // totals +2" says little once the batch has been worked for a day. An empty
@@ -669,13 +734,19 @@ export function setBranch(batch, clusterId, branch, now) {
 }
 
 // Drag, or "Move to..." on a card. `clusterId` null means Unclustered.
+// Tickets a closed cluster left unfinished may move to another cluster: the
+// closed one has no agent to finish them, and nothing else could.
+const MOVABLE_FROM_CLOSED = new Set(["queued", "rework"]);
+
 export function moveTicket(batch, key, clusterId, index, now) {
   if (!batch.tickets[key]) return { ok: false, error: `${key} is not in this batch` };
-  if (batch.ticketStates[key]) {
+  const from = clusterOfKey(batch, key);
+  const rescuing = Boolean(from && from.state === "closed" && MOVABLE_FROM_CLOSED.has(batch.ticketStates[key]?.state));
+  if (batch.ticketStates[key] && !rescuing) {
     return { ok: false, error: `${key} has already been handed to an agent` };
   }
-  const from = clusterOfKey(batch, key);
-  if (from && isStarted(from)) return { ok: false, error: `${key} is already being worked` };
+  if (from && isStarted(from) && !rescuing) return { ok: false, error: `${key} is already being worked` };
+  if (rescuing && !clusterId) return { ok: false, error: `${key} has been worked on - move it to another cluster, not back to Unclustered` };
   const to = clusterId ? clusterOf(batch, clusterId) : null;
   if (clusterId && !to) return { ok: false, error: `no cluster ${clusterId}` };
   if (to && !OPEN_FOR_ADD.has(clusterState(batch, to))) {
@@ -688,8 +759,15 @@ export function moveTicket(batch, key, clusterId, index, now) {
     const at = typeof index === "number" ? Math.max(0, Math.min(index, to.keys.length)) : to.keys.length;
     to.keys.splice(at, 0, key);
     // Same as applyProposal: a ticket dropped onto a cluster that is already
-    // running is queued now, or its agent's `jira-batch start` refuses it.
-    if (isStarted(to)) batch.ticketStates[key] = newTicketState(to.id, now);
+    // running is queued now, or its agent's `jira-batch start` refuses it. A
+    // rescued ticket keeps its history and feedback, and starts over queued.
+    const existing = batch.ticketStates[key];
+    if (existing) {
+      existing.clusterId = to.id;
+      if (existing.state !== "queued") setTicketState(existing, "queued", now, `moved from "${from.name}"`);
+    } else if (isStarted(to)) {
+      batch.ticketStates[key] = newTicketState(to.id, now);
+    }
   } else {
     batch.unclustered.push(key);
   }
@@ -697,19 +775,60 @@ export function moveTicket(batch, key, clusterId, index, now) {
   return { ok: true };
 }
 
+// A cluster's branch when nobody typed one: the template with {cluster}
+// as the name's slug. The review prefills the same, so a cluster started from
+// the board chip gets the branch the review would have shown.
+export function clusterBranchFor(template, cluster) {
+  if (cluster.branch) return cluster.branch;
+  const slug =
+    String(cluster.name ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "cluster";
+  return (String(template ?? "").trim() || "{cluster}").replaceAll("{cluster}", slug);
+}
+
 // ---- Starting and stopping ----
 
 export function markStarting(batch, clusterId, { branch, agentId, skills, now }) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
+  if (cluster.state === "starting") return { ok: false, error: `"${cluster.name}" is already starting` };
   if (cluster.state !== "pending") return { ok: false, error: `"${cluster.name}" is ${cluster.state}` };
   if (cluster.keys.length === 0) return { ok: false, error: `"${cluster.name}" has no tickets` };
   cluster.branch = str(branch).trim() || cluster.branch;
+  if (!cluster.branch) return { ok: false, error: `"${cluster.name}" has no branch name` };
   cluster.agentId = str(agentId);
   if (skills) cluster.skills = normalizeSkills(skills);
   cluster.lastError = "";
+  cluster.state = "starting";
+  cluster.startStep = "worktree";
   batch.updatedAt = now;
   return { ok: true, cluster };
+}
+
+export function markStartStep(batch, clusterId, step, now) {
+  const cluster = clusterOf(batch, clusterId);
+  if (!cluster || cluster.state !== "starting") return { ok: false, error: "not starting" };
+  cluster.startStep = str(step);
+  batch.updatedAt = now;
+  return { ok: true };
+}
+
+// A start the server did not finish - it was restarted mid-way - goes back
+// to pending with the reason, rather than showing "starting" forever.
+export function abandonStarts(batch, reason, now) {
+  let changed = false;
+  for (const cluster of batch.clusters) {
+    if (cluster.state !== "starting") continue;
+    cluster.state = "pending";
+    cluster.startStep = "";
+    cluster.lastError = str(reason);
+    changed = true;
+  }
+  if (changed) batch.updatedAt = now;
+  return { ok: changed };
 }
 
 // Called once the worktree, the session and the window all exist. Every
@@ -723,7 +842,9 @@ export function markRunning(batch, clusterId, { worktreePath, sessionName, windo
   cluster.windowId = str(windowId);
   if (agentId) cluster.agentId = str(agentId);
   cluster.state = "running";
+  cluster.startStep = "";
   cluster.startedAt = now;
+  cluster.launchedAt = now;
   cluster.stoppedReason = "";
   cluster.lastError = "";
   cluster.lastEventAt = now;
@@ -739,7 +860,11 @@ export function markRunning(batch, clusterId, { worktreePath, sessionName, windo
 export function markStartFailed(batch, clusterId, error, now) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
+  // Only the start that is still in flight may undo itself: a second request
+  // failing on "already starting" must not revert the first one's success.
+  if (cluster.state !== "starting") return { ok: false, error: `"${cluster.name}" is ${cluster.state}` };
   cluster.state = "pending";
+  cluster.startStep = "";
   cluster.lastError = str(error);
   batch.updatedAt = now;
   return { ok: true };
@@ -751,7 +876,9 @@ export function markStartFailed(batch, clusterId, error, now) {
 export function markStopped(batch, clusterId, reason, now) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
-  if (cluster.state === "closed" || cluster.state === "pending") return { ok: false, error: `"${cluster.name}" is ${cluster.state}` };
+  if (cluster.state === "closed" || cluster.state === "pending" || cluster.state === "starting") {
+    return { ok: false, error: `"${cluster.name}" is ${cluster.state}` };
+  }
   cluster.state = "stopped";
   cluster.stoppedReason = str(reason);
   cluster.windowId = "";
@@ -791,6 +918,7 @@ export function markResumed(batch, clusterId, { sessionName, windowId, now }) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
   cluster.state = "running";
+  cluster.launchedAt = now;
   cluster.sessionName = str(sessionName) || cluster.sessionName;
   cluster.windowId = str(windowId);
   cluster.stoppedReason = "";
@@ -837,6 +965,15 @@ export function ticketReport(batch, clusterId, key, verb, { summary = "", reason
     return { ok: false, error: `${key} is ${ticket.state}, so "${verb}" does not apply to it` };
   }
 
+  // One ticket at a time: a start while another is still open would leave
+  // that one "in progress" forever, and a needs-you hook would land on it.
+  if (verb === "start") {
+    const open = activeKey(batch, cluster);
+    if (open && open !== key) {
+      return { ok: false, error: `${open} is still open - report it first with jira-batch done ${open} or jira-batch fail ${open}` };
+    }
+  }
+
   // Seeing any report is proof the agent is alive and unblocked.
   cluster.awaiting = null;
   cluster.lastEventAt = now;
@@ -861,8 +998,7 @@ export function addNote(batch, clusterId, text, now) {
   if (!cluster) return { ok: false, error: `no cluster ${clusterId} in this batch` };
   cluster.notes.push({ text: str(text), at: now });
   if (cluster.notes.length > MAX_NOTES) cluster.notes.splice(0, cluster.notes.length - MAX_NOTES);
-  cluster.awaiting = null;
-  cluster.lastEventAt = now;
+  wake(batch, cluster, now);
   batch.updatedAt = now;
   return { ok: true };
 }
@@ -897,6 +1033,11 @@ export function hookEvent(batch, windowId, event, now) {
   return { ok: true };
 }
 
+// How many tickets closing this cluster would strand, for the Close confirm.
+export function unfinishedCount(batch, cluster) {
+  return cluster.keys.filter((key) => UNFINISHED.has(batch.ticketStates[key]?.state)).length;
+}
+
 function hasUnfinished(batch, cluster) {
   return cluster.keys.some((key) => {
     const ticket = batch.ticketStates[key];
@@ -904,12 +1045,22 @@ function hasUnfinished(batch, cluster) {
   });
 }
 
+// Any report from the agent proves it got past whatever it was waiting on:
+// a permission prompt is answered in the terminal and fires no hook of its
+// own, so without this the ticket sat in "needs you" until the next start.
+function wake(batch, cluster, now) {
+  cluster.awaiting = null;
+  cluster.lastEventAt = now;
+  const key = activeKey(batch, cluster);
+  const ticket = key ? batch.ticketStates[key] : null;
+  if (ticket && ticket.state === "needs-you") setTicketState(ticket, "in-progress", now, "the agent carried on");
+}
+
 // Any sign of life from the worker's own commands.
 export function clusterSeen(batch, clusterId, now) {
   const cluster = clusterOf(batch, clusterId);
   if (!cluster) return { ok: false, error: `no cluster ${clusterId}` };
-  cluster.lastEventAt = now;
-  cluster.awaiting = null;
+  wake(batch, cluster, now);
   batch.updatedAt = now;
   return { ok: true };
 }
@@ -929,6 +1080,9 @@ export function setFeedbackDraft(batch, key, text, now) {
 export function sendableFeedback(batch) {
   const groups = [];
   for (const cluster of batch.clusters) {
+    // A closed cluster has no agent to send to; its drafts wait for the
+    // ticket to be moved to one that does.
+    if (cluster.state === "closed") continue;
     const items = cluster.keys
       .filter((key) => batch.ticketStates[key]?.feedbackDraft.trim())
       .map((key) => ({
@@ -1141,7 +1295,14 @@ function normalizeIntegration(raw) {
     why: str(raw.why),
     files: Array.isArray(raw.files) ? raw.files.filter((f) => typeof f === "string") : [],
     handoff: isObject(raw.handoff)
-      ? { url: str(raw.handoff.url), ok: raw.handoff.ok === true, error: str(raw.handoff.error), at: num(raw.handoff.at) }
+      ? {
+          url: str(raw.handoff.url),
+          ok: raw.handoff.ok === true,
+          error: str(raw.handoff.error),
+          status: str(raw.handoff.status),
+          assignee: str(raw.handoff.assignee),
+          at: num(raw.handoff.at),
+        }
       : null,
     at: typeof raw.at === "number" ? raw.at : null,
   };
@@ -1168,7 +1329,21 @@ function normalizeQa(raw) {
     // a server it could not take over. The first live run had no way to
     // leave one and its explanation existed only in its terminal.
     notes: Array.isArray(raw.notes) ? raw.notes.filter(isObject).slice(-MAX_NOTES) : [],
+    // When "Ship" was sent, until the agent reports shipped or stops with a
+    // note. The button stays disabled meanwhile so it is not sent twice.
+    shipping: typeof raw.shipping === "number" ? raw.shipping : null,
   };
+}
+
+export function markQaShipping(batch, now) {
+  const missing = requireQa(batch);
+  if (missing) return missing;
+  if (batch.qa.shipping) return { ok: false, error: "the merge to production is already under way" };
+  const blockers = shipBlockers(batch);
+  if (blockers.length > 0) return { ok: false, error: `not everything is approved: ${blockers.join(", ")}` };
+  batch.qa.shipping = now;
+  batch.updatedAt = now;
+  return { ok: true };
 }
 
 export function addQaNote(batch, text, now) {
@@ -1177,6 +1352,8 @@ export function addQaNote(batch, text, now) {
   batch.qa.notes.push({ text: str(text), at: now });
   if (batch.qa.notes.length > MAX_NOTES) batch.qa.notes.splice(0, batch.qa.notes.length - MAX_NOTES);
   batch.qa.awaiting = null;
+  // A note while shipping is the agent stopping the ship to say why.
+  batch.qa.shipping = null;
   batch.updatedAt = now;
   return { ok: true };
 }
@@ -1230,6 +1407,7 @@ export function markQaFailed(batch, error, now) {
   const missing = requireQa(batch);
   if (missing) return missing;
   batch.qa.state = "idle";
+  batch.qa.shipping = null;
   batch.qa.lastError = str(error);
   batch.updatedAt = now;
   return { ok: true };
@@ -1255,6 +1433,21 @@ export function qaQueue(batch) {
       const byPriority = priorityRank(batch.tickets[a]?.priority) - priorityRank(batch.tickets[b]?.priority);
       return byPriority !== 0 ? byPriority : a.localeCompare(b);
     });
+}
+
+// What a restarted QA agent must pick up: tickets mid-pick, fixes not yet
+// committed, and notes waiting to be restated. Its brief lists these, since
+// the new agent never saw the messages that started them.
+export function qaInFlight(batch) {
+  const out = [];
+  for (const [key, ticket] of Object.entries(batch.ticketStates)) {
+    const integration = ticket.integration;
+    if (!integration) continue;
+    if (integration.state === "merging") out.push({ key, state: "merging" });
+    else if (integration.state === "fixing") out.push({ key, state: "fixing", change: integration.change });
+    if (integration.refine?.state === "pending") out.push({ key, state: "refine", note: integration.refine.note });
+  }
+  return out;
 }
 
 export function shipBlockers(batch) {
@@ -1295,6 +1488,9 @@ export function markQaMerging(batch, key, now) {
 export function markQaMerged(batch, key, commit, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
+  // A pick that landed after the ticket was excluded: nothing is recorded,
+  // and the caller tells the agent to drop what it just made.
+  if (integration.state === "excluded") return { ok: true, state: "excluded", lateCommit: str(commit) };
   // "merged" too: an approval reopened while its amend was in flight still
   // gets the amended sha reported, and that sha is the one on the branch.
   if (!["merging", "merged", "fixing", "approved"].includes(integration.state)) {
@@ -1404,6 +1600,8 @@ export function excludeFromQa(batch, key, why, now) {
     return { ok: false, error: `${key} is already approved - excluding it now would mean un-approving it` };
   }
   const wasOnBranch = ["merged", "fixing", "merging"].includes(integration.state) && Boolean(integration.commit);
+  // Excluded mid-pick: there is no sha yet, but the agent may have made one.
+  const wasMerging = integration.state === "merging";
   integration.state = "excluded";
   integration.refine = null;
   integration.why = str(why);
@@ -1411,12 +1609,21 @@ export function excludeFromQa(batch, key, why, now) {
   batch.updatedAt = now;
   // The commit is kept on the record so the caller can tell the agent to drop
   // exactly it; the caller decides whether a drop instruction is needed.
-  return { ok: true, dropCommit: wasOnBranch ? integration.commit : "" };
+  return { ok: true, dropCommit: wasOnBranch ? integration.commit : "", abortMerge: wasMerging && !integration.commit };
 }
 
+// Only a pick in flight can conflict. A rebase conflict at ship time is not
+// this ticket's to fix - the agent leaves a note and stops the ship instead.
+// The ticket goes back to rework, so its cluster agent's own reports are
+// accepted while it sorts the conflict out.
 export function markQaConflict(batch, key, { files = [], why = "" }, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
+  if (integration.state !== "merging") {
+    return { ok: false, error: `${key} is ${integration.state} - a conflict is only reported while merging it. Leave a note with jira-batch note instead.` };
+  }
+  const ticket = batch.ticketStates[key];
+  if (ticket.state === "review") setTicketState(ticket, "rework", now, "would not apply on the QA branch");
   integration.state = "conflicted";
   integration.files = files.filter((f) => typeof f === "string");
   integration.why = str(why);
@@ -1434,16 +1641,19 @@ export function markQaShipped(batch, into, now) {
     return { ok: false, error: `not everything is approved: ${blockers.join(", ")}` };
   }
   batch.qa.state = "shipped";
+  batch.qa.shipping = null;
   batch.qa.shippedAt = now;
   batch.qa.shippedInto = str(into);
   batch.updatedAt = now;
   return { ok: true };
 }
 
-export function markHandedOff(batch, key, { url = "", ok = false, error = "" }, now) {
+export function markHandedOff(batch, key, { url = "", ok = false, error = "", status = "", assignee = "" }, now) {
   const integration = integrationOf(batch, key);
   if (!integration) return { ok: false, error: `${key} is not being worked` };
-  integration.handoff = { url: str(url), ok: ok === true, error: str(error), at: now };
+  // What it was moved to and who got it, so the panel says what happened
+  // rather than what Settings happens to say now.
+  integration.handoff = { url: str(url), ok: ok === true, error: str(error), status: str(status), assignee: str(assignee), at: now };
   batch.updatedAt = now;
   return { ok: true };
 }

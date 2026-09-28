@@ -11,8 +11,8 @@ import KeyLink from "./KeyLink";
 import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import { clusterChips, columns, feedbackPending, missingQa, sinceLabel, skillsLabel, qaColumns, qaQueue, shipBlockers, handoffPending } from "./batchViewModel";
-import type { Batch, BatchSummary, ClusterAction, ClusterStateName } from "./batchTypes";
-import type { MenuItem } from "./types";
+import type { Batch, BatchSummary, ClusterAction, ClusterStateName, HandoffConfig } from "./batchTypes";
+import type { Facets, MenuItem } from "./types";
 
 export interface BatchBoardProps {
   batch: Batch;
@@ -45,16 +45,27 @@ export interface BatchBoardProps {
   onMergeTicket: (key: string) => void;
   onShipQa: () => void;
   onHandoff: () => void;
+  // Saves this batch's hand-off status, assignee or preview URL.
+  onHandoffConfig: (config: Partial<HandoffConfig>) => void;
+  // Jira's statuses and people, offered as suggestions in the hand-off form.
+  facets: Facets | null;
   onOpenQaTerminal: () => void;
 }
 
 const STATE_LABEL: Record<ClusterStateName, string> = {
   pending: "not started",
+  starting: "starting",
   running: "running",
   waiting: "waiting on you",
   idle: "idle",
   stopped: "stopped",
   closed: "closed",
+};
+
+// What a starting cluster is doing, on its chip in every open tab.
+const START_STEP: Record<string, string> = {
+  worktree: "creating worktree",
+  session: "starting agent",
 };
 
 const ACTION_LABEL: Record<ClusterAction, string> = {
@@ -93,6 +104,8 @@ export default function BatchBoard({
   onMergeTicket,
   onShipQa,
   onHandoff,
+  onHandoffConfig,
+  facets,
   onOpenQaTerminal,
 }: BatchBoardProps) {
   // Only so the "6 min" on a card keeps up; every real change arrives on the
@@ -184,7 +197,9 @@ export default function BatchBoard({
               >
                 <span className="jira-bchip-dot" />
                 <span className="jira-bchip-name">{chip.name}</span>
-                <span className="jira-bchip-state">{STATE_LABEL[chip.state]}</span>
+                <span className="jira-bchip-state">
+                  {chip.state === "starting" ? `starting: ${START_STEP[cluster.startStep ?? ""] ?? "preparing"}` : STATE_LABEL[chip.state]}
+                </span>
                 {cluster.actions.includes("start") ? (
                   <span
                     className="jira-bchip-go"
@@ -256,9 +271,13 @@ export default function BatchBoard({
         {!qaLive && (
           <button
             className="jira-selaction"
-            disabled={busy || queue.length === 0}
+            // A run that exists can always be started again: its agent may have
+            // died with every reviewed ticket already on the branch.
+            disabled={busy || (queue.length === 0 && !qa)}
             title={
-              queue.length === 0
+              qa && queue.length === 0
+                ? `Start the QA agent again on ${qa.branch}${qa.lastError ? ` (last time: ${qa.lastError})` : ""}`
+                : queue.length === 0
                 ? "Nothing is in review yet - there would be nothing to merge"
                 : qa?.lastError
                   ? `Start the QA agent again (last time: ${qa.lastError})`
@@ -266,7 +285,7 @@ export default function BatchBoard({
             }
             onClick={onStartQa}
           >
-            {qa?.lastError ? "Start QA again" : "Start QA"}
+            {qa ? "Start QA again" : "Start QA"}
           </button>
         )}
         {qaLive && (
@@ -277,9 +296,11 @@ export default function BatchBoard({
         {qaLive && qa.state === "running" && (
           <button
             className="jira-selaction primary"
-            disabled={busy || blockers.length > 0 || approvedCount === 0}
+            disabled={busy || Boolean(qa.shipping) || blockers.length > 0 || approvedCount === 0}
             title={
-              blockers.length > 0
+              qa.shipping
+                ? "The QA agent is merging into production - this clears when it reports shipped or stops with a note"
+                : blockers.length > 0
                 ? `Not everything is approved: ${blockers.join(", ")}`
                 : approvedCount === 0
                   ? "Nothing has been approved yet"
@@ -287,7 +308,7 @@ export default function BatchBoard({
             }
             onClick={onShipQa}
           >
-            Merge to production
+            {qa.shipping ? "Merging to production..." : "Merge to production"}
           </button>
         )}
         {qaLive && qa.state === "shipped" && (
@@ -357,7 +378,7 @@ export default function BatchBoard({
         </div>
       )}
 
-      {qaLive && qa.state === "shipped" && <HandoffPanel batch={batch} />}
+      {qaLive && qa.state === "shipped" && <HandoffPanel batch={batch} busy={busy} facets={facets} onSave={onHandoffConfig} />}
       {qaLive && (
         <div className="jira-bqa-strip" title={qa.awaiting ?? undefined}>
           <span className="jira-key">{qa.branch}</span>

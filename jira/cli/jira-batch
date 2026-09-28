@@ -83,7 +83,8 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
 Any flag value can be "-" to read it from stdin, e.g.
   git log -1 --format=%s | jira-batch done CAP-12 --summary -
 
-Environment: JB_SOCK (required), JB_BATCH_ID, JB_CLUSTER_ID.
+Environment: JB_SOCK, JB_BATCH_ID, JB_CLUSTER_ID; after a Perch restart the
+socket is found beside this script and the batch by PERCH_WINDOW.
 USAGE
 }
 
@@ -132,8 +133,14 @@ esac
 
 command -v curl >/dev/null 2>&1 || die "curl is required but was not found on PATH"
 
+# A shell restored after a Perch restart has lost JB_SOCK and the ids. The
+# socket sits beside this script's own install folder (<config>/bin and
+# <config>/jira), and the server finds the batch by $PERCH_WINDOW.
 if [ -z "${JB_SOCK-}" ]; then
-  die "not inside a Jira batch cluster (JB_SOCK is unset)"
+  JB_SOCK="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/jira/batch.sock"
+fi
+if [ -z "${JB_BATCH_ID-}" ] && [ -z "${PERCH_WINDOW-}" ]; then
+  die "not inside a Jira batch cluster (JB_BATCH_ID and PERCH_WINDOW are both unset)"
 fi
 if [ ! -S "$JB_SOCK" ]; then
   die "no socket at $JB_SOCK - is the Jira extension enabled on this perch?"
@@ -251,7 +258,7 @@ while [ $# -gt 0 ]; do
 done
 flush_lists
 
-for pair in "batchId:${JB_BATCH_ID-}" "clusterId:${JB_CLUSTER_ID-}"; do
+for pair in "batchId:${JB_BATCH_ID-}" "clusterId:${JB_CLUSTER_ID-}" "windowId:${PERCH_WINDOW-}"; do
   field=${pair%%:*}
   value=${pair#*:}
   case "$seen" in

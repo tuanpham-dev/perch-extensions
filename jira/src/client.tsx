@@ -13,6 +13,7 @@
 // React trees that need the same data, the fetching lives in one module-level
 // store below instead of in either component.
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { draftFrom, draftToProposal, moveInDraft, previewBatch, type ProposalDraft } from "./proposalDraft";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
 import { apiGet, apiPost, setApiFetcher } from "./api";
@@ -50,10 +51,13 @@ import {
   qaShip,
   qaRefineNote,
   qaRefineClear,
+  qaAskAgain,
   reopenTicket,
+  discardProposal,
+  saveHandoffConfig,
   qaHandoff,
 } from "./batchApi";
-import type { Batch, BatchSummary, ClusterAction, SkillsResponse } from "./batchTypes";
+import type { Batch, BatchSummary, ClusterAction, HandoffConfig, SkillsResponse } from "./batchTypes";
 import Icon from "./Icon";
 import {
   agentWindows,
@@ -450,6 +454,8 @@ interface JiraState {
   batch: Batch | null;
   // Its clusters as a plan you are still editing, or as agents at work.
   batchView: BatchView;
+  // The "Add to batch" review's edits, before Apply sends them.
+  proposalDraft: { batchId: string; draft: ProposalDraft } | null;
   // Which clusters the board is showing. Empty means all of them, so a new
   // cluster is never hidden by a filter set before it existed.
   clusterFilter: Set<string>;
@@ -508,6 +514,9 @@ interface BatchFormState {
   canReadCodebase: boolean;
   // Skip the AI and keep every ticket in one cluster.
   single: boolean;
+  // With `single`: the cluster's name, and a new batch's too. Empty takes
+  // the first ticket's summary, as before.
+  title: string;
   aiHint: string | null;
   busy: boolean;
   error: string | null;
@@ -565,6 +574,7 @@ let state: JiraState = {
   batchArchived: [],
   batch: null,
   batchView: "board",
+  proposalDraft: null,
   clusterFilter: new Set<string>(),
   batchForm: null,
   batchBusy: false,
@@ -1483,6 +1493,7 @@ export async function openBatchForm(anchor: PopoverAnchor, origin: Host, batchId
       readCodebase: false,
       canReadCodebase: false,
       single: false,
+      title: "",
       aiHint: null,
       busy: false,
       error: null,
@@ -1657,6 +1668,7 @@ export async function submitBatchForm(options: { readCodebase?: boolean } = {}):
       criteria: form.criteria,
       readCodebase,
       single: form.single,
+      title: form.single ? form.title.trim() : "",
       batchId: form.batchId,
     });
     setState({
@@ -1749,11 +1761,12 @@ export function reanalyze(criteria: string, readCodebase: boolean): void {
   }
   setState({ batchBusy: true, batchError: null });
   extSettings?.set(CRITERIA_KEY, criteria);
-  void analyzeBatch({ cwd, keys, criteria, readCodebase })
+  // In place: the batch's clusters that have not started are replaced by
+  // the new proposal, and started ones are left exactly as they are. It used
+  // to make a second batch holding the same tickets, which could then be
+  // started twice.
+  void analyzeBatch({ cwd, keys, criteria, readCodebase, batchId: batch.id, replace: true })
     .then((res) => {
-      // Re-analyzing makes a NEW batch from the unstarted tickets rather than
-      // rewriting this one: the started clusters here have agents in them,
-      // and a second proposal must not be able to disturb that.
       setState({ batch: res.batch, batchView: "review", batchBusy: false });
       if (res.warnings.length > 0) batchNote(res.warnings.join(" "));
       loadBatches(cwd);
@@ -1818,7 +1831,15 @@ export function runClusterAction(clusterId: string, action: ClusterAction): void
   // work away, so both ask first - the server runs no confirmation of its own.
   const ask = async (): Promise<boolean> => {
     if (action === "stop") return confirmDialog(`Stop "${cluster.name}"? Its agent's session is closed, and whatever it was on goes back to the queue.`, "Stop");
-    if (action === "close") return confirmDialog(`Close "${cluster.name}"? Its session is closed; the worktree and the branch stay.`, "Close");
+    if (action === "close") {
+      // Tickets left unfinished have no agent once it is closed; they can
+      // be moved to another cluster afterwards, one at a time.
+      const unfinished = cluster.keys.filter((key) => ["queued", "in-progress", "needs-you", "rework"].includes(batch.ticketStates[key]?.state ?? "")).length;
+      const warning = unfinished > 0
+        ? ` ${unfinished} ticket${unfinished === 1 ? " is" : "s are"} unfinished; after closing, move ${unfinished === 1 ? "it" : "them"} to another cluster from the ticket's detail.`
+        : "";
+      return confirmDialog(`Close "${cluster.name}"? Its session is closed; the worktree and the branch stay.${warning}`, "Close");
+    }
     if (action === "remove-worktree") return confirmDialog(`Remove the worktree at ${cluster.worktreePath}? The branch is kept.`, "Remove");
     return true;
   };
@@ -2191,6 +2212,11 @@ export function openQaTerminal(): void {
   if (name) openSessionWindow?.(name);
 }
 
+export function askQaAgain(key: string): void {
+  if (!state.batch) return;
+  batchEdit(() => qaAskAgain(state.batch!.id, key));
+}
+
 export function mergeIntoQa(key: string): void {
   if (!state.batch) return;
   batchEdit(() => qaMerge(state.batch!.id, key));
@@ -2214,6 +2240,11 @@ export function excludeFromQaRun(key: string, why: string): void {
 export function shipQaBranch(): void {
   if (!state.batch) return;
   batchEdit(() => qaShip(state.batch!.id));
+}
+
+export function saveHandoffSettings(config: Partial<HandoffConfig>): void {
+  if (!state.batch) return;
+  batchEdit(() => saveHandoffConfig(state.batch!.id, config));
 }
 
 export function handOffQa(): void {
@@ -2287,13 +2318,44 @@ export function startBatchClusters(clusterIds: string[], branches: Record<string
     .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
 }
 
-export function applyPendingProposal(): void {
+// The draft being edited, or the proposal as the server holds it.
+function currentDraft(batch: Batch): ProposalDraft | null {
+  if (!batch.pendingProposal) return null;
+  const held = state.proposalDraft;
+  const keys = (batch.pendingProposal.keys ?? []).join(",");
+  if (held && held.batchId === batch.id && (held.draft.keys ?? []).join(",") === keys) return held.draft;
+  return draftFrom(batch.pendingProposal);
+}
+
+// A card moved in the "Add to batch" review: the draft changes, nothing else.
+export function moveInProposal(key: string, clusterId: string | null): void {
+  const batch = state.batch;
+  const draft = batch ? currentDraft(batch) : null;
+  if (!batch || !draft) return;
+  setState({ proposalDraft: { batchId: batch.id, draft: moveInDraft(draft, batch, key, clusterId) } });
+}
+
+export function discardPendingProposal(): void {
   const batch = state.batch;
   if (!batch) return;
   setState({ batchBusy: true, batchError: null });
-  void applyProposal(batch.id)
+  void discardProposal(batch.id)
     .then((res) => {
-      setState({ batch: res.batch, batchView: "board", batchBusy: false });
+      setState({ batch: res.batch, batchView: "board", batchBusy: false, proposalDraft: null });
+      if (res.removed.length > 0) batchNote(`Took ${res.removed.join(", ")} back out of the batch.`);
+      loadBatches(state.cwd);
+    })
+    .catch((err) => setState({ batchBusy: false, batchError: message(err) }));
+}
+
+export function applyPendingProposal(): void {
+  const batch = state.batch;
+  if (!batch) return;
+  const draft = currentDraft(batch);
+  setState({ batchBusy: true, batchError: null });
+  void applyProposal(batch.id, draft ? draftToProposal(draft) : undefined)
+    .then((res) => {
+      setState({ batch: res.batch, batchView: "board", batchBusy: false, proposalDraft: null });
       if (res.warnings && res.warnings.length > 0) batchNote(res.warnings.join(" "));
       for (const handover of res.handovers) {
         const cluster = res.batch.clusters.find((entry) => entry.id === handover.clusterId);
@@ -2977,6 +3039,7 @@ function BatchFormFor({ form }: { form: BatchFormState }) {
       criteria={form.criteria}
       readCodebase={form.readCodebase}
       single={form.single}
+      title={form.title}
       canReadCodebase={form.canReadCodebase}
       aiHint={form.aiHint}
       busy={form.busy}
@@ -3296,7 +3359,13 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
 
   const batch = s.batch;
   const addOnly = Boolean(batch.pendingProposal);
-  const review = s.batchView === "review" || addOnly;
+  // Board leaves an "Add to batch" review; the proposal waits, and the board
+  // says so.
+  const review = s.batchView === "review" || (addOnly && s.batchView !== "board");
+  // In an "Add to batch" review, the batch as Apply would leave it, with the
+  // edits made so far.
+  const draft = addOnly ? currentDraft(batch) : null;
+  const shown = draft ? previewBatch(batch, draft) : batch;
 
   return (
     <div className="jira-batcharea">
@@ -3309,11 +3378,20 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
         </div>
       )}
       {s.batchError && <div className="jira-error">{s.batchError}</div>}
+      {addOnly && !review && (
+        <div className="jira-note">
+          {batch.pendingProposal?.keys?.length ?? 0} added ticket{(batch.pendingProposal?.keys?.length ?? 0) === 1 ? " is" : "s are"} waiting to be placed.
+          <button className="jira-linkish" onClick={() => setState({ batchView: "review" })}>
+            Review them
+          </button>
+        </div>
+      )}
       {review ? (
         <BatchReview
-          batch={batch}
+          batch={shown}
           busy={s.batchBusy}
           addOnly={addOnly}
+          onDiscard={discardPendingProposal}
           agents={agents.map((preset) => ({ id: preset.id, label: preset.name }))}
           agentId={batch.agentId || agents[0]?.id || ""}
           skills={s.skills}
@@ -3326,6 +3404,11 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
           showMenu={showMenu}
           onRename={renameBatchCluster}
           onRenameBatch={renameOpenBatch}
+          batches={s.batchSummaries}
+          onPickBatch={(id) => openBatch(id)}
+          onClose={closeBatch}
+          onArchive={archiveOpenBatch}
+          onDelete={deleteOpenBatch}
           onBoard={
             batch.clusters.some((cluster) => cluster.state !== "pending")
               ? () => setState({ batchView: "board" })
@@ -3334,7 +3417,7 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
           onBranch={setBatchClusterBranch}
           onAddCluster={addBatchCluster}
           onRemoveCluster={removeBatchCluster}
-          onMove={moveBatchTicket}
+          onMove={addOnly ? (key, clusterId) => moveInProposal(key, clusterId) : moveBatchTicket}
           onAgent={(agentId) => setState({ batch: { ...batch, agentId } })}
           onReanalyze={reanalyze}
           onStart={(clusterIds, branches) => startBatchClusters(clusterIds, branches)}
@@ -3374,6 +3457,8 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
               onMergeTicket={mergeIntoQa}
               onShipQa={shipQaBranch}
               onHandoff={handOffQa}
+              onHandoffConfig={saveHandoffSettings}
+              facets={s.facets}
               onOpenQaTerminal={openQaTerminal}
             />
           </div>
@@ -3401,6 +3486,8 @@ function BatchArea({ showMenu }: { showMenu?: SidebarPanelHostProps["showMenu"] 
                     onReopen={reopenBatchTicket}
                     onOpenTerminal={(clusterId) => runClusterAction(clusterId, "open")}
                     onOpenQaTerminal={openQaTerminal}
+                    onAskAgain={askQaAgain}
+                    onMove={(key, clusterId) => moveBatchTicket(key, clusterId, Number.MAX_SAFE_INTEGER)}
                     onOpenShot={(key, which, opener) => openShot(key, which, opener)}
                     onMergeTicket={mergeIntoQa}
                     onRequestChange={requestQaChange}

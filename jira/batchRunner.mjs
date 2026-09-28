@@ -39,6 +39,11 @@ import {
   requestQaRefine,
   markQaRefined,
   reopenTicket as reopenTicketModel,
+  markStartStep,
+  abandonStarts,
+  qaInFlight,
+  markQaShipping,
+  clusterBranchFor,
   qaSeen,
   setQaPreviewUrl,
   markQaMerged,
@@ -72,6 +77,8 @@ import {
   buildQaMergeMessage,
   buildQaFixMessage,
   buildQaRefineMessage,
+  buildQaLateDropMessage,
+  buildRestartNote,
   buildQaReopenMessage,
   buildQaApproveMessage,
   buildQaDropMessage,
@@ -79,6 +86,7 @@ import {
   buildQaConflictMessage,
 } from "./brief.mjs";
 import { createControlServer } from "./batchControl.mjs";
+import { createShellWatch } from "./liveness.mjs";
 import { writeAndRender } from "./qaSpec.mjs";
 import { IMAGE_KINDS, readImage as readImageFile, writeImage } from "./evidence.mjs";
 
@@ -231,6 +239,22 @@ export function createBatchRunner({
     });
   }
 
+  // The path of a worktree of `repo` checked out on `branch`, if any.
+  async function worktreeOnBranch(repo, branch) {
+    let out = "";
+    try {
+      out = await git(["worktree", "list", "--porcelain"], repo);
+    } catch {
+      return "";
+    }
+    let current = "";
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ")) current = line.slice("worktree ".length);
+      else if (line === `branch refs/heads/${branch}` && current && (await exists(current))) return current;
+    }
+    return "";
+  }
+
   // Exactly this path, and nothing above it. The extension's own
   // ensureExcluded() excludes the FIRST path component, which here would be
   // `.claude` - hiding the user's whole Claude directory, including skills
@@ -360,7 +384,21 @@ export function createBatchRunner({
     if (!launch) throw new RunnerError(400, `"${agentId}" is not an agent this perch can launch`);
 
     const before = await store.get();
-    const resolved = await resolveSkills({ repo: before.batches[batchId]?.repo ?? null, overrides });
+    const planned = before.batches[batchId];
+    const plannedCluster = planned ? clusterOf(planned, clusterId) : null;
+    if (!plannedCluster) throw new RunnerError(404, `no cluster ${clusterId}`);
+    // No branch typed: the template, as the review would have shown it. Then
+    // checked by git itself, so a bad name is a clear refusal up front rather
+    // than a raw error after half the start has happened.
+    const plannedSettings = await settingsForRepo(planned.repo);
+    const wanted = String(branch ?? "").trim() || clusterBranchFor(plannedSettings["jira.clusterBranchTemplate"], plannedCluster);
+    try {
+      await git(["check-ref-format", "--branch", wanted], planned.repo);
+    } catch {
+      throw new RunnerError(400, `"${wanted}" is not a usable branch name - change it in the review`);
+    }
+    branch = wanted;
+    const resolved = await resolveSkills({ repo: planned.repo ?? null, overrides });
     const skills = {
       execution: skillRecord(resolved.execution),
       qa: usesBundledQa(resolved)
@@ -383,9 +421,12 @@ export function createBatchRunner({
 
     let worktree;
     try {
+      // A retry after a start that failed part way finds the worktree it made
+      // already on the branch; that one is reused rather than refused.
+      const existing = await worktreeOnBranch(batch.repo, cluster.branch);
       // No network on the way in: see createWorktree's own note on why a
       // batch does not fetch where the single button does.
-      worktree = await createWorktree(batch.repo, cluster.branch, settings, { offline: true });
+      worktree = existing ? { path: existing, note: null } : await createWorktree(batch.repo, cluster.branch, settings, { offline: true });
     } catch (err) {
       // A name that is taken is the common one, and it is the user's to fix:
       // the cluster stays startable and the row says why.
@@ -404,6 +445,7 @@ export function createBatchRunner({
       }
     }
 
+    await store.update((d) => markStartStep(d.batches[batchId], clusterId, "session", Date.now()));
     let session;
     let pane;
     try {
@@ -654,12 +696,15 @@ export function createBatchRunner({
   // can show and a Resume button you can press. Only a MISSING window counts
   // - an agent that is merely quiet may be thinking, and a timeout would
   // punish it for that.
+  // Windows back at a plain shell, and since when. See liveness.mjs.
+  const shellWatch = createShellWatch();
+
   async function sweep() {
     const doc = await store.get();
-    const live = new Set();
+    const live = new Map();
     try {
       for (const session of await host.sessions.list()) {
-        for (const window of session.windows ?? []) live.add(window.id);
+        for (const window of session.windows ?? []) live.set(window.id, window.command ?? "");
       }
     } catch (err) {
       // A backend that cannot answer must not be read as "every window died".
@@ -669,14 +714,23 @@ export function createBatchRunner({
 
     for (const batch of Object.values(doc.batches)) {
       if (batch.archivedAt) continue;
-      if (batch.qa?.state === "running" && batch.qa.windowId && !live.has(batch.qa.windowId)) {
-        await store.update((d) => markQaFailed(d.batches[batch.id], "its terminal window is gone", Date.now()));
+      const now = Date.now();
+      if (batch.qa?.state === "running" && batch.qa.windowId) {
+        const id = batch.qa.windowId;
+        const reason = !live.has(id) ? "its terminal window is gone" : shellWatch.observe(id, live.get(id), now) ? "the agent exited" : "";
+        if (reason) {
+          shellWatch.forget(id);
+          await store.update((d) => markQaFailed(d.batches[batch.id], reason, Date.now()));
+        }
       }
       for (const cluster of batch.clusters) {
         if (cluster.state !== "running" || !cluster.windowId) continue;
-        if (live.has(cluster.windowId)) continue;
-        await store.update((d) => markStopped(d.batches[batch.id], cluster.id, "its terminal window is gone", Date.now()));
-        log(`cluster "${cluster.name}" lost its window`);
+        const id = cluster.windowId;
+        const reason = !live.has(id) ? "its terminal window is gone" : shellWatch.observe(id, live.get(id), now) ? "the agent exited" : "";
+        if (!reason) continue;
+        shellWatch.forget(id);
+        await store.update((d) => markStopped(d.batches[batch.id], cluster.id, reason, Date.now()));
+        log(`cluster "${cluster.name}": ${reason}`);
       }
     }
   }
@@ -809,9 +863,13 @@ export function createBatchRunner({
       execFallback: false,
     };
 
-    const production = await productionBranchFor(batch.repo, settings);
+    // A restart keeps the run's own branch: rebuilt from the template it
+    // would change with a batch rename or with {date} on another day, and a
+    // fresh branch from production would lose every merge so far.
+    const restarting = Boolean(batch.qa && batch.qa.state !== "shipped" && batch.qa.branch);
+    const production = restarting ? batch.qa.productionBranch : await productionBranchFor(batch.repo, settings);
     const template = String(settings["jira.qaBranchTemplate"] ?? "").trim() || QA_BRANCH_DEFAULT;
-    const branch = template.replace("{batch}", branchSlug(batch.name)).replace("{date}", yyyymmdd(Date.now()));
+    const branch = restarting ? batch.qa.branch : template.replace("{batch}", branchSlug(batch.name)).replace("{date}", yyyymmdd(Date.now()));
 
     // Recorded before anything is made, so a failure part way leaves a row
     // that says so rather than a worktree nobody can see.
@@ -870,7 +928,15 @@ export function createBatchRunner({
     const fresh = (await store.get()).batches[batchId];
     const branchOf = (key) => fresh.clusters.find((cluster) => cluster.keys.includes(key))?.branch ?? "";
     const tickets = qaQueue(fresh).map((key) => ({ key, summary: fresh.tickets[key]?.summary ?? "", branch: branchOf(key) }));
-    const briefLine = buildQaBriefLine({ batchName: fresh.name, branch, productionBranch: production, tickets, skills, resumed: worktree.resumed === true });
+    const briefLine = buildQaBriefLine({
+      batchName: fresh.name,
+      branch,
+      productionBranch: production,
+      tickets,
+      skills,
+      resumed: worktree.resumed === true,
+      inFlight: qaInFlight(fresh),
+    });
     const line =
       `export JB_SOCK=${shellQuote(socketPath)} JB_BATCH_ID=${shellQuote(batchId)}; ` +
       `export PATH=${shellQuote(binDir)}:"$PATH"; ${launch} ${shellQuote(briefLine)}`;
@@ -965,15 +1031,38 @@ export function createBatchRunner({
       return excludeFromQa(batch, key, why, Date.now());
     });
     if (!result.ok) throw new RunnerError(409, result.error);
-    await tellQaAgent(batchId, buildQaDropMessage({ key, commit: result.dropCommit, why }));
+    await tellQaAgent(batchId, buildQaDropMessage({ key, commit: result.dropCommit, why, abortMerge: result.abortMerge === true }));
   }
 
+  // Held as "shipping" from here until the agent reports shipped or stops
+  // with a note, so the button cannot send the instruction twice.
   async function qaShip(batchId) {
+    const result = await store.update((doc) => {
+      const batch = doc.batches[batchId];
+      if (!batch) return { ok: false, error: `no batch ${batchId}` };
+      return markQaShipping(batch, Date.now());
+    });
+    if (!result.ok) throw new RunnerError(409, result.error);
     const batch = (await store.get()).batches[batchId];
-    if (!batch?.qa) throw new RunnerError(409, "QA has not been started for this batch");
-    const blockers = shipBlockers(batch);
-    if (blockers.length > 0) throw new RunnerError(409, `not everything is approved: ${blockers.join(", ")}`);
-    await tellQaAgent(batchId, buildQaShipMessage({ into: batch.qa.productionBranch, branch: batch.qa.branch }));
+    try {
+      await tellQaAgent(batchId, buildQaShipMessage({ into: batch.qa.productionBranch, branch: batch.qa.branch }));
+    } catch (err) {
+      await store.update((doc) => {
+        if (doc.batches[batchId]?.qa) doc.batches[batchId].qa.shipping = null;
+        return { ok: true };
+      });
+      throw err;
+    }
+  }
+
+  // A merge the agent never reported: the same instruction again. The ticket
+  // stays "merging"; the agent's report settles it either way.
+  async function qaAskAgain(batchId, key) {
+    const batch = (await store.get()).batches[batchId];
+    const integration = batch?.ticketStates[key]?.integration;
+    if (!integration || integration.state !== "merging") throw new RunnerError(409, `${key} is not being merged`);
+    const sourceBranch = batch.clusters.find((cluster) => cluster.keys.includes(key))?.branch ?? "";
+    await tellQaAgent(batchId, buildQaMergeMessage({ key, summary: batch.tickets[key]?.summary ?? "", sourceBranch }));
   }
 
   // ---- The cluster's report ----
@@ -1028,8 +1117,32 @@ export function createBatchRunner({
   //
   // One per `jira-batch` verb. Each one is a report from a pane, so the
   // errors are written for whoever is reading that terminal.
+  // Which batch, cluster or QA run a window belongs to. A call from a shell
+  // restored after a Perch restart has lost JB_BATCH_ID and JB_CLUSTER_ID,
+  // but its window id survives the restart - the CLI sends it instead.
+  async function ownerOfWindow(windowId) {
+    if (!windowId) return null;
+    const doc = await store.get();
+    for (const batch of Object.values(doc.batches)) {
+      if (batch.archivedAt) continue;
+      const cluster = batch.clusters.find((entry) => entry.windowId === windowId);
+      if (cluster) return { batchId: batch.id, clusterId: cluster.id, name: cluster.name };
+      if (batch.qa?.windowId === windowId) return { batchId: batch.id, clusterId: "", name: "QA" };
+    }
+    return null;
+  }
+
   function verbs() {
+    // Fills in the ids from the window when the shell no longer has them.
+    const fill = async (body) => {
+      if (body.batchId) return;
+      const owner = await ownerOfWindow(String(body.windowId ?? ""));
+      if (!owner) return;
+      body.batchId = owner.batchId;
+      if (owner.clusterId && !body.clusterId) body.clusterId = owner.clusterId;
+    };
     const withCluster = async (body, fn) => {
+      await fill(body);
       const batchId = String(body.batchId ?? "");
       const clusterId = String(body.clusterId ?? "");
       if (!batchId || !clusterId) throw new RunnerError(400, "this shell is not inside a batch cluster");
@@ -1039,6 +1152,7 @@ export function createBatchRunner({
     // batch does not hold, exactly as a cluster's refuse one the cluster does
     // not, and every one of them is a sign of life that clears `awaiting`.
     const withBatch = async (body, fn) => {
+      await fill(body);
       const batchId = String(body.batchId ?? "");
       if (!batchId) throw new RunnerError(400, "this shell is not inside a batch's QA worktree");
       return fn(batchId);
@@ -1136,7 +1250,17 @@ export function createBatchRunner({
         }),
 
       "qa-start": qaVerb((batch, _key, body, now) => (body.url ? setQaPreviewUrl(batch, String(body.url), now) : { ok: true })),
-      "qa-merged": qaVerb((batch, key, body, now) => markQaMerged(batch, key, String(body.commit ?? ""), now)),
+      "qa-merged": async (body) => {
+        const out = await qaVerb((batch, key, b, now) => markQaMerged(batch, key, String(b.commit ?? ""), now))(body);
+        // Landed after the ticket was excluded: nothing was recorded, and the
+        // commit it made has to go.
+        if (out.lateCommit) {
+          await tellQaAgent(String(body.batchId), buildQaLateDropMessage({ key: out.key, commit: out.lateCommit })).catch((err) =>
+            log(`could not tell the QA agent to drop ${out.key}: ${err.message}`),
+          );
+        }
+        return out;
+      },
       // The fix report, and with it - when the agent restates any of it - the
       // ticket's QA report brought up to date with the page as it now is.
       "qa-fixing": async (body) => {
@@ -1299,11 +1423,29 @@ export function createBatchRunner({
       log(`could not open the batch control socket: ${err.message}`);
     }
 
+    // A start this server never finished - it was restarted mid-way - goes
+    // back to pending rather than showing "starting" forever.
+    await store
+      .update((doc) => {
+        let changed = false;
+        for (const batch of Object.values(doc.batches)) {
+          if (abandonStarts(batch, "Perch restarted while it was starting - start it again", Date.now()).ok) changed = true;
+        }
+        return { ok: changed };
+      })
+      .catch((err) => log(`could not clear unfinished starts: ${err.message}`));
+
     if (host?.agentHooks?.subscribe) {
       self.unsubscribe = host.agentHooks.subscribe({
         events: HOOK_EVENTS,
         onEvent: (event) => {
           if (!event?.paneId) return;
+          // An agent starting up in a window that already belongs to a running
+          // cluster or QA run was resumed after a Perch restart: its fresh
+          // shell has lost the PATH entry, so it is told the full path.
+          if (event.event === "session-start") {
+            void restartNote(event.paneId).catch((err) => log(`could not send the restart note: ${err.message}`));
+          }
           store
             .update((doc) => {
               for (const batch of Object.values(doc.batches)) {
@@ -1333,6 +1475,21 @@ export function createBatchRunner({
       }, SWEEP_MS);
       self.sweepTimer.unref?.();
     }
+  }
+
+  // Only for a window whose cluster or QA run was already running before
+  // this agent session began - a fresh launch carries the PATH itself.
+  async function restartNote(windowId) {
+    const owner = await ownerOfWindow(windowId);
+    if (!owner) return;
+    const doc = await store.get();
+    const batch = doc.batches[owner.batchId];
+    const startedAt = owner.clusterId ? clusterOf(batch, owner.clusterId)?.launchedAt : batch.qa?.startedAt;
+    const running = owner.clusterId ? clusterOf(batch, owner.clusterId)?.state === "running" : batch.qa?.state === "running";
+    // A launch fires session-start within seconds of the start; a resume
+    // after a restart comes much later.
+    if (!running || !startedAt || Date.now() - startedAt < 60_000) return;
+    await sendToWindow(windowId, asPaste(buildRestartNote({ cliPath })));
   }
 
   async function stop() {
@@ -1370,6 +1527,7 @@ export function createBatchRunner({
     startQaAgent,
     qaMerge,
     qaChange,
+    qaAskAgain,
     qaRefine,
     reopenTicket,
     qaApprove,

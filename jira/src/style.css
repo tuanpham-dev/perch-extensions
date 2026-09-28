@@ -3818,3 +3818,48 @@
   white-space: nowrap;
 }
 .jira-qa-revised span { color: var(--fg, #ccc); }
+
+/* The hand-off's own status, assignee and preview URL: a label column and
+   an input each, the placeholder saying what Settings would use. */
+.jira-handoff-config {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  margin: 2px 0 8px;
+}
+.jira-handoff-field { display: contents; }
+.jira-handoff-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-inactive, #999);
+}
+.jira-handoff-config .jira-input { width: 100%; min-width: 0; }
+
+/* The one-cluster option's title: a label over a full-width input. */
+.jira-batchform-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--fg-inactive, #999);
+}
+.jira-batchform-title .jira-input { width: 100%; }
+
+/* The review's batch picker, sized like the board's. */
+.jira-breview-pick {
+  max-width: 16rem;
+  padding: 3px 6px;
+  border: 1px solid var(--jira-hairline);
+  border-radius: 4px;
+  background: var(--input-bg, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
+/* A closed cluster's unfinished ticket, with where it can go. */
+.jira-rescue { flex-wrap: wrap; gap: 6px; }
+.jira-rescue select { max-width: 14rem; }

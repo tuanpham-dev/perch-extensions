@@ -84,9 +84,11 @@ case "$verb" in
 esac
 
 command -v curl >/dev/null 2>&1 || die "curl is required but was not found on PATH"
-[ -n "${JB_SOCK-}" ] || die "not inside a review agent's terminal (JB_SOCK is unset)"
+# After a Perch restart the shell has lost these; the socket sits beside this
+# script's install folder and the server finds the review by $PERCH_WINDOW.
+[ -n "${JB_SOCK-}" ] || JB_SOCK="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/jira/batch.sock"
 [ -S "$JB_SOCK" ] || die "no socket at $JB_SOCK - is the Jira extension enabled on this perch?"
-[ -n "${JR_KEY-}" ] && [ -n "${JR_TASK-}" ] || die "not inside a review agent's terminal (JR_KEY or JR_TASK is unset)"
+[ -n "${JR_KEY-}" ] && [ -n "${JR_TASK-}" ] || [ -n "${PERCH_WINDOW-}" ] || die "not inside a review agent's terminal (JR_KEY or JR_TASK is unset)"
 
 body=""
 add_field() {
@@ -175,8 +177,9 @@ flush_page
 [ -n "$list_wrong" ] && add_field wrong "[$list_wrong]"
 [ -n "$list_notes" ] && add_field notes "[$list_notes]"
 [ -n "$list_pages" ] && add_field pages "[$list_pages]"
-add_field key "$(json_string "$JR_KEY")"
-add_field task "$(json_string "$JR_TASK")"
+add_field key "$(json_string "${JR_KEY-}")"
+add_field task "$(json_string "${JR_TASK-}")"
+add_field windowId "$(json_string "${PERCH_WINDOW-}")"
 
 printf '{%s}' "$body" | curl -sS --fail-with-body --unix-socket "$JB_SOCK" \
   -H 'content-type: application/json' --data-binary @- "http://jira-review/review-$verb"

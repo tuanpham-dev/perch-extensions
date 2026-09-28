@@ -30,6 +30,10 @@ export interface BatchDetailProps {
   onClearRefine: (key: string) => void;
   onOpenTerminal: (clusterId: string) => void;
   onOpenQaTerminal: () => void;
+  // Sends the merge instruction again for a ticket stuck in "merging".
+  onAskAgain: (key: string) => void;
+  // Moves a closed cluster's unfinished ticket to another cluster.
+  onMove: (key: string, clusterId: string) => void;
   // "before", "after", or "shot-<n>" for one of the extras.
   onOpenShot: (key: string, which: string, opener?: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
@@ -64,6 +68,8 @@ export default function BatchDetail({
   onClearRefine,
   onOpenTerminal,
   onOpenQaTerminal,
+  onAskAgain,
+  onMove,
   onOpenShot,
   onOpenReport,
 }: BatchDetailProps) {
@@ -86,7 +92,16 @@ export default function BatchDetail({
   // the ticket back to its cluster agent, which is the wrong agent now.
   const qaRunning = batch.qa?.state === "running";
   const integration = ticket?.integration?.state ?? "none";
-  const onQaBranch = qaRunning && ["merging", "merged", "fixing"].includes(integration);
+  // On the QA branch whether or not its agent is running: cluster feedback
+  // there would rework the ticket while its old commit stays on the branch,
+  // so changes go through the QA agent's "Request a change" instead.
+  const onQaBranch = ["merging", "merged", "fixing", "approved"].includes(integration);
+  const closedCluster = cluster?.state === "closed";
+  const [moveTo, setMoveTo] = useStickyState(`move:${batch.id}:${issueKey}`, "");
+  const moveTargets = batch.clusters.filter(
+    (entry) => entry.id !== cluster?.id && ["pending", "running", "waiting", "idle"].includes(entry.state),
+  );
+  const rescuable = closedCluster && (ticket?.state === "queued" || ticket?.state === "rework");
   // Whether what is in the box is what the server holds. The draft saves on
   // blur, so this is the difference between "written" and "kept".
   const saved = Boolean(draft.trim()) && draft === (ticket?.feedbackDraft ?? "");
@@ -131,8 +146,47 @@ export default function BatchDetail({
 
       {ticket && (
         <>
-          {qaRunning && batch.qa && (
+          {rescuable && (
+            <div className="jira-bdetail-actions jira-rescue">
+              <span className="jira-bdetail-hint">
+                "{cluster!.name}" is closed, so nothing will work this ticket.
+              </span>
+              {moveTargets.length > 0 ? (
+                <>
+                  <select
+                    className="jira-input"
+                    aria-label="Move to cluster"
+                    value={moveTo}
+                    disabled={busy}
+                    onChange={(e) => setMoveTo(e.target.value)}
+                  >
+                    <option value="">Move to...</option>
+                    {moveTargets.map((entry) => (
+                      <option key={entry.id} value={entry.id}>
+                        {entry.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="jira-selaction primary"
+                    disabled={busy || !moveTo}
+                    onClick={() => {
+                      onMove(issueKey, moveTo);
+                      setMoveTo("");
+                    }}
+                  >
+                    Move
+                  </button>
+                </>
+              ) : (
+                <span className="jira-bdetail-hint">Add a cluster in the review to move it to.</span>
+              )}
+            </div>
+          )}
+          {batch.qa && (qaRunning || integration !== "none") && (
             <QaVerdicts
+              live={qaRunning}
+              onAskAgain={() => onAskAgain(issueKey)}
               batchId={batch.id}
               batchQa={batch.qa}
               ticket={ticket}
@@ -206,10 +260,10 @@ export default function BatchDetail({
             </ul>
           )}
 
-          {ticket.state === "done" && !(qaRunning && integration === "approved") && !(integration === "approved" && batch.qa?.state === "shipped") && (
+          {ticket.state === "done" && integration !== "approved" && (
             <div className="jira-bdetail-actions">
               <span className="jira-bdetail-hint">
-                {integration === "approved" ? "Approved on the QA branch." : "Accepted."}
+                Accepted.
               </span>
               <button
                 className="jira-selaction"
@@ -222,7 +276,7 @@ export default function BatchDetail({
             </div>
           )}
 
-          {canReview && !onQaBranch && (
+          {canReview && !onQaBranch && !closedCluster && (
             <>
               <label className="jira-field-label" htmlFor={`jira-feedback-${issueKey}`}>
                 Feedback
@@ -289,6 +343,8 @@ const INTEGRATION_LABEL: Record<IntegrationState, string> = {
 };
 
 function QaVerdicts({
+  live,
+  onAskAgain,
   batchId,
   batchQa,
   ticket,
@@ -302,6 +358,10 @@ function QaVerdicts({
   onClearRefine,
   onReopen,
 }: {
+  // Whether the QA agent is running. Without it nothing can be sent, so the
+  // section is shown for what it says and its actions wait.
+  live: boolean;
+  onAskAgain: () => void;
   batchId: string;
   batchQa: BatchQa;
   ticket: TicketState;
@@ -317,6 +377,8 @@ function QaVerdicts({
 }) {
   const integration = ticket.integration;
   const state = integration?.state ?? "none";
+  // Nothing can reach a QA agent that isn't running.
+  const blocked = busy || !live;
   // The form's state lives outside the component (stickyState), per ticket,
   // so switching tabs or views mid-sentence keeps what was typed. It is tied
   // to the QA state it was started in: when that moves under it - merged,
@@ -391,17 +453,36 @@ function QaVerdicts({
       {state === "none" && ticket.state === "review" && mode === "idle" && (
         <div className="jira-qav-row">
           <span className="jira-qav-hint">Reviewed and not yet on {batchQa.branch}.</span>
-          <button className="jira-selaction primary" disabled={busy || batchQa.state !== "running"} onClick={onMerge} title={`Cherry-pick ${issueKey} onto ${batchQa.branch} and serve it`}>
+          <button className="jira-selaction primary" disabled={blocked || batchQa.state !== "running"} onClick={onMerge} title={`Cherry-pick ${issueKey} onto ${batchQa.branch} and serve it`}>
             Merge into QA
           </button>
           <span className="jira-qav-spacer" />
-          <button className="jira-selaction" disabled={busy} onClick={() => begin("exclude")} title="Leave it out of this run - nothing to drop, it was never merged">
+          <button className="jira-selaction" disabled={blocked} onClick={() => begin("exclude")} title="Leave it out of this run - nothing to drop, it was never merged">
             Exclude
           </button>
         </div>
       )}
 
-      {state === "merging" && <p className="jira-qav-hint">The QA agent is cherry-picking it and restarting the server.</p>}
+      {!live && (
+        <p className="jira-qav-hint">The QA agent isn't running. Start it again from the board to act on this ticket.</p>
+      )}
+
+      {state === "merging" && (
+        <>
+          <p className="jira-qav-hint">The QA agent is cherry-picking it and restarting the server.</p>
+          {live && mode === "idle" && (
+            <div className="jira-qav-row">
+              <button className="jira-selaction" disabled={blocked} onClick={onAskAgain} title="Send the merge instruction again - for a merge the agent never reported">
+                Ask again
+              </button>
+              <span className="jira-qav-spacer" />
+              <button className="jira-selaction" disabled={blocked} onClick={() => begin("exclude")} title="Leave it out; the agent aborts the pick or drops what it made">
+                Exclude
+              </button>
+            </div>
+          )}
+        </>
+      )}
 
       {state === "fixing" && integration?.change && (
         <div className="jira-qav-field">
@@ -430,10 +511,18 @@ function QaVerdicts({
           <b>Would not apply</b>
           {integration?.files.length ? <span className="mono">{integration.files.join(", ")}</span> : null}
           {integration?.why && <span className="jira-qav-hint">{integration.why}</span>}
-          <span className="jira-qav-hint">Its cluster's agent has been told. Merge again once it has been sorted out.</span>
+          <span className="jira-qav-hint">
+            {ticket.state === "review"
+              ? "Its cluster's agent reported it again. Merge it again."
+              : "Sent back to its cluster's agent to sort out. Merge again once it is reviewed again."}
+          </span>
           <div className="jira-qav-row">
-            <button className="jira-selaction" disabled={busy} onClick={onMerge}>
+            <button className="jira-selaction" disabled={blocked || ticket.state !== "review"} onClick={onMerge}>
               Merge again
+            </button>
+            <span className="jira-qav-spacer" />
+            <button className="jira-selaction" disabled={blocked} onClick={() => begin("exclude")} title="Leave it out of this run">
+              Exclude
             </button>
           </div>
         </div>
@@ -444,7 +533,7 @@ function QaVerdicts({
           <b>Excluded</b>
           <span className="jira-qav-hint">{integration?.why || "no reason given"}</span>
           <div className="jira-qav-row">
-            <button className="jira-selaction" disabled={busy || ticket.state !== "review"} onClick={onMerge} title="Put it back in the queue">
+            <button className="jira-selaction" disabled={blocked || ticket.state !== "review"} onClick={onMerge} title="Put it back in the queue">
               Merge after all
             </button>
           </div>
@@ -477,14 +566,14 @@ function QaVerdicts({
 
       {(state === "merged" || state === "fixing") && mode === "idle" && !approving && (
         <div className="jira-qav-row">
-          <button className="jira-selaction primary" disabled={busy} onClick={() => begin("approve")} title="Keep it, mark the ticket done">
+          <button className="jira-selaction primary" disabled={blocked} onClick={() => begin("approve")} title="Keep it, mark the ticket done">
             Approve
           </button>
-          <button className="jira-selaction" disabled={busy} onClick={() => begin("change")} title="Ask the QA agent to change something, without committing">
+          <button className="jira-selaction" disabled={blocked} onClick={() => begin("change")} title="Ask the QA agent to change something, without committing">
             {state === "fixing" ? "Request another change" : "Request a change"}
           </button>
           <span className="jira-qav-spacer" />
-          <button className="jira-selaction" disabled={busy} onClick={() => begin("exclude")} title="Leave it out of this run">
+          <button className="jira-selaction" disabled={blocked} onClick={() => begin("exclude")} title="Leave it out of this run">
             Exclude
           </button>
         </div>
@@ -501,10 +590,10 @@ function QaVerdicts({
             onChange={(e) => setText(e.target.value)}
           />
           <div className="jira-qav-row">
-            <button className="jira-selaction primary" disabled={busy || !text.trim()} onClick={() => { onChange(text.trim()); reset(); }}>
+            <button className="jira-selaction primary" disabled={blocked || !text.trim()} onClick={() => { onChange(text.trim()); reset(); }}>
               Send to the QA agent
             </button>
-            <button className="jira-selaction" disabled={busy} onClick={reset}>
+            <button className="jira-selaction" disabled={blocked} onClick={reset}>
               Cancel
             </button>
           </div>
@@ -521,10 +610,10 @@ function QaVerdicts({
             onChange={(e) => setText(e.target.value)}
           />
           <div className="jira-qav-row">
-            <button className="jira-selaction primary" disabled={busy} onClick={() => { onExclude(text.trim()); reset(); }}>
+            <button className="jira-selaction primary" disabled={blocked} onClick={() => { onExclude(text.trim()); reset(); }}>
               Exclude {issueKey}
             </button>
-            <button className="jira-selaction" disabled={busy} onClick={reset}>
+            <button className="jira-selaction" disabled={blocked} onClick={reset}>
               Cancel
             </button>
           </div>
@@ -547,13 +636,13 @@ function QaVerdicts({
           <div className="jira-qav-row">
             <button
               className="jira-selaction primary"
-              disabled={busy}
+              disabled={blocked}
               onClick={startRefine}
               title={text.trim() ? (batchQa.windowId ? "The QA agent restates it for a teammate who was not here" : "Restate it for a teammate who was not here") : undefined}
             >
               {text.trim() ? "Continue" : "Approve"}
             </button>
-            <button className="jira-selaction" disabled={busy} onClick={reset}>
+            <button className="jira-selaction" disabled={blocked} onClick={reset}>
               Cancel
             </button>
           </div>
@@ -570,10 +659,10 @@ function QaVerdicts({
             {refine.by === "qa-agent" ? "The QA agent is restating it..." : "Refining the note..."}
           </span>
           <div className="jira-qav-row">
-            <button className="jira-selaction" disabled={busy} onClick={() => approveWith(refine.note)} title="Approve now, posting exactly what you typed">
+            <button className="jira-selaction" disabled={blocked} onClick={() => approveWith(refine.note)} title="Approve now, posting exactly what you typed">
               Approve with mine as written
             </button>
-            <button className="jira-selaction" disabled={busy} onClick={reset}>
+            <button className="jira-selaction" disabled={blocked} onClick={reset}>
               Cancel
             </button>
           </div>
@@ -593,17 +682,17 @@ function QaVerdicts({
             <textarea className="jira-bfeedback-box refined" rows={3} value={posted} onChange={(e) => setPostedEdit(e.target.value)} />
           </label>
           <div className="jira-qav-row">
-            <button className="jira-selaction primary" disabled={busy || !posted.trim()} onClick={() => approveWith(posted.trim())}>
+            <button className="jira-selaction primary" disabled={blocked || !posted.trim()} onClick={() => approveWith(posted.trim())}>
               Approve
             </button>
             {!refine.asWritten && posted !== refine.note && (
-              <button className="jira-selaction" disabled={busy} onClick={() => setPostedEdit(refine.note)} title="Post exactly what you typed">
+              <button className="jira-selaction" disabled={blocked} onClick={() => setPostedEdit(refine.note)} title="Post exactly what you typed">
                 Post mine as written
               </button>
             )}
             <button
               className="jira-selaction"
-              disabled={busy}
+              disabled={blocked}
               onClick={() => {
                 setText(refine.note);
                 setPostedEdit(null);
@@ -615,7 +704,7 @@ function QaVerdicts({
             >
               Rewrite
             </button>
-            <button className="jira-selaction" disabled={busy} onClick={reset}>
+            <button className="jira-selaction" disabled={blocked} onClick={reset}>
               Cancel
             </button>
           </div>

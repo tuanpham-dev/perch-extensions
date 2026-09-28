@@ -18,7 +18,7 @@ export const QA_DEFAULT_NOTE =
 export const INTEGRATION_DEFAULT_NOTE =
   "The extension's own merge procedure for the batch's QA branch. Install it from the command palette to make it yours and edit it.";
 import { skillsLabel } from "./batchViewModel";
-import type { Batch, Cluster, ClusterStateName, SkillsResponse } from "./batchTypes";
+import type { Batch, BatchSummary, Cluster, ClusterStateName, SkillsResponse } from "./batchTypes";
 import type { MenuItem } from "./types";
 
 export interface BatchReviewProps {
@@ -43,6 +43,16 @@ export interface BatchReviewProps {
   onRenameBatch: (name: string) => void;
   // Null until something has started - there is no board to go back to.
   onBoard: (() => void) | null;
+  // Declines the tickets an "Add to batch" brought.
+  onDiscard: () => void;
+  // The same ways out the board offers: another batch, leave, archive or
+  // delete. A batch nothing has started opens here and never reaches the
+  // board, so without these a batch made by mistake could not be removed.
+  batches: BatchSummary[];
+  onPickBatch: (id: string) => void;
+  onClose: () => void;
+  onArchive: () => void;
+  onDelete: () => void;
   onBranch: (clusterId: string, branch: string) => void;
   onAddCluster: () => void;
   onRemoveCluster: (clusterId: string) => void;
@@ -72,6 +82,7 @@ function branchFor(template: string, cluster: Cluster): string {
 
 const STATE_LABEL: Record<ClusterStateName, string> = {
   pending: "Not started",
+  starting: "Starting",
   running: "Running",
   waiting: "Waiting on you",
   idle: "Idle",
@@ -96,6 +107,12 @@ export default function BatchReview({
   onRename,
   onRenameBatch,
   onBoard,
+  onDiscard,
+  batches,
+  onPickBatch,
+  onClose,
+  onArchive,
+  onDelete,
   onBranch,
   onAddCluster,
   onRemoveCluster,
@@ -162,13 +179,19 @@ export default function BatchReview({
 
   const moveMenu = (key: string, x: number, y: number) => {
     if (!showMenu) return;
-    const targets = batch.clusters.filter((cluster) => cluster.state === "pending" || (addOnly && cluster.state !== "stopped" && cluster.state !== "closed"));
+    if (addOnly && !newKeys.has(key)) return;
+    const current = batch.clusters.find((cluster) => cluster.keys.includes(key))?.id ?? null;
+    const targets = batch.clusters.filter(
+      (cluster) =>
+        cluster.id !== current &&
+        (cluster.state === "pending" || (addOnly && cluster.state !== "stopped" && cluster.state !== "closed" && cluster.state !== "starting")),
+    );
     showMenu(x, y, [
       ...targets.map((cluster) => ({
         label: `Move to "${cluster.name}"`,
         onClick: () => onMove(key, cluster.id, cluster.keys.length),
       })),
-      { label: "Move to Unclustered", onClick: () => onMove(key, null, 0) },
+      ...(current !== null ? [{ label: "Move to Unclustered", onClick: () => onMove(key, null, 0) }] : []),
     ]);
   };
 
@@ -179,7 +202,9 @@ export default function BatchReview({
       <li
         key={key}
         className={`jira-bcard${frozen ? " frozen" : ""}${newKeys.has(key) ? " fresh" : ""}${dragging === key ? " dragging" : ""}`}
-        draggable={!frozen && !busy}
+        // In an "Add to batch" review only the added tickets move: the rest
+        // are placed already, and the draft only carries the new ones.
+        draggable={!frozen && !busy && (!addOnly || newKeys.has(key))}
         onDragStart={(e) => {
           setDragging(key);
           e.dataTransfer.setData("text/plain", key);
@@ -228,7 +253,9 @@ export default function BatchReview({
   };
 
   const column = (cluster: Cluster) => {
-    const editable = cluster.state === "pending";
+    // In an "Add to batch" review only cards move: a proposed cluster exists
+    // in the preview alone, and renaming or deleting one has nothing to act on.
+    const editable = !addOnly && (cluster.state === "pending");
     return (
       <section
         key={cluster.id}
@@ -339,6 +366,22 @@ export default function BatchReview({
   return (
     <div className="jira-batchreview">
       <div className="jira-breview-bar">
+        {batches.length > 1 && !addOnly && (
+          <select
+            className="jira-breview-pick"
+            aria-label="Open another batch"
+            value={batch.id}
+            disabled={busy}
+            onChange={(e) => onPickBatch(e.target.value)}
+          >
+            {batches.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.name}
+              </option>
+            ))}
+            {!batches.some((entry) => entry.id === batch.id) && <option value={batch.id}>{batch.name}</option>}
+          </select>
+        )}
         {/* An input, like the cluster headings below it. The name a batch is
             born with is derived from its first cluster, which is a guess -
             "Cart drawer totals +2" tells you little a day later. */}
@@ -377,6 +420,29 @@ export default function BatchReview({
           Criteria
           <Icon name={criteriaOpen ? "chevron-up" : "chevron-down"} />
         </button>
+        {!addOnly && (
+          <>
+            <button className="jira-selaction" disabled={busy} title="Leave this batch as it is" onClick={onClose}>
+              Close
+            </button>
+            <button
+              className="icon-button"
+              title="More"
+              disabled={busy}
+              onClick={(e) => {
+                if (!showMenu) return;
+                const box = e.currentTarget.getBoundingClientRect();
+                showMenu(e.clientX || box.left, e.clientY || box.bottom, [
+                  { label: "Archive this batch", onClick: onArchive },
+                  { label: "", onClick: () => {}, separator: true },
+                  { label: "Delete this batch", danger: true, onClick: onDelete },
+                ]);
+              }}
+            >
+              <Icon name="ellipsis" />
+            </button>
+          </>
+        )}
         {!addOnly && (
           <button className="jira-selaction" disabled={busy} onClick={onAddCluster}>
             + Cluster
@@ -441,9 +507,24 @@ export default function BatchReview({
           )}
         </div>
         {addOnly ? (
-          <button className="jira-selaction primary" disabled={busy} onClick={onApply}>
-            Apply
-          </button>
+          <>
+            <button
+              className="jira-selaction"
+              disabled={busy}
+              title="Take the added tickets back out of the batch; nothing is sent to any agent"
+              onClick={onDiscard}
+            >
+              Discard
+            </button>
+            <button
+              className="jira-selaction primary"
+              disabled={busy}
+              title="Place the added tickets as shown; ones in a running cluster go to its agent"
+              onClick={onApply}
+            >
+              Apply
+            </button>
+          </>
         ) : (
           <button
             className="jira-selaction primary"

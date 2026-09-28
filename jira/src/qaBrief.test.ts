@@ -12,6 +12,8 @@ import {
   buildQaMergeMessage,
   buildQaRefinePrompt,
   buildQaRefineMessage,
+  buildQaLateDropMessage,
+  buildRestartNote,
   buildQaShipMessage,
   buildHandoffComment,
   buildQaConflictMessage,
@@ -127,4 +129,30 @@ test("refining the approval note goes to the QA agent with the note verbatim and
   assert.match(text, /Change nothing in the worktree/);
   assert.match(text, /jira-batch qa-refined LIV-271 --text/);
   assert.match(text, /--as-written yes/);
+});
+
+test("a restarted QA agent's brief names what was in flight", () => {
+  const line = buildQaBriefLine({
+    batchName: "B",
+    branch: "qa/b",
+    productionBranch: "main",
+    tickets: [],
+    resumed: true,
+    inFlight: [
+      { key: "CAP-1", state: "merging" },
+      { key: "CAP-2", state: "fixing", change: "bigger font" },
+      { key: "CAP-3", state: "refine", note: "img fpo" },
+    ],
+  });
+  assert.match(line, /CAP-1 was being merged/);
+  assert.match(line, /CAP-2 has a requested change open \("bigger font"/);
+  assert.match(line, /jira-batch qa-refined CAP-3/);
+});
+
+test("excluding mid-merge tells the agent to abort or drop what it made", () => {
+  const text = buildQaDropMessage({ key: "LIV-9", commit: "", why: "later", abortMerge: true });
+  assert.match(text, /git cherry-pick --abort/);
+  assert.match(text, /drop any commit you already made for \[LIV-9\]/);
+  assert.match(buildQaLateDropMessage({ key: "LIV-9", commit: "abc" }), /Drop that commit \(abc\)/);
+  assert.match(buildRestartNote({ cliPath: "/c/bin/jira-batch" }), /\/c\/bin\/jira-batch/);
 });

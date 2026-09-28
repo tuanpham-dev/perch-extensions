@@ -19,6 +19,8 @@ export interface BatchFormProps {
   keysText: string;
   // Skip the AI and put everything in one cluster.
   single: boolean;
+  // With `single`: the name for the cluster, and for a new batch.
+  title: string;
   lookupNote: string | null;
   criteria: string;
   readCodebase: boolean;
@@ -27,7 +29,7 @@ export interface BatchFormProps {
   busy: boolean;
   error: string | null;
   fallback: boolean;
-  onChange: (patch: { keysText?: string; criteria?: string; readCodebase?: boolean; single?: boolean }) => void;
+  onChange: (patch: { keysText?: string; criteria?: string; readCodebase?: boolean; single?: boolean; title?: string }) => void;
   onResolveKeys: () => void;
   onRemoveIssue: (key: string) => void;
   onSubmit: () => void;
@@ -41,6 +43,7 @@ export default function BatchForm({
   issues,
   keysText,
   single,
+  title,
   lookupNote,
   criteria,
   readCodebase,
@@ -144,10 +147,27 @@ export default function BatchForm({
           </label>
 
           {single ? (
+            <>
+            <label className="jira-batchform-title">
+              <span>{addingTo ? "Cluster title" : "Batch and cluster title"}</span>
+              <input
+                id="jira-batch-title"
+                className="jira-input"
+                value={title}
+                disabled={busy}
+                maxLength={60}
+                placeholder={issues[0]?.summary ? `Default: ${issues[0].summary}` : "Default: the first ticket's summary"}
+                onChange={(e) => onChange({ title: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !busy && (issues.length > 0 || keysText.trim() !== "")) onSubmit();
+                }}
+              />
+            </label>
             <div className="jira-batchform-hint">
               One worktree and one agent for all {issues.length === 1 ? "1 ticket" : `${issues.length} tickets`}, worked in
               the order above. No AI call, so this is immediate - and you can still split it in the review.
             </div>
+            </>
           ) : (
             <>
               <textarea

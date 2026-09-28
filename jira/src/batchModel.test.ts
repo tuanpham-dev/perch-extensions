@@ -50,6 +50,17 @@ import {
   markQaRefined,
   clearQaRefine,
   reopenTicket,
+  markStartStep,
+  clusterSeen,
+  markStarting,
+  markStartFailed,
+  abandonStarts,
+  unfinishedCount,
+  qaInFlight,
+  discardProposal,
+  markQaShipping,
+  setHandoffConfig,
+  effectiveHandoff,
   approveQa,
   excludeFromQa,
   markQaConflict,
@@ -950,8 +961,23 @@ test("a conflict blocks shipping and names its files", () => {
   assert.equal(markQaConflict(batch, "CAP-1", { files: ["sections/cart.liquid"], why: "two rules disagree" }, NOW + 5).ok, true);
   assert.deepEqual(shipBlockers(batch), ["CAP-1"]);
   assert.deepEqual(batch.ticketStates["CAP-1"].integration.files, ["sections/cart.liquid"]);
-  // A conflicted ticket may be picked again once the agent has sorted it.
-  assert.equal(markQaMerging(batch, "CAP-1", NOW + 6).ok, true);
+  // The ticket goes back to rework, so its cluster agent's own reports are
+  // accepted; once it is reviewed again it may be picked again.
+  assert.equal(batch.ticketStates["CAP-1"].state, "rework");
+  assert.equal(markQaMerging(batch, "CAP-1", NOW + 6).ok, false, "not while it is being reworked");
+  assert.equal(ticketReport(batch, batch.clusters[0].id, "CAP-1", "done", { summary: "rebased", now: NOW + 7 }).ok, true);
+  assert.equal(markQaMerging(batch, "CAP-1", NOW + 8).ok, true);
+});
+
+test("a conflict is only reported while merging", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "abc", NOW + 5);
+  approveQa(batch, "CAP-1", {}, NOW + 6);
+  const out = markQaConflict(batch, "CAP-1", { files: [], why: "ship rebase" }, NOW + 7);
+  assert.equal(out.ok, false);
+  assert.match(String(out.error), /jira-batch note/);
+  assert.equal(batch.ticketStates["CAP-1"].integration.state, "approved");
 });
 
 test("shipping is refused while anything is merged but unapproved, naming the tickets", () => {
@@ -1110,4 +1136,160 @@ test("a ticket accepted on the board reopens to review", () => {
   accept(batch, "CAP-1", NOW + 4);
   assert.deepEqual(reopenTicket(batch, "CAP-1", NOW + 5), { ok: true, wasApproved: false });
   assert.equal(batch.ticketStates["CAP-1"].state, "review");
+});
+
+test("a batch's hand-off answers win over Settings, and an empty one falls back", () => {
+  const batch = qaStarted("CAP-1");
+  const settings = { "jira.qaStatus": "Ready for QA", "jira.qaAssignee": "Quinn QA", "jira.previewUrlTemplate": "https://shop.test/?preview_theme_id=1&k={key}" };
+  assert.deepEqual(batch.handoffConfig, { status: "", assignee: "", previewUrl: "" }, "a new batch has none of its own");
+  assert.deepEqual(effectiveHandoff(batch.handoffConfig, settings), {
+    status: "Ready for QA",
+    assignee: "Quinn QA",
+    previewUrl: "https://shop.test/?preview_theme_id=1&k={key}",
+  });
+
+  assert.equal(setHandoffConfig(batch, { status: " In QA ", previewUrl: "https://shop.test/?preview_theme_id=99" }, NOW + 4).ok, true);
+  assert.deepEqual(effectiveHandoff(batch.handoffConfig, settings), {
+    status: "In QA",
+    assignee: "Quinn QA",
+    previewUrl: "https://shop.test/?preview_theme_id=99",
+  });
+  assert.equal(setHandoffConfig(batch, { assignee: "Ada" }, NOW + 5).ok, true);
+  assert.equal(batch.handoffConfig.status, "In QA", "saving one field keeps the others");
+  assert.equal(setHandoffConfig(batch, { status: "" }, NOW + 6).ok, true);
+  assert.equal(effectiveHandoff(batch.handoffConfig, settings).status, "Ready for QA", "cleared, it is Settings' again");
+  assert.equal(effectiveHandoff(null, {}).status, "QA", "and with nothing anywhere, QA");
+
+  const bad = setHandoffConfig(batch, { previewUrl: "javascript:alert(1)" }, NOW + 7);
+  assert.equal(bad.ok, false);
+  assert.equal(batch.handoffConfig.previewUrl, "https://shop.test/?preview_theme_id=99", "a refused URL changes nothing");
+
+  const doc = normalizeDocument(JSON.parse(JSON.stringify({ version: 1, batches: { bat_1: batch } })), NOW);
+  assert.deepEqual(doc.batches.bat_1.handoffConfig, batch.handoffConfig);
+});
+
+test("any report from the agent returns its needs-you ticket to in progress", () => {
+  const batch = running("CAP-1");
+  const cluster = batch.clusters[0];
+  ticketReport(batch, cluster.id, "CAP-1", "start", { now: NOW + 1 });
+  hookEvent(batch, cluster.windowId, "permission", NOW + 2);
+  assert.equal(batch.ticketStates["CAP-1"].state, "needs-you");
+  addNote(batch, cluster.id, "carrying on", NOW + 3);
+  assert.equal(batch.ticketStates["CAP-1"].state, "in-progress");
+  hookEvent(batch, cluster.windowId, "permission", NOW + 4);
+  clusterSeen(batch, cluster.id, NOW + 5);
+  assert.equal(batch.ticketStates["CAP-1"].state, "in-progress");
+});
+
+test("an agent works one ticket at a time", () => {
+  const batch = running("CAP-1", "CAP-2");
+  const id = batch.clusters[0].id;
+  assert.equal(ticketReport(batch, id, "CAP-1", "start", { now: NOW + 1 }).ok, true);
+  const refused = ticketReport(batch, id, "CAP-2", "start", { now: NOW + 2 });
+  assert.equal(refused.ok, false);
+  assert.match(String(refused.error), /CAP-1 is still open/);
+  assert.equal(ticketReport(batch, id, "CAP-1", "start", { now: NOW + 3 }).ok, true, "re-announcing the same one is fine");
+  ticketReport(batch, id, "CAP-1", "done", { summary: "x", now: NOW + 4 });
+  assert.equal(ticketReport(batch, id, "CAP-2", "start", { now: NOW + 5 }).ok, true);
+});
+
+test("a start is stored while it runs, and only the start in flight can undo itself", () => {
+  const batch = newBatch({ id: "b", name: "B", repo: "/r", criteria: "", readCodebase: false, tickets: rows("CAP-1"), now: NOW });
+  applyProposal(batch, { clusters: [{ id: null, name: "One", rationale: "", files: [], keys: ["CAP-1"] }], unclustered: [] }, { makeId: () => "c1", now: NOW });
+  assert.equal(markStarting(batch, "c1", { branch: "", agentId: "a", now: NOW + 1 }).ok, false, "no branch, no start");
+  assert.equal(markStarting(batch, "c1", { branch: "one", agentId: "a", now: NOW + 1 }).ok, true);
+  assert.equal(batch.clusters[0].state, "starting");
+  assert.match(String(markStarting(batch, "c1", { branch: "one", agentId: "a", now: NOW + 2 }).error), /already starting/);
+  markStartStep(batch, "c1", "session", NOW + 2);
+  assert.equal(batch.clusters[0].startStep, "session");
+  markRunning(batch, "c1", { worktreePath: "/w", sessionName: "s", windowId: "w1", now: NOW + 3 });
+  assert.equal(markStartFailed(batch, "c1", "late failure", NOW + 4).ok, false, "a running cluster is not reverted");
+  assert.equal(batch.clusters[0].state, "running");
+});
+
+test("a start the server never finished goes back to pending", () => {
+  const batch = newBatch({ id: "b", name: "B", repo: "/r", criteria: "", readCodebase: false, tickets: rows("CAP-1"), now: NOW });
+  applyProposal(batch, { clusters: [{ id: null, name: "One", rationale: "", files: [], keys: ["CAP-1"] }], unclustered: [] }, { makeId: () => "c1", now: NOW });
+  markStarting(batch, "c1", { branch: "one", agentId: "a", now: NOW + 1 });
+  abandonStarts(batch, "Perch restarted while it was starting", NOW + 2);
+  assert.equal(batch.clusters[0].state, "pending");
+  assert.equal(batch.clusters[0].lastError, "Perch restarted while it was starting");
+});
+
+test("a closed cluster's unfinished tickets can move to another cluster, keeping their history", () => {
+  const batch = running("CAP-1", "CAP-2");
+  const first = batch.clusters[0];
+  ticketReport(batch, first.id, "CAP-1", "start", { now: NOW + 1 });
+  ticketReport(batch, first.id, "CAP-1", "done", { summary: "x", now: NOW + 2 });
+  markStopped(batch, first.id, "gone", NOW + 3);
+  assert.equal(unfinishedCount(batch, first), 1);
+  markClosed(batch, first.id, NOW + 4);
+  addCluster(batch, { id: "c2", name: "Two", now: NOW + 5 });
+  assert.equal(moveTicket(batch, "CAP-1", "c2", 0, NOW + 6).ok, false, "a reviewed ticket stays");
+  assert.equal(moveTicket(batch, "CAP-2", null, 0, NOW + 6).ok, false, "not back to Unclustered");
+  assert.equal(moveTicket(batch, "CAP-2", "c2", 0, NOW + 6).ok, true);
+  assert.deepEqual(batch.clusters.find((c) => c.id === "c2")?.keys, ["CAP-2"]);
+  assert.equal(batch.ticketStates["CAP-2"].clusterId, "c2");
+  assert.ok(batch.ticketStates["CAP-2"].history.length >= 1);
+});
+
+test("a closed cluster's drafts are not sendable", () => {
+  const batch = running("CAP-1");
+  const cluster = batch.clusters[0];
+  ticketReport(batch, cluster.id, "CAP-1", "start", { now: NOW + 1 });
+  ticketReport(batch, cluster.id, "CAP-1", "done", { summary: "x", now: NOW + 2 });
+  setFeedbackDraft(batch, "CAP-1", "tweak", NOW + 3);
+  assert.equal(pendingFeedbackCount(batch), 1);
+  markStopped(batch, cluster.id, "gone", NOW + 4);
+  markClosed(batch, cluster.id, NOW + 5);
+  assert.equal(pendingFeedbackCount(batch), 0);
+});
+
+test("a late merge after an exclusion is not recorded, and asks for a drop", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  const excluded = excludeFromQa(batch, "CAP-1", "not now", NOW + 5);
+  assert.equal(excluded.abortMerge, true);
+  const late = markQaMerged(batch, "CAP-1", "abc", NOW + 6);
+  assert.deepEqual(late, { ok: true, state: "excluded", lateCommit: "abc" });
+  assert.equal(batch.ticketStates["CAP-1"].integration.state, "excluded");
+});
+
+test("shipping is held in flight until it lands or the agent stops it with a note", () => {
+  const batch = qaStarted("CAP-1");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "abc", NOW + 5);
+  approveQa(batch, "CAP-1", {}, NOW + 6);
+  assert.equal(markQaShipping(batch, NOW + 7).ok, true);
+  assert.equal(markQaShipping(batch, NOW + 8).ok, false, "not twice");
+  addQaNote(batch, "primary worktree is dirty", NOW + 9);
+  assert.equal(batch.qa.shipping, null);
+  assert.equal(markQaShipping(batch, NOW + 10).ok, true);
+  markQaShipped(batch, "main", NOW + 11);
+  assert.equal(batch.qa.shipping, null);
+});
+
+test("a restarted QA agent is told what was in flight", () => {
+  const batch = qaStarted("CAP-1", "CAP-2");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerging(batch, "CAP-2", NOW + 5);
+  markQaMerged(batch, "CAP-2", "b", NOW + 6);
+  markQaFixing(batch, "CAP-2", "bigger font", NOW + 7);
+  assert.deepEqual(qaInFlight(batch), [
+    { key: "CAP-1", state: "merging" },
+    { key: "CAP-2", state: "fixing", change: "bigger font" },
+  ]);
+});
+
+test("discarding an add proposal takes its untouched tickets back out", () => {
+  const batch = running("CAP-1");
+  batch.tickets["CAP-2"] = { key: "CAP-2", summary: "x", status: "", type: "", priority: null, url: "" } as never;
+  batch.unclustered = ["CAP-2"];
+  batch.pendingProposal = { clusters: [], unclustered: [], keys: ["CAP-2", "CAP-1"] } as never;
+  const out = discardProposal(batch, NOW + 1);
+  assert.deepEqual(out, { ok: true, removed: ["CAP-2"] });
+  assert.equal(batch.tickets["CAP-2"], undefined);
+  assert.ok(batch.tickets["CAP-1"], "a ticket already being worked stays");
+  assert.equal(batch.pendingProposal, null);
+  assert.equal(discardProposal(batch, NOW + 2).ok, false);
 });

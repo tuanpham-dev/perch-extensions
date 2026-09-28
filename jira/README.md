@@ -487,6 +487,11 @@ stops the hand-off before anything is written), and given one comment: the previ
 `jira.previewUrlTemplate`, then the QA report's problem, fix and how to QA, then your note.
 It is reported per ticket, and running it again touches only the ones that failed.
 
+The status, assignee and preview URL can be set per batch in the **Hand-off** panel above the
+list. A field left empty uses the setting, which the field shows as its placeholder. The values
+are saved on the batch, so a retry uses the same ones. The preview URL may carry `{key}` like
+the setting.
+
 If the QA agent dies, the board says so and **Start QA again** reuses its worktree and branch -
 every merge so far is on disk - and tells the new agent to read `git status` first, since a fix
 may be sitting uncommitted. With `jira.startQaOnFirstReview` on, QA starts by itself when the

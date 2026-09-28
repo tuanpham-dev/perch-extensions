@@ -52,6 +52,9 @@ import {
   ticketCounts,
   handoffPending,
   markHandedOff,
+  setHandoffConfig,
+  discardProposal,
+  effectiveHandoff,
   requestQaRefine,
   markQaRefined,
   clearQaRefine,
@@ -1479,8 +1482,8 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     const exact = users.filter((u) => String(u.displayName ?? "").toLowerCase() === lower || String(u.emailAddress ?? "").toLowerCase() === lower);
     const found = exact.length > 0 ? exact : users.filter((u) => String(u.displayName ?? "").toLowerCase().includes(lower));
     if (found.length === 1) return { accountId: found[0].accountId, displayName: found[0].displayName ?? found[0].accountId };
-    if (found.length === 0) throw bad(`jira.qaAssignee "${text}" matches nobody who can be assigned in ${projectKey}`);
-    throw bad(`jira.qaAssignee "${text}" matches ${found.length} people (${found.map((u) => u.displayName).join(", ")}) - set it to an account id`);
+    if (found.length === 0) throw bad(`the assignee "${text}" matches nobody who can be assigned in ${projectKey}`);
+    throw bad(`the assignee "${text}" matches ${found.length} people (${found.map((u) => u.displayName).join(", ")}) - use a full name, an email or an account id`);
   }
 
   async function transitionTo(cfg, key, wanted) {
@@ -2095,6 +2098,9 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       // and the codebase read only exist to inform a model, so neither
       // applies.
       const single = body.single === true;
+      // With single, the name for the cluster and for a new batch. Empty
+      // keeps the first ticket's summary.
+      const title = single && typeof body.title === "string" ? body.title.trim() : "";
       const readCodebase = !single && body.readCodebase === true;
       const keys = (Array.isArray(body.keys) ? body.keys : []).filter((key) => typeof key === "string" && ISSUE_KEY.test(key)).map((key) => key.toUpperCase());
       if (keys.length === 0) throw bad("no tickets to analyze");
@@ -2105,15 +2111,29 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const existingBatchId = typeof body.batchId === "string" && body.batchId ? body.batchId : null;
       let doc = await batches.get();
       const target = existingBatchId ? batchOr404(doc, existingBatchId) : null;
-      const fresh = target ? keys.filter((key) => !target.tickets[key]) : keys;
-      if (target && fresh.length === 0) throw bad("every one of those tickets is already in this batch");
+      // Re-analyze: the batch's own unstarted tickets, re-planned in place.
+      // It replaces the clusters that have not started, and nothing else.
+      const replace = Boolean(target) && body.replace === true;
+      const fresh = replace
+        ? keys.filter((key) => target.tickets[key] && !target.ticketStates[key])
+        : target
+          ? keys.filter((key) => !target.tickets[key])
+          : keys;
+      const already = target && !replace ? keys.filter((key) => target.tickets[key]) : [];
+      if (replace && fresh.length === 0) throw bad("none of those tickets can be re-planned - every one has started");
+      if (target && !replace && fresh.length === 0) throw bad("every one of those tickets is already in this batch");
+      // A second "Add to batch" would overwrite the first one's placement,
+      // and its tickets would sit in Unclustered with nothing proposed.
+      if (target && !replace && target.pendingProposal) {
+        throw conflict("tickets added earlier are still waiting in the review - apply or discard that proposal first");
+      }
 
       const details = [];
       for (const key of fresh) details.push(await issueDetail(cfg, key));
 
       const existing = target
         ? target.clusters
-            .filter((cluster) => OPEN_FOR_ADD.has(clusterState(target, cluster)))
+            .filter((cluster) => OPEN_FOR_ADD.has(clusterState(target, cluster)) && !(replace && cluster.state === "pending"))
             .map((cluster) => ({ id: cluster.id, name: cluster.name, state: clusterState(target, cluster), keys: cluster.keys, rationale: cluster.rationale }))
         : [];
 
@@ -2122,7 +2142,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       let warnings = [];
       let heuristic = false;
       if (single) {
-        proposal = singleCluster(details);
+        proposal = singleCluster(details, title);
       } else if (profiles.length === 0) {
         // No AI at all is not an error: the fields a team already fills in
         // are a worse grouping than a model's, and a far better one than none.
@@ -2157,6 +2177,14 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
 
       const now = Date.now();
       const result = await batches.update((draft) => {
+        if (replace) {
+          const batch = draft.batches[existingBatchId];
+          for (const detail of details) batch.tickets[detail.key] = newTicket(detail);
+          const applied = applyProposal(batch, proposal, { makeId: () => newId("cls"), now });
+          warnings = [...warnings, ...applied.warnings];
+          batch.updatedAt = now;
+          return { batchId: batch.id };
+        }
         if (target) {
           const batch = draft.batches[existingBatchId];
           for (const detail of details) batch.tickets[detail.key] = newTicket(detail);
@@ -2166,9 +2194,11 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
           return { batchId: batch.id };
         }
         const id = newId("bat");
-        const name = proposal.clusters[0]?.name
-          ? `${proposal.clusters[0].name}${proposal.clusters.length > 1 ? ` +${proposal.clusters.length - 1}` : ""}`
-          : "Batch";
+        const name = title
+          ? proposal.clusters[0]?.name ?? title
+          : proposal.clusters[0]?.name
+            ? `${proposal.clusters[0].name}${proposal.clusters.length > 1 ? ` +${proposal.clusters.length - 1}` : ""}`
+            : "Batch";
         const batch = newBatch({ id, name, repo, criteria: single ? "" : criteria, readCodebase, tickets: details, now });
         const applied = applyProposal(batch, proposal, { makeId: () => newId("cls"), now });
         warnings = [...warnings, ...applied.warnings];
@@ -2180,10 +2210,22 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       res.json({
         batchId: result.batchId,
         batch: decorate(after.batches[result.batchId]),
-        warnings,
+        warnings: already.length > 0 ? [`${already.join(", ")} ${already.length === 1 ? "is" : "are"} already in this batch - left where ${already.length === 1 ? "it is" : "they are"}`, ...warnings] : warnings,
         heuristic,
-        addOnly: Boolean(target),
+        addOnly: Boolean(target) && !replace,
       });
+    }),
+  );
+
+  // Declining the tickets an "Add to batch" brought: they leave the batch.
+  router.post(
+    "/batches/:id/proposal/discard",
+    route(async (req, res) => {
+      const id = req.params.id;
+      batchOr404(await batches.get(), id);
+      const result = await batches.update((draft) => discardProposal(batchOr404(draft, id), Date.now()));
+      if (!result.ok) throw conflict(result.error);
+      res.json({ batch: decorate((await batches.get()).batches[id]), removed: result.removed });
     }),
   );
 
@@ -2379,6 +2421,10 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
     await runner.qaMerge(id, key);
   });
+  qaAction("ask-again", async (id, key) => {
+    if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
+    await runner.qaAskAgain(id, key);
+  });
   qaAction("change", async (id, key, body) => {
     if (!ISSUE_KEY.test(key)) throw bad("key must be an issue key like CAP-123");
     const change = typeof body.change === "string" ? body.change.trim() : "";
@@ -2459,6 +2505,29 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     }),
   );
 
+  // The hand-off's status, assignee and preview URL: this batch's own, and
+  // what Settings (for this repo's project) says, which fills any it left
+  // empty. The form shows the second as the first's placeholder.
+  router.get(
+    "/batches/:id/qa/handoff-config",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const cfg = await readConfig(batch.repo);
+      res.json({ config: batch.handoffConfig, defaults: effectiveHandoff(null, cfg.settings) });
+    }),
+  );
+
+  router.post(
+    "/batches/:id/qa/handoff-config",
+    route(async (req, res) => {
+      const id = req.params.id;
+      batchOr404(await batches.get(), id);
+      const result = await batches.update((draft) => setHandoffConfig(batchOr404(draft, id), req.body ?? {}, Date.now()));
+      if (!result.ok) throw bad(result.error);
+      res.json({ batch: decorate((await batches.get()).batches[id]) });
+    }),
+  );
+
   router.post(
     "/batches/:id/qa/handoff",
     route(async (req, res) => {
@@ -2467,15 +2536,21 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       if (!batch.qa || batch.qa.state !== "shipped") throw conflict("merge to production first - the hand-off says the work is on the main branch");
       const cfg = await readConfig(batch.repo);
       if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) throw bad("jira is not configured");
-      const settings = cfg.settings;
-      const status = String(settings["jira.qaStatus"] ?? "").trim() || "QA";
-      const urlTemplate = String(settings["jira.previewUrlTemplate"] ?? "").trim();
+      // Values sent with the click are this batch's config from now on, so a
+      // retry of the ones that failed uses the same answers.
+      const sent = req.body?.config;
+      if (sent && typeof sent === "object" && !Array.isArray(sent)) {
+        const saved = await batches.update((draft) => setHandoffConfig(batchOr404(draft, id), sent, Date.now()));
+        if (!saved.ok) throw bad(saved.error);
+      }
+      const current = (await batches.get()).batches[id];
+      const { status, assignee: assigneeName, previewUrl: urlTemplate } = effectiveHandoff(current.handoffConfig, cfg.settings);
       const pending = handoffPending(batch);
       if (pending.length === 0) throw conflict("every approved ticket has already been handed off");
       // Resolved once, before anything is written: a bad name stops the
       // whole hand-off rather than half of it.
       const projectKey = batch.tickets[pending[0]]?.projectKey || cfg.projectKey || pending[0].split("-")[0];
-      const assignee = await resolveAssignee(cfg, projectKey, settings["jira.qaAssignee"]);
+      const assignee = await resolveAssignee(cfg, projectKey, assigneeName);
 
       const results = [];
       for (const key of pending) {
@@ -2490,7 +2565,9 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
           ok = false;
           error = scrub(err.message, cfg.apiToken);
         }
-        await batches.update((draft) => markHandedOff(batchOr404(draft, id), key, { url, ok, error }, Date.now()));
+        await batches.update((draft) =>
+          markHandedOff(batchOr404(draft, id), key, { url, ok, error, status, assignee: assignee?.displayName ?? "" }, Date.now()),
+        );
         results.push({ key, ok, error });
       }
       res.json({ batch: decorate((await batches.get()).batches[id]), results, assignee: assignee?.displayName ?? "", status });
@@ -2558,6 +2635,16 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     router.post(
       `/batches/:id/clusters/:cid/${name}`,
       route(async (req, res) => {
+        // Checked here, against the state as it is now: a board drawn a
+        // moment ago may offer Close on a cluster that has since started
+        // working again.
+        const current = batchOr404(await batches.get(), req.params.id);
+        const cluster = clusterOf(current, req.params.cid);
+        if (!cluster) throw notFound(`no cluster ${req.params.cid}`);
+        if (!allowedClusterActions(current, cluster).includes(name)) {
+          const verb = { stop: "stopped", resume: "resumed", close: "closed", "remove-worktree": "cleaned up" }[name] ?? name;
+          throw conflict(`"${cluster.name}" is ${clusterState(current, cluster)} - it cannot be ${verb} now`);
+        }
         const result = await run(req);
         const doc = await batches.get();
         res.json({ batch: decorate(batchOr404(doc, req.params.id)), result });

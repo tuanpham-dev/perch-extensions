@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { buildCodeReviewBrief, buildPreviewQaBrief, buildReviewBriefLine } from "./brief.mjs";
 import { contentTypeOf, readImage, writeImage } from "./evidence.mjs";
 import { findTicketLinks } from "./links.mjs";
+import { createShellWatch } from "./liveness.mjs";
 import {
   MAX_EXTRA_SHOTS,
   PAGE_SHOTS,
@@ -400,12 +401,16 @@ export function createReviewRunner({
     return { ok: true };
   }
 
-  // A task whose window is gone did not report and never will.
+  // Windows back at a plain shell, and since when. See liveness.mjs.
+  const shellWatch = createShellWatch();
+
+  // A task whose window is gone, or whose agent has exited, did not report
+  // and never will.
   async function sweep() {
     if (!host?.sessions?.list) return;
-    const live = new Set();
+    const live = new Map();
     try {
-      for (const session of await host.sessions.list()) for (const window of session.windows ?? []) live.add(window.id);
+      for (const session of await host.sessions.list()) for (const window of session.windows ?? []) live.set(window.id, window.command ?? "");
     } catch (err) {
       log(`review sweep could not list sessions: ${err.message}`);
       return;
@@ -414,8 +419,12 @@ export function createReviewRunner({
     for (const review of Object.values(doc.reviews)) {
       for (const task of TASKS) {
         const current = review.tasks[task];
-        if (current?.state !== "running" || !current.windowId || live.has(current.windowId)) continue;
-        await store.update((d) => markTaskFailed(d, review.key, task, "its terminal window is gone", Date.now()));
+        if (current?.state !== "running" || !current.windowId) continue;
+        const id = current.windowId;
+        const reason = !live.has(id) ? "its terminal window is gone" : shellWatch.observe(id, live.get(id), Date.now()) ? "the agent exited" : "";
+        if (!reason) continue;
+        shellWatch.forget(id);
+        await store.update((d) => markTaskFailed(d, review.key, task, reason, Date.now()));
       }
     }
   }
@@ -507,7 +516,27 @@ export function createReviewRunner({
     });
   }
 
+  // A shell restored after a Perch restart has lost JR_KEY and JR_TASK; its
+  // window id survives, so the review is found by the window instead.
+  async function fillFromWindow(body) {
+    if (body.key && body.task) return body;
+    const windowId = String(body.windowId ?? "");
+    if (!windowId) return body;
+    const doc = await store.get();
+    for (const review of Object.values(doc.reviews)) {
+      for (const task of TASKS) {
+        if (review.tasks[task]?.windowId === windowId) return { ...body, key: review.key, task };
+      }
+    }
+    return body;
+  }
+
   function verbs() {
+    const withWindow = (handler) => async (body) => handler(await fillFromWindow(body ?? {}));
+    return Object.fromEntries(Object.entries(rawVerbs()).map(([name, handler]) => [name, withWindow(handler)]));
+  }
+
+  function rawVerbs() {
     return {
       "review-brief": async (body) => {
         const { key, task } = taskOf(body);

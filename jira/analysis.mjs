@@ -180,9 +180,10 @@ export function parseClusterReply(text, { allowedKeys, existing = [] } = {}) {
 //
 // No AI call at all. There is nothing for a model to decide, and waiting a
 // minute to be told what you already said is the wrong trade.
-export function singleCluster(details) {
+// `title` names it when given; otherwise the first ticket's summary does.
+export function singleCluster(details, title = "") {
   const first = details[0];
-  const name = ((first?.summary ?? "").trim() || first?.key || "Batch").slice(0, MAX_NAME);
+  const name = (String(title ?? "").trim() || (first?.summary ?? "").trim() || first?.key || "Batch").slice(0, MAX_NAME);
   return {
     clusters: [
       {

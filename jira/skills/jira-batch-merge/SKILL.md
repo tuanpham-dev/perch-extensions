@@ -94,6 +94,8 @@ jira-batch qa-conflict LIV-341 --files sections/cart.liquid --why "both tickets 
 ```
 
 The ticket's own agent is told. You move on to whatever the panel asks next.
+`qa-conflict` is only for a pick in progress; the panel refuses it for a
+ticket already merged or approved.
 
 ## 3. A requested change
 
@@ -157,8 +159,14 @@ Nothing else on the branch moves.
 ## 6. Shipping
 
 The panel types `Ship into <production branch>` only once every merged ticket
-is approved; if you are asked and something is not, say so and stop. Then,
-in the **primary** worktree of the repository (not this one):
+is approved; if you are asked and something is not, say so and stop.
+
+Before merging, check the **primary** worktree: it must be clean
+(`git status --porcelain` prints nothing) and on the production branch. If
+it is dirty or on another branch, do nothing to it; say so with
+`jira-batch note "..."` and stop. The panel shows your note and lets the
+reviewer ship again once it is sorted out. Then, in the primary worktree of
+the repository (not this one):
 
 ```sh
 git switch <production branch>
@@ -167,8 +175,16 @@ jira-batch qa-shipped --into <production branch>
 ```
 
 If the production branch moved since the QA branch was cut, rebase the QA
-branch onto it first, from this worktree, and resolve as in section 2. Do not
-push. The reviewer does.
+branch onto it first, from this worktree. A mechanical conflict is yours to
+resolve. One that is a judgement call is not: abort the rebase, say which
+tickets and files with `jira-batch note "..."`, and stop - do not use
+`qa-conflict` here. Do not push. The reviewer does.
+
+## After a Perch restart
+
+If Perch restarts, your shell comes back without `jira-batch` on its PATH.
+The panel then tells you its full path; call it by that path from then on.
+It still finds this batch by your terminal window.
 
 ## 7. Notes on approval
 
