@@ -26,10 +26,12 @@ const NO_MODS: Mods = { shift: false, ctrl: false, alt: false };
 const REPEAT_DELAY_MS = 400;
 const REPEAT_INTERVAL_MS = 40;
 
-// A top-bar Ctrl / Alt key: a one-shot modifier for the QWERTY grid. Unlike a
-// {ctrl} top key (which toggles the host's sticky-Ctrl, applied only to
-// natively-typed input), this drives the keyboard's own mod state so it
-// actually modifies the grid's taps. Styled as a bar key, active when armed.
+// A top-bar Ctrl / Alt key: a one-shot modifier. Ctrl is the host's sticky
+// Ctrl, so it applies to whichever key comes next: a grid tap (resolved here)
+// or a letter typed on the phone's own keyboard (resolved by the host, even
+// while the phone keyboard is still composing the word). Alt has no host
+// counterpart and modifies the grid's taps only. Styled as a bar key, active
+// when armed.
 function ModKey({ label, active, onToggle }: { label: string; active: boolean; onToggle: () => void }) {
   const tap = useTapHandlers(onToggle);
   return (
@@ -152,15 +154,24 @@ export default function KeyboardSurface({
   const [mods, setMods] = useState<Mods>(NO_MODS);
   const [page, setPage] = useState<PageId>("letters");
 
-  const toggleMod = (m: "ctrl" | "alt") => setMods((prev) => ({ ...prev, [m]: !prev[m] }));
+  // Ctrl lives in the host (sticky Ctrl), Shift and Alt here.
+  const effective: Mods = { ...mods, ctrl: context.stickyCtrl };
+
+  const toggleMod = (m: "ctrl" | "alt") => {
+    if (m === "ctrl") context.toggleStickyCtrl();
+    else setMods((prev) => ({ ...prev, alt: !prev.alt }));
+  };
 
   const press = (key: KeyDef) => {
     const kind = key.kind ?? "char";
     if (kind === "shift") return setMods((m) => ({ ...m, shift: !m.shift }));
     if (kind === "page") return setPage(key.target ?? "letters");
     // char / space / enter — resolve to bytes, then disarm one-shot modifiers.
-    sendWithInkSafeEnters(resolveSend(key, mods), context.sendInput);
-    if (mods.shift || mods.ctrl || mods.alt) setMods(NO_MODS);
+    // sendInput bypasses the host's sticky-Ctrl transform, so Ctrl is applied
+    // here and then released.
+    sendWithInkSafeEnters(resolveSend(key, effective), context.sendInput);
+    if (mods.shift || mods.alt) setMods(NO_MODS);
+    if (effective.ctrl) context.toggleStickyCtrl();
   };
 
   const sendBackspace = () => context.sendInput("\x7f");
@@ -169,7 +180,7 @@ export default function KeyboardSurface({
 
   return (
     <div className="fk-surface" style={style}>
-      <TopBar context={context} mods={mods} onToggleMod={toggleMod} />
+      <TopBar context={context} mods={effective} onToggleMod={toggleMod} />
       <div className="fk-keyboard">
         {rows.map((row, r) => (
           <div className="fk-keyboard-row" key={r}>
@@ -181,7 +192,7 @@ export default function KeyboardSurface({
                 return <div key={c} className="fk-keyboard-spacer" style={{ flex: `${key.width ?? 1} 1 0` }} aria-hidden="true" />;
               }
               if (kind === "backspace") return <BackspaceKey key={c} keyDef={key} onRepeat={sendBackspace} />;
-              return <GridKey key={c} keyDef={key} mods={mods} onPress={press} />;
+              return <GridKey key={c} keyDef={key} mods={effective} onPress={press} />;
             })}
           </div>
         ))}
