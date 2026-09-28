@@ -57,6 +57,8 @@ import {
   setBatchAgent,
   isShipped,
   effectiveHandoff,
+  handoffPageFor,
+  previewUrlFor,
   requestQaRefine,
   markQaRefined,
   clearQaRefine,
@@ -1485,13 +1487,24 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   async function resolveAssignee(cfg, projectKey, wanted) {
     const text = String(wanted ?? "").trim();
     if (!text) return null;
-    if (/^[0-9a-f]+:[0-9a-f-]{8,}$/i.test(text) || /^[0-9a-f]{24}$/i.test(text)) return { accountId: text, displayName: text };
+    if (/^[0-9a-f]+:[0-9a-f-]{8,}$/i.test(text) || /^[0-9a-f]{24}$/i.test(text)) {
+      // Picked from the list, so it is an account id: its name is only for
+      // the "assigned to ..." line, and the id alone still assigns.
+      try {
+        const user = await jiraFetch(cfg, `/rest/api/3/user?accountId=${encodeURIComponent(text)}`);
+        return { accountId: text, displayName: typeof user?.displayName === "string" ? user.displayName : text };
+      } catch {
+        return { accountId: text, displayName: text };
+      }
+    }
     const body = await jiraFetch(
       cfg,
       `/rest/api/3/user/assignable/search?project=${encodeURIComponent(projectKey)}&query=${encodeURIComponent(text)}&maxResults=50`,
     );
     const users = (Array.isArray(body) ? body : []).filter((u) => typeof u?.accountId === "string");
     const lower = text.toLowerCase();
+    const byId = users.find((u) => u.accountId === text);
+    if (byId) return { accountId: byId.accountId, displayName: byId.displayName ?? byId.accountId };
     const exact = users.filter((u) => String(u.displayName ?? "").toLowerCase() === lower || String(u.emailAddress ?? "").toLowerCase() === lower);
     const found = exact.length > 0 ? exact : users.filter((u) => String(u.displayName ?? "").toLowerCase().includes(lower));
     if (found.length === 1) return { accountId: found[0].accountId, displayName: found[0].displayName ?? found[0].accountId };
@@ -2592,6 +2605,37 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     }),
   );
 
+  // The dev servers an agent is running: the ports listening in its terminal
+  // session, so a ticket's detail can open its page on the server that has
+  // its change. The QA agent's own preview URL (qa-start --url) comes too.
+  // A process that outlived its terminal still counts while it remembers
+  // the session: the server is up even if the agent's window is gone.
+  router.get(
+    "/batches/:id/ports",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const agent = typeof req.query.agent === "string" ? req.query.agent : "";
+      const { owner } = batchAgent(batch, agent);
+      const session = owner.sessionName ?? "";
+      let ports = [];
+      if (session && typeof host?.ports?.list === "function") {
+        try {
+          const seen = new Set();
+          for (const entry of await host.ports.list()) {
+            if (entry?.session !== session || seen.has(entry.port)) continue;
+            seen.add(entry.port);
+            ports.push({ port: entry.port, process: entry.process ?? "" });
+          }
+        } catch (err) {
+          log(`could not list ports: ${err.message}`);
+        }
+      }
+      ports.sort((a, b) => a.port - b.port);
+      res.setHeader("cache-control", "no-store");
+      res.json({ agent, session, ports, previewUrl: agent === "qa" ? (batch.qa?.previewUrl ?? "") : "" });
+    }),
+  );
+
   // Answering a batch agent's prompt: { agent, action, expect }.
   router.post(
     "/batches/:id/agent-key",
@@ -2665,7 +2709,31 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     route(async (req, res) => {
       const batch = batchOr404(await batches.get(), req.params.id);
       const cfg = await readConfig(batch.repo);
-      res.json({ config: batch.handoffConfig, defaults: effectiveHandoff(null, cfg.settings) });
+      const defaults = effectiveHandoff(null, cfg.settings);
+      // Who the tickets can go to, for the assignee picker: everyone
+      // assignable in any of the batch's projects. A Jira that cannot answer
+      // leaves the list empty, and the picker still offers the Settings
+      // default and whatever is saved.
+      const projects = [...new Set(Object.keys(batch.tickets).map((key) => batch.tickets[key]?.projectKey || key.split("-")[0]))];
+      const byId = new Map();
+      for (const project of projects) {
+        try {
+          const body = await jiraFetch(
+            cfg,
+            `/rest/api/3/user/assignable/search?project=${encodeURIComponent(project)}&maxResults=100`,
+          );
+          for (const u of Array.isArray(body) ? body : []) {
+            if (typeof u?.accountId === "string" && !byId.has(u.accountId)) {
+              byId.set(u.accountId, { accountId: u.accountId, displayName: u.displayName ?? u.accountId });
+            }
+          }
+        } catch {
+          // Not this project, then.
+        }
+      }
+      const assignees = [...byId.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+      res.setHeader("cache-control", "no-store");
+      res.json({ config: batch.handoffConfig, defaults, assignees });
     }),
   );
 
@@ -2692,8 +2760,17 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
         .filter((key) => batch.ticketStates[key].integration?.state === "approved" && isShipped(batch, batch.ticketStates[key].integration))
         .map((key) => {
           const ticket = batch.ticketStates[key];
-          const url = urlTemplate.replace("{key}", key);
-          return { key, url, comment: buildHandoffComment({ url, qa: ticket.qa, note: ticket.integration?.postedNote ?? "" }) };
+          const page = handoffPageFor(batch, key);
+          const url = previewUrlFor(urlTemplate, key, page);
+          return {
+            key,
+            url,
+            // Which page the link opens and where that came from, so the row
+            // can show it and offer to change it.
+            page,
+            reportPage: ticket.qa?.page ?? "",
+            comment: buildHandoffComment({ url, qa: ticket.qa, note: ticket.integration?.postedNote ?? "" }),
+          };
         });
       res.setHeader("cache-control", "no-store");
       res.json({ tickets });
@@ -2746,7 +2823,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const results = [];
       for (const key of pending) {
         const ticket = batch.ticketStates[key];
-        const url = urlTemplate.replace("{key}", key);
+        const url = previewUrlFor(urlTemplate, key, handoffPageFor(current, key));
         const comment = buildHandoffComment({ url, qa: ticket.qa, note: ticket.integration?.postedNote ?? "" });
         let ok = true;
         let error = "";

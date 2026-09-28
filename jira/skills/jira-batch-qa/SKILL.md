@@ -114,6 +114,22 @@ Restraint still applies - four shots that each prove something beat eight that
 repeat one another, and a shot nobody can tell the purpose of is worse than no
 shot at all.
 
+### Which page
+
+Say which page the ticket is about with `--page`: the path you checked it on
+(`/`, `/products/wool-socks`, `/pages/about`), or a full URL when the path
+alone would not get there. The hand-off opens that page on the preview theme
+for whoever tests it in Jira, so a ticket about the product page does not
+land its tester on the home page:
+
+```sh
+jira-batch qa CAP-12 --status pass --page /products/wool-socks \
+  --before before.png --after after.png
+```
+
+When the change shows on several pages, give the one a tester should open
+first, and name the others in `steps`.
+
 ## 3. Writing it down
 
 Three fields do the work. Write them as short bullets, one idea each, because

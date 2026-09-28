@@ -135,15 +135,36 @@ function normalizeBatch(id, raw, now) {
 // reaches every field this batch left alone.
 export function normalizeHandoffConfig(raw) {
   const src = isObject(raw) ? raw : {};
+  // The page each ticket's link opens, by key, where it is not the one its
+  // QA report names: a batch touches the home page, a product page and the
+  // about page, all on the one preview theme.
+  const pages = {};
+  if (isObject(src.pages)) {
+    for (const [key, page] of Object.entries(src.pages)) {
+      const text = str(page).trim();
+      if (text) pages[key] = text;
+    }
+  }
   return {
     status: str(src.status).trim(),
     assignee: str(src.assignee).trim(),
     previewUrl: str(src.previewUrl).trim(),
+    pages,
   };
 }
 
 export function setHandoffConfig(batch, raw, now) {
-  const next = normalizeHandoffConfig({ ...batch.handoffConfig, ...(isObject(raw) ? raw : {}) });
+  const given = isObject(raw) ? raw : {};
+  // Pages merge key by key, and an empty one goes back to the report's.
+  const pages = { ...(batch.handoffConfig?.pages ?? {}) };
+  if (isObject(given.pages)) {
+    for (const [key, page] of Object.entries(given.pages)) {
+      const text = str(page).trim();
+      if (text) pages[key] = text;
+      else delete pages[key];
+    }
+  }
+  const next = normalizeHandoffConfig({ ...batch.handoffConfig, ...given, pages });
   if (next.previewUrl && !/^https?:\/\//i.test(next.previewUrl)) {
     return { ok: false, error: "the preview URL must start with http:// or https://" };
   }
@@ -152,11 +173,49 @@ export function setHandoffConfig(batch, raw, now) {
   return { ok: true };
 }
 
+// The link one ticket's hand-off comment points at: the batch's preview URL
+// (the theme) opened on the ticket's own page. `{key}` in the URL becomes the
+// ticket's key. A page is a path ("/products/socks") or a full URL; either
+// way the theme URL's query - the preview theme id - comes along, and the
+// page's own query and hash win where they overlap. No page is the theme URL
+// as it is.
+export function previewUrlFor(template, key, page) {
+  const base = str(template).replaceAll("{key}", key);
+  const target = str(page).trim().replaceAll("{key}", key);
+  if (!target) return base;
+  let baseUrl = null;
+  try {
+    baseUrl = base ? new URL(base) : null;
+  } catch {
+    baseUrl = null;
+  }
+  let url;
+  try {
+    url = /^https?:\/\//i.test(target) ? new URL(target) : baseUrl ? new URL(target.startsWith("/") ? target : `/${target}`, baseUrl.origin) : null;
+  } catch {
+    url = null;
+  }
+  if (!url) return base;
+  if (baseUrl) {
+    for (const [name, value] of baseUrl.searchParams) {
+      if (!url.searchParams.has(name)) url.searchParams.set(name, value);
+    }
+  }
+  return url.toString();
+}
+
+// Which page a ticket's link opens: the one set for it on the hand-off,
+// else the one its QA report says it was checked on.
+export function handoffPageFor(batch, key) {
+  return batch.handoffConfig?.pages?.[key] || batch.ticketStates?.[key]?.qa?.page || "";
+}
+
 // What the hand-off will use: this batch's answer where it gave one, the
 // settings' where it did not.
 export function effectiveHandoff(config, settings) {
   const own = normalizeHandoffConfig(config);
   return {
+    pages: own.pages,
     status: own.status || String(settings?.["jira.qaStatus"] ?? "").trim() || "QA",
     assignee: own.assignee || String(settings?.["jira.qaAssignee"] ?? "").trim(),
     previewUrl: own.previewUrl || String(settings?.["jira.previewUrlTemplate"] ?? "").trim(),
@@ -369,6 +428,9 @@ export function newQaReport(raw, now) {
             at: now,
           }))
       : [],
+    // The page the ticket was checked on - a path or a full URL - which the
+    // hand-off opens on the preview theme.
+    page: str(raw?.page).trim(),
     // The user's own rendered report, referenced where it sits.
     reportPath: str(raw?.reportPath),
     at: now,
@@ -412,6 +474,7 @@ export function hasReportFields(raw) {
   if (!isObject(raw)) return false;
   if (QA_STATUSES.includes(raw.status)) return true;
   if (raw.before || raw.after) return true;
+  if (str(raw.page).trim()) return true;
   if (Array.isArray(raw.shots) && raw.shots.length > 0) return true;
   return REPORT_LISTS.some((name) => asList(raw[name]).length > 0);
 }
@@ -428,6 +491,7 @@ export function reviseQaReport(batch, key, raw, now) {
   merged.before = raw.before ?? prev?.before ?? null;
   merged.after = raw.after ?? prev?.after ?? null;
   merged.shots = Array.isArray(raw.shots) && raw.shots.length > 0 ? raw.shots : (prev?.shots ?? []);
+  merged.page = str(raw.page).trim() || prev?.page || "";
   merged.reportPath = prev?.reportPath ?? "";
   const next = newQaReport(merged, now);
   // Who wrote it and what prompted it, so the panel can say this is the QA

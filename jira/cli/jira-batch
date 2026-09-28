@@ -32,6 +32,7 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
            [--fix <text>]... [--steps <text>]... [--notes <text>]...
            [--files <path>]... [--before <image>] [--after <image>]
            [--shot <image>[:<caption>]]... [--report <path>]
+           [--page <path or url>]
       File the QA report for a ticket, before `done`. Repeat --problem,
       --fix, --steps, --notes and --files to build a list - one short
       bullet per idea reads better than one long sentence. --before and
@@ -41,6 +42,8 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
       caption, in the order given - a second viewport, a later step, a
       state that only shows on one route:
         --shot mobile.png:"Cart at 390px" --shot drawer.png:"Drawer open"
+      --page is the page the ticket is about (/products/socks, or a full
+      URL); the hand-off opens it on the preview theme.
   note <text>
       Anything worth recording against this cluster. Does not change a
       ticket's state.
@@ -55,6 +58,7 @@ Usage: jira-batch <verb> [KEY] [--flag value ...]
                   [--problem <text>]... [--fix <text>]... [--steps <text>]...
                   [--notes <text>]... [--files <path>]... [--before <image>]
                   [--after <image>] [--shot <image>[:<caption>]]...
+                  [--page <path or url>]
       A requested change is made in the worktree and NOT committed. With
       any of the report flags it also updates the ticket's QA report to the
       page as it is now, the way `qa` files one; a flag you leave out keeps

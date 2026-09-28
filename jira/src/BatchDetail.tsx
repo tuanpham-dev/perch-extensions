@@ -4,6 +4,7 @@
 // It sits under the ticket's own detail rather than replacing it, because
 // reviewing means reading both - the ticket says what was asked for, this
 // says what came back.
+import PageLinks from "./PageLinks";
 import { useEffect } from "react";
 import { clearSticky, useStickyState } from "./stickyState";
 import QaBlock from "./QaBlock";
@@ -111,9 +112,23 @@ export default function BatchDetail({
   // agent once there is one. The one shown first is whichever is acting on
   // the ticket now - QA while it is on the QA branch.
   const agents: AgentTarget[] = [];
-  if (cluster) agents.push({ id: cluster.id, label: "Cluster agent", available: Boolean(cluster.windowId) });
-  if (batch.qa) agents.push({ id: "qa", label: "QA agent", available: Boolean(batch.qa.windowId) });
+  // A stopped agent has no window left, but it did run: its view says the
+  // terminal is closed rather than that it never started.
+  if (cluster) {
+    agents.push({
+      id: cluster.id,
+      label: "Cluster agent",
+      available: Boolean(cluster.windowId),
+      started: cluster.state !== "pending" && cluster.state !== "starting",
+    });
+  }
+  if (batch.qa) agents.push({ id: "qa", label: "QA agent", available: Boolean(batch.qa.windowId), started: batch.qa.state !== "idle" });
   const preferredAgent = onQaBranch || !cluster ? "qa" : cluster.id;
+  // Whose dev server has this ticket's change: the QA agent's once the
+  // ticket is on its branch, the cluster's before that.
+  const pageAgent = onQaBranch ? (batch.qa ? "qa" : null) : (cluster?.id ?? null);
+  // The page it is about: set on the hand-off, else its QA report's.
+  const pagePathFor = batch.handoffConfig?.pages?.[issueKey] || ticket?.qa?.page || "";
 
   return (
     <section className="jira-bdetail">
@@ -220,6 +235,16 @@ export default function BatchDetail({
               lastFeedbackAt={ticket.feedback.at(-1)?.sentAt ?? null}
               onOpenShot={(which, opener) => onOpenShot(issueKey, which, opener)}
               onOpenReport={onOpenReport}
+              pageLink={
+                pagePathFor && pageAgent && (ticket.state === "review" || ticket.state === "done" || onQaBranch) ? (
+                  <PageLinks
+                    batchId={batch.id}
+                    agent={pageAgent}
+                    agentLabel={pageAgent === "qa" ? "QA agent" : "cluster agent"}
+                    page={pagePathFor}
+                  />
+                ) : undefined
+              }
             />
           ) : (
             (ticket.state === "review" || ticket.state === "failed") && (

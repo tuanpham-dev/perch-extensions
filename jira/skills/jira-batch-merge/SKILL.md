@@ -107,7 +107,8 @@ The ticket's QA report now describes a page that has moved, so update it in
 the same call: the fix you made, the steps to check it now, and fresh
 screenshots of what the change affects. Restate only what the change made
 wrong - a flag you leave out keeps the old report's value, so the problem
-statement and the before shot carry over unless they no longer hold:
+statement and the before shot carry over unless they no longer hold. If the
+change moved it to a different page, say so with `--page <path>`:
 
 ```sh
 jira-batch qa-fixing LIV-341 --what "hover image no longer resizes" \

@@ -66,6 +66,8 @@ import {
   markQaShipping,
   setHandoffConfig,
   effectiveHandoff,
+  previewUrlFor,
+  handoffPageFor,
   approveQa,
   excludeFromQa,
   markQaConflict,
@@ -1152,8 +1154,9 @@ test("a ticket accepted on the board reopens to review", () => {
 test("a batch's hand-off answers win over Settings, and an empty one falls back", () => {
   const batch = qaStarted("CAP-1");
   const settings = { "jira.qaStatus": "Ready for QA", "jira.qaAssignee": "Quinn QA", "jira.previewUrlTemplate": "https://shop.test/?preview_theme_id=1&k={key}" };
-  assert.deepEqual(batch.handoffConfig, { status: "", assignee: "", previewUrl: "" }, "a new batch has none of its own");
+  assert.deepEqual(batch.handoffConfig, { status: "", assignee: "", previewUrl: "", pages: {} }, "a new batch has none of its own");
   assert.deepEqual(effectiveHandoff(batch.handoffConfig, settings), {
+    pages: {},
     status: "Ready for QA",
     assignee: "Quinn QA",
     previewUrl: "https://shop.test/?preview_theme_id=1&k={key}",
@@ -1161,6 +1164,7 @@ test("a batch's hand-off answers win over Settings, and an empty one falls back"
 
   assert.equal(setHandoffConfig(batch, { status: " In QA ", previewUrl: "https://shop.test/?preview_theme_id=99" }, NOW + 4).ok, true);
   assert.deepEqual(effectiveHandoff(batch.handoffConfig, settings), {
+    pages: {},
     status: "In QA",
     assignee: "Quinn QA",
     previewUrl: "https://shop.test/?preview_theme_id=99",
@@ -1447,4 +1451,45 @@ test("notifications: a ticket needing you, a finished cluster, a verdict waiting
   assert.deepEqual(notificationsFor(doc(before), doc(stopped)).map((n: { title: string; body: string }) => [n.title, n.body]), [['"One" stopped', "the agent exited"]]);
 
   assert.deepEqual(notificationsFor(doc(before), doc(before)), [], "nothing changed, nothing sent");
+});
+
+test("each ticket's link opens its own page on the batch's preview theme", () => {
+  const theme = "https://shop.test/?preview_theme_id=99";
+  assert.equal(previewUrlFor(theme, "CAP-1", ""), theme, "no page is the theme as it is");
+  assert.equal(previewUrlFor(theme, "CAP-1", "/products/socks"), "https://shop.test/products/socks?preview_theme_id=99");
+  assert.equal(previewUrlFor(theme, "CAP-1", "pages/about"), "https://shop.test/pages/about?preview_theme_id=99", "a path without its slash");
+  assert.equal(
+    previewUrlFor(theme, "CAP-1", "/products/socks?variant=2#reviews"),
+    "https://shop.test/products/socks?variant=2&preview_theme_id=99#reviews",
+    "the page keeps its own query and hash",
+  );
+  assert.equal(
+    previewUrlFor(theme, "CAP-1", "https://other.test/cart?preview_theme_id=5"),
+    "https://other.test/cart?preview_theme_id=5",
+    "a full URL wins where the two overlap",
+  );
+  assert.equal(previewUrlFor("https://shop.test/?t={key}&again={key}", "CAP-7", ""), "https://shop.test/?t=CAP-7&again=CAP-7", "every {key}");
+  assert.equal(previewUrlFor("", "CAP-1", "/about"), "", "a path needs a theme to sit on");
+  assert.equal(previewUrlFor("", "CAP-1", "https://shop.test/about"), "https://shop.test/about");
+});
+
+test("a ticket's page comes from its QA report unless the hand-off sets one", () => {
+  const batch = qaStarted("CAP-1");
+  const cluster = batch.clusters[0];
+  recordQa(batch, cluster.id, "CAP-1", { status: "pass", page: " /products/socks " }, NOW + 1);
+  assert.equal(batch.ticketStates["CAP-1"].qa!.page, "/products/socks");
+  assert.equal(handoffPageFor(batch, "CAP-1"), "/products/socks");
+
+  assert.equal(setHandoffConfig(batch, { pages: { "CAP-1": "/pages/about" } }, NOW + 2).ok, true);
+  assert.equal(handoffPageFor(batch, "CAP-1"), "/pages/about", "set on the hand-off, it wins");
+  assert.equal(setHandoffConfig(batch, { status: "In QA" }, NOW + 3).ok, true);
+  assert.equal(batch.handoffConfig.pages["CAP-1"], "/pages/about", "saving another field keeps the pages");
+  assert.equal(setHandoffConfig(batch, { pages: { "CAP-1": "" } }, NOW + 4).ok, true);
+  assert.equal(handoffPageFor(batch, "CAP-1"), "/products/socks", "cleared, it is the report's again");
+
+  const revised = reviseQaReport(batch, "CAP-1", { fix: ["moved"] }, NOW + 5);
+  assert.equal(revised.ok, true);
+  assert.equal(batch.ticketStates["CAP-1"].qa!.page, "/products/socks", "a revision that does not restate it keeps it");
+  reviseQaReport(batch, "CAP-1", { page: "/collections/all" }, NOW + 6);
+  assert.equal(batch.ticketStates["CAP-1"].qa!.page, "/collections/all");
 });

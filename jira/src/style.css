@@ -2155,8 +2155,11 @@
   order: 1;
   flex: 0 0 100%;
   display: flex;
+  /* Four pickers at 220px each outgrow a board squeezed by the detail pane;
+     past that they flow onto a second line rather than off the edge. */
+  flex-wrap: wrap;
   align-items: flex-start;
-  gap: 18px;
+  gap: 10px 18px;
   padding-top: 2px;
 }
 
@@ -2488,7 +2491,9 @@
    actions off the row. */
 .jira-bboard-bar .jira-bchips {
   flex: 1 1 auto;
-  min-width: 0;
+  /* Room for at least the start of one chip: past this the bar moves its
+     lesser actions into the More menu rather than squeezing the chips away. */
+  min-width: 120px;
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: none;
@@ -2540,6 +2545,8 @@
   color: var(--fg, #ccc);
   font: inherit;
   max-width: 260px;
+  /* Lets a long name shrink to its ellipsis rather than the row clipping it. */
+  min-width: 0;
 }
 
 .jira-bchip.off {
@@ -3423,7 +3430,8 @@
 }
 .jira-handoff-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
 .jira-handoff-rows { list-style: none; margin: 0; padding: 0; }
-.jira-handoff-rows li { display: grid; grid-template-columns: 5.5rem 1.2rem 1fr auto; gap: 6px; padding: 3px 0; align-items: baseline; }
+.jira-handoff-rows li { display: grid; grid-template-columns: 5.5rem 1.2rem minmax(0, 1fr) minmax(8rem, 16rem) auto auto; gap: 6px 10px; padding: 3px 0; align-items: center; }
+.jira-handoff-page { height: 22px; font-size: 12px; min-width: 0; align-self: center; }
 .jira-handoff-mark { display: flex; align-items: center; justify-content: center; align-self: center; }
 .jira-handoff-rows li.ok .jira-handoff-mark { color: var(--good, #5cc48b); }
 .jira-handoff-rows li.failed .jira-handoff-mark, .jira-handoff-rows li.failed .jira-handoff-text { color: var(--error, #f48771); }
@@ -3947,3 +3955,15 @@
 .jira-aterm-options .jira-selaction { text-align: left; white-space: normal; }
 .jira-aterm-reply { display: flex; gap: 6px; }
 .jira-aterm-reply .jira-input { flex: 1; min-width: 0; }
+
+/* A ticket's page as a link to its agent's dev server; any further
+   server the agent runs follows as a small port link. */
+.jira-pagelink {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.jira-pagelink-more {
+  font-size: 11px;
+}

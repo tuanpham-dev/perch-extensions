@@ -71,6 +71,8 @@ export interface QaReport {
   // the panel keeps them after the worktree is gone.
   before: QaImage | null;
   after: QaImage | null;
+  // The page it was checked on: a path, or a full URL. Absent on older reports.
+  page?: string;
   // Everything past the pair, in the order it was reported. Absent on a
   // report filed before this existed, hence the optional.
   shots?: QaShot[];
@@ -174,6 +176,9 @@ export interface HandoffConfig {
   status: string;
   assignee: string;
   previewUrl: string;
+  // The page each ticket's link opens, by key, where it is not the one its
+  // QA report names. Merged key by key on save; an empty one is cleared.
+  pages?: Record<string, string>;
 }
 
 // GET /batches/:id/qa/handoff-config.
@@ -181,6 +186,8 @@ export interface HandoffConfigResponse {
   config: HandoffConfig;
   // Settings' answers for this batch's repo, which fill any empty field.
   defaults: HandoffConfig;
+  // Everyone assignable in the batch's projects, by name.
+  assignees?: { accountId: string; displayName: string }[];
 }
 
 export interface Batch {

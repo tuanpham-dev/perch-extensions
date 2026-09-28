@@ -4,7 +4,7 @@
 // The pictures are thumbnails on purpose - a reviewer scans the words first
 // and opens an image when a claim needs checking. Clicking one hands off to
 // the tab's viewer, which is where zooming lives.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import Icon from "./Icon";
 import type { QaReport, QaStatus } from "./batchTypes";
 
@@ -24,6 +24,9 @@ export interface QaBlockProps {
   // "before", "after", or "shot-<n>" for one of the extras.
   onOpenShot: (which: string, opener: HTMLElement | null) => void;
   onOpenReport: (path: string) => void;
+  // The page as a link to the server that has the change, in place of the
+  // report's plain page text. Only the current report gets one.
+  pageLink?: ReactNode;
 }
 
 const STATUS_LABEL: Record<QaStatus, string> = {
@@ -52,7 +55,7 @@ function when(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function QaBlock({ report, history, issueKey, batchId, lastFeedbackAt, historical = false, onOpenShot, onOpenReport }: QaBlockProps) {
+export default function QaBlock({ report, history, issueKey, batchId, lastFeedbackAt, historical = false, onOpenShot, onOpenReport, pageLink }: QaBlockProps) {
   const stale = !historical && Boolean(lastFeedbackAt && report.at < lastFeedbackAt);
   const [showHistory, setShowHistory] = useState(false);
   // The report's time rides on the URL: for the current report it only makes
@@ -93,6 +96,12 @@ export default function QaBlock({ report, history, issueKey, batchId, lastFeedba
       {report.source === "qa-agent" && report.change && (
         <p className="jira-qa-revised" title="The change you asked for on the QA branch">
           After: <span>{report.change}</span>
+        </p>
+      )}
+
+      {(pageLink || report.page) && (
+        <p className="jira-qa-revised" title="The page it was checked on, which the hand-off opens on the preview theme">
+          Page: {pageLink ?? <span>{report.page}</span>}
         </p>
       )}
 

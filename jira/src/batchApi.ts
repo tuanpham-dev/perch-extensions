@@ -155,7 +155,7 @@ export function qaHandoff(
   return apiPost(`/batches/${encodeURIComponent(id)}/qa/handoff`, config ? { config } : {});
 }
 
-export function getHandoffPreview(id: string): Promise<{ tickets: { key: string; url: string; comment: string }[] }> {
+export function getHandoffPreview(id: string): Promise<{ tickets: { key: string; url: string; page: string; reportPage: string; comment: string }[] }> {
   return apiGet(`/batches/${encodeURIComponent(id)}/qa/handoff-preview`);
 }
 
@@ -319,4 +319,30 @@ export function getReviewTerminal(key: string, task: string, lines = 300): Promi
 
 export function sendReviewKey(key: string, task: string, action: AgentKeyAction, expect: string): Promise<{ ok: boolean }> {
   return apiPost(`/reviews/${encodeURIComponent(key)}/agent-key`, { agent: task, action, expect });
+}
+
+// The ports listening in an agent's terminal session, and the QA agent's
+// own preview URL. `agent` is a cluster id or "qa".
+export interface AgentPortsResponse {
+  agent: string;
+  session: string;
+  ports: { port: number; process: string }[];
+  previewUrl: string;
+}
+
+export function getAgentPorts(id: string, agent: string): Promise<AgentPortsResponse> {
+  return apiGet<AgentPortsResponse>(`/batches/${encodeURIComponent(id)}/ports?agent=${encodeURIComponent(agent)}`);
+}
+
+// Perch's port proxy domain, if one is configured (core /api/proxy-config),
+// fetched once per page.
+let proxyDomain: Promise<string | null> | null = null;
+export function getProxyDomain(): Promise<string | null> {
+  if (!proxyDomain) {
+    proxyDomain = fetch("/api/proxy-config")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => (typeof body?.domain === "string" && body.domain ? body.domain : null))
+      .catch(() => null);
+  }
+  return proxyDomain;
 }

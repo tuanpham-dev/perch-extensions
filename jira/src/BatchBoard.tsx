@@ -8,7 +8,7 @@
 // same thing in two places.
 import HandoffPanel from "./HandoffPanel";
 import KeyLink from "./KeyLink";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Icon from "./Icon";
 import { clusterChips, columns, feedbackPending, missingQa, sinceLabel, skillsLabel, qaColumns, qaQueue, shipBlockers, handoffPending } from "./batchViewModel";
 import type { Batch, BatchSummary, ClusterAction, ClusterStateName, HandoffConfig } from "./batchTypes";
@@ -152,6 +152,119 @@ export default function BatchBoard({
     return out;
   });
 
+  // The row's lesser actions. They sit on the bar while it has room; once
+  // the buttons would run past its edge (the detail pane open beside a
+  // narrow board, say) they move into the More menu instead, so nothing is
+  // cut off and the bar stays one row.
+  const secondary: { key: string; label: string; title: string; disabled: boolean; onClick: () => void }[] = [];
+  if (onReview) {
+    secondary.push({ key: "clusters", label: "Clusters", title: "Name, move and split the clusters that have not started yet", disabled: busy, onClick: onReview });
+  }
+  secondary.push({ key: "add", label: "Add tickets...", title: "Add more tickets to this batch", disabled: busy, onClick: onPlanMore });
+  if (!qaLive) {
+    secondary.push({
+      key: "start-qa",
+      label: qa ? "Start QA again" : "Start QA",
+      // A run that exists can always be started again: its agent may have
+      // died with every reviewed ticket already on the branch.
+      disabled: busy || (queue.length === 0 && !qa),
+      title:
+        qa && queue.length === 0
+          ? `Start the QA agent again on ${qa.branch}${qa.lastError ? ` (last time: ${qa.lastError})` : ""}`
+          : queue.length === 0
+            ? "Nothing is in review yet - there would be nothing to merge"
+            : qa?.lastError
+              ? `Start the QA agent again (last time: ${qa.lastError})`
+              : `Cut a QA branch and start an agent to merge the ${queue.length} reviewed ticket${queue.length === 1 ? "" : "s"} onto it`,
+      onClick: onStartQa,
+    });
+  }
+  if (qaLive) {
+    secondary.push({ key: "qa-terminal", label: "QA terminal", title: `Open the QA agent's terminal (${qa.branch})`, disabled: busy || !qa.sessionName, onClick: onOpenQaTerminal });
+  }
+  if (qaLive && qa.state === "shipped") {
+    secondary.push({
+      key: "next-round",
+      label: "Start another QA round",
+      disabled: busy || queue.length === 0,
+      title:
+        queue.length === 0
+          ? "Nothing new is reviewed - another round would have nothing to merge"
+          : `Cut a fresh QA branch from production for the ${queue.length} ticket${queue.length === 1 ? "" : "s"} reviewed since`,
+      onClick: onStartQa,
+    });
+  }
+
+  // The main actions, which leave the row only when even without the lesser
+  // ones it would not fit.
+  const primary: typeof secondary = [];
+  if (qaLive && qa.state === "running") {
+    primary.push({
+      key: "ship",
+      label: qa.shipping ? "Merging to production..." : "Merge to production",
+      disabled: busy || Boolean(qa.shipping) || blockers.length > 0 || approvedCount === 0,
+      title: qa.shipping
+        ? "The QA agent is merging into production - this clears when it reports shipped or stops with a note"
+        : blockers.length > 0
+          ? shipBlockMessage(batch, blockers)
+          : approvedCount === 0
+            ? "Nothing has been approved yet"
+            : `Merge ${qa.branch} into ${qa.productionBranch}. Nothing is pushed.`,
+      onClick: onShipQa,
+    });
+  }
+  if (qa?.state === "shipped" || rounds.length > 0) {
+    primary.push({
+      key: "handoff",
+      label: `Hand off to Jira${owed.length > 0 ? ` (${owed.length})` : ""}`,
+      disabled: busy || owed.length === 0,
+      title: owed.length === 0 ? "Every approved ticket has been handed off" : `Move ${owed.length} ticket${owed.length === 1 ? "" : "s"} to QA in Jira, assign and comment`,
+      onClick: onHandoff,
+    });
+  }
+  primary.push({
+    key: "feedback",
+    label: `Send feedback${pending.tickets > 0 ? ` (${pending.tickets})` : ""}`,
+    disabled: busy || pending.tickets === 0,
+    title:
+      pending.tickets === 0
+        ? "Write feedback on a reviewed ticket first"
+        : `Send ${pending.tickets} ticket${pending.tickets === 1 ? "" : "s"} back to ${pending.clusters} agent${pending.clusters === 1 ? "" : "s"}`,
+    onClick: onSendFeedback,
+  });
+
+  // How much of the row has moved into the More menu: 0 nothing, 1 the
+  // lesser actions, 2 every action. One step at a time, as the row overflows.
+  const barRef = useRef<HTMLDivElement>(null);
+  const [folded, setFolded] = useState(0);
+  // The bar's width at which each step last overflowed: a step comes back
+  // only once the bar is at least that wide again, so it doesn't flip back
+  // and forth at the edge.
+  const neededWidth = useRef<number[]>([]);
+  const rowKey = [...secondary, ...primary].map((entry) => entry.label).join("|");
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const check = () => {
+      if (folded < 2 && bar.scrollWidth > bar.clientWidth + 1) {
+        neededWidth.current[folded] = bar.scrollWidth;
+        setFolded(folded + 1);
+      } else if (folded > 0 && bar.clientWidth >= (neededWidth.current[folded - 1] ?? Infinity)) {
+        setFolded(folded - 1);
+      }
+    };
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [folded, rowKey, chips.length]);
+  // A different set of buttons needs measuring afresh.
+  useEffect(() => {
+    neededWidth.current = [];
+    setFolded(0);
+  }, [rowKey]);
+  const compact = folded > 0;
+
   const clusterMenu = (id: string, actions: ClusterAction[], x: number, y: number) => {
     if (!showMenu) return;
     const cluster = batch.clusters.find((entry) => entry.id === id);
@@ -176,7 +289,7 @@ export default function BatchBoard({
 
   return (
     <div className="jira-batchboard">
-      <div className="jira-bboard-bar">
+      <div className="jira-bboard-bar" ref={barRef}>
         <label className="jira-bboard-pick">
           <span>Batch</span>
           <select value={batch.id} disabled={busy} onChange={(e) => onPickBatch(e.target.value)}>
@@ -277,101 +390,21 @@ export default function BatchBoard({
 
         <span className="jira-bboard-spacer" />
 
-        {onReview && (
-          <button
-            className="jira-selaction"
-            disabled={busy}
-            title="Name, move and split the clusters that have not started yet"
-            onClick={onReview}
-          >
-            Clusters
-          </button>
-        )}
-        <button className="jira-selaction" disabled={busy} onClick={onPlanMore} title="Add more tickets to this batch">
-          Add tickets...
-        </button>
-        {!qaLive && (
-          <button
-            className="jira-selaction"
-            // A run that exists can always be started again: its agent may have
-            // died with every reviewed ticket already on the branch.
-            disabled={busy || (queue.length === 0 && !qa)}
-            title={
-              qa && queue.length === 0
-                ? `Start the QA agent again on ${qa.branch}${qa.lastError ? ` (last time: ${qa.lastError})` : ""}`
-                : queue.length === 0
-                ? "Nothing is in review yet - there would be nothing to merge"
-                : qa?.lastError
-                  ? `Start the QA agent again (last time: ${qa.lastError})`
-                  : `Cut a QA branch and start an agent to merge the ${queue.length} reviewed ticket${queue.length === 1 ? "" : "s"} onto it`
-            }
-            onClick={onStartQa}
-          >
-            {qa ? "Start QA again" : "Start QA"}
-          </button>
-        )}
-        {qaLive && (
-          <button className="jira-selaction" disabled={busy || !qa.sessionName} title={`Open the QA agent's terminal (${qa.branch})`} onClick={onOpenQaTerminal}>
-            QA terminal
-          </button>
-        )}
-        {qaLive && qa.state === "running" && (
-          <button
-            className="jira-selaction primary"
-            disabled={busy || Boolean(qa.shipping) || blockers.length > 0 || approvedCount === 0}
-            title={
-              qa.shipping
-                ? "The QA agent is merging into production - this clears when it reports shipped or stops with a note"
-                : blockers.length > 0
-                ? shipBlockMessage(batch, blockers)
-                : approvedCount === 0
-                  ? "Nothing has been approved yet"
-                  : `Merge ${qa.branch} into ${qa.productionBranch}. Nothing is pushed.`
-            }
-            onClick={onShipQa}
-          >
-            {qa.shipping ? "Merging to production..." : "Merge to production"}
-          </button>
-        )}
-        {qaLive && qa.state === "shipped" && (
-          <button
-            className="jira-selaction"
-            disabled={busy || queue.length === 0}
-            title={
-              queue.length === 0
-                ? "Nothing new is reviewed - another round would have nothing to merge"
-                : `Cut a fresh QA branch from production for the ${queue.length} ticket${queue.length === 1 ? "" : "s"} reviewed since`
-            }
-            onClick={onStartQa}
-          >
-            Start another QA round
-          </button>
-        )}
-        {(qa?.state === "shipped" || rounds.length > 0) && (
-          <button
-            className="jira-selaction primary"
-            disabled={busy || owed.length === 0}
-            title={owed.length === 0 ? "Every approved ticket has been handed off" : `Move ${owed.length} ticket${owed.length === 1 ? "" : "s"} to QA in Jira, assign and comment`}
-            onClick={onHandoff}
-          >
-            Hand off to Jira{owed.length > 0 ? ` (${owed.length})` : ""}
-          </button>
-        )}
-        <button
-          className="jira-selaction primary"
-          disabled={busy || pending.tickets === 0}
-          title={
-            pending.tickets === 0
-              ? "Write feedback on a reviewed ticket first"
-              : `Send ${pending.tickets} ticket${pending.tickets === 1 ? "" : "s"} back to ${pending.clusters} agent${pending.clusters === 1 ? "" : "s"}`
-          }
-          onClick={onSendFeedback}
-        >
-          Send feedback{pending.tickets > 0 ? ` (${pending.tickets})` : ""}
-        </button>
+        {!compact &&
+          secondary.map((entry) => (
+            <button key={entry.key} className="jira-selaction" disabled={entry.disabled} title={entry.title} onClick={entry.onClick}>
+              {entry.label}
+            </button>
+          ))}
+        {folded < 2 &&
+          primary.map((entry) => (
+            <button key={entry.key} className="jira-selaction primary" disabled={entry.disabled} title={entry.title} onClick={entry.onClick}>
+              {entry.label}
+            </button>
+          ))}
         <button
           className="icon-button"
-          title="More"
+          title={compact ? "More - the actions that don't fit on this row are here" : "More"}
           disabled={busy}
           onClick={(e) => {
             if (!showMenu) return;
@@ -380,7 +413,12 @@ export default function BatchBoard({
             const box = e.currentTarget.getBoundingClientRect();
             const x = e.clientX || box.left;
             const y = e.clientY || box.bottom;
+            const moved: MenuItem[] = [...(folded >= 2 ? primary : []), ...(folded >= 1 ? secondary : [])]
+              .filter((entry) => !entry.disabled)
+              .map((entry) => ({ label: entry.label, onClick: entry.onClick }));
             showMenu(x, y, [
+              ...moved,
+              ...(moved.length > 0 ? [{ label: "", onClick: () => {}, separator: true }] : []),
               { label: "Rename this batch...", onClick: onRenameBatch },
               { label: "Archive this batch", onClick: onArchive },
               // Only when there is something to show: an item whose click

@@ -34,6 +34,9 @@ export interface AgentTarget {
   // Whether the agent has a terminal at all; one never started is listed
   // but not selectable.
   available: boolean;
+  // Whether it ever ran: one that did and has no terminal now is closed,
+  // not unstarted.
+  started?: boolean;
 }
 
 // Where the terminal is read from and answers are sent: a batch's agents or
@@ -160,7 +163,7 @@ export default function AgentTerminal({ source, agents, preferred, onOpenTermina
                 aria-selected={a.id === agent}
                 className={`jira-aterm-agent${a.id === agent ? " active" : ""}`}
                 disabled={!a.available}
-                title={a.available ? `Show the ${a.label} terminal` : `The ${a.label} has no terminal`}
+                title={a.available ? `Show the ${a.label} terminal` : a.started ? `The ${a.label}'s terminal is closed` : `The ${a.label} has not been started`}
                 onClick={() => setAgent(a.id)}
               >
                 {a.label}
@@ -185,7 +188,9 @@ export default function AgentTerminal({ source, agents, preferred, onOpenTermina
         )}
       </div>
       {open && error && <div className="jira-error">{error}</div>}
-      {open && !error && !current?.available && <div className="jira-qav-hint">This agent has not been started.</div>}
+      {open && !error && !current?.available && (
+        <div className="jira-qav-hint">{current?.started ? "The agent's terminal is closed." : "This agent has not been started."}</div>
+      )}
       {open && !error && current?.available && shown?.closed && <div className="jira-qav-hint">The agent's terminal is closed.</div>}
       {open && current?.available && (!shown || !shown.closed) && (
         <pre ref={preRef} className="jira-aterm-screen" onScroll={onScroll}>

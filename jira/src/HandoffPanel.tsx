@@ -20,16 +20,16 @@ import { isShippedTicket } from "./batchViewModel";
 import type { Facets } from "./types";
 import { useStickyState } from "./stickyState";
 
-type Field = keyof HandoffConfig;
+type Field = "status" | "assignee" | "previewUrl";
 
 const FIELDS: { field: Field; label: string; empty: string; hint: string }[] = [
   { field: "status", label: "Status", empty: "QA", hint: "The Jira status the tickets move to, matched by name" },
-  { field: "assignee", label: "Assignee", empty: "unchanged", hint: "A display name, an email or an account id. Empty everywhere leaves the assignee alone" },
+  { field: "assignee", label: "Assignee", empty: "unchanged", hint: "Who the tickets are assigned to. From Settings leaves it to Settings, and with nothing there the assignee is left alone" },
   {
     field: "previewUrl",
     label: "Preview",
     empty: "no link",
-    hint: "The preview theme the comment points at. {key} becomes the ticket key",
+    hint: "The preview theme the comment points at. Each ticket opens it on its own page, set in its row below",
   },
 ];
 
@@ -50,16 +50,17 @@ function doneText(handoff: { status?: string; assignee?: string }): string {
 export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPanelProps) {
   const saved: HandoffConfig = batch.handoffConfig ?? { status: "", assignee: "", previewUrl: "" };
   const [defaults, setDefaults] = useState<HandoffConfig | null>(null);
+  const [people, setPeople] = useState<{ accountId: string; displayName: string }[]>([]);
   // The comment each ticket will get, read before it goes out under your
   // name. Refetched when the batch changes, since the note and the preview
   // URL feed it.
-  const [preview, setPreview] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<Record<string, { comment: string; url: string; reportPage: string }>>({});
   const [open, setOpen] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     getHandoffPreview(batch.id)
       .then((res) => {
-        if (!cancelled) setPreview(Object.fromEntries(res.tickets.map((ticket) => [ticket.key, ticket.comment])));
+        if (!cancelled) setPreview(Object.fromEntries(res.tickets.map((ticket) => [ticket.key, { comment: ticket.comment, url: ticket.url, reportPage: ticket.reportPage }])));
       })
       .catch(() => {
         // No preview is not a reason to block the hand-off itself.
@@ -71,6 +72,18 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
   // What is being typed, per field, until it is saved on blur. Kept outside
   // the component so leaving the tab mid-edit loses nothing.
   const [edits, setEdits] = useStickyState<Partial<HandoffConfig>>(`handoff:${batch.id}`, {});
+  // Each ticket's page as it is being typed, the same way.
+  const [pageEdits, setPageEdits] = useStickyState<Record<string, string>>(`handoff-pages:${batch.id}`, {});
+  const savedPages = batch.handoffConfig?.pages ?? {};
+  const pageOf = (key: string) => pageEdits[key] ?? savedPages[key] ?? "";
+  const commitPage = (key: string) => {
+    const value = pageEdits[key];
+    if (value === undefined) return;
+    if (value.trim() !== (savedPages[key] ?? "")) onSave({ pages: { [key]: value.trim() } });
+    const rest = { ...pageEdits };
+    delete rest[key];
+    setPageEdits(rest);
+  };
 
   // Edits the server now holds are no longer edits.
   useEffect(() => {
@@ -85,7 +98,9 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
     let cancelled = false;
     getHandoffConfig(batch.id)
       .then((res) => {
-        if (!cancelled) setDefaults(res.defaults);
+        if (cancelled) return;
+        setDefaults(res.defaults);
+        setPeople(res.assignees ?? []);
       })
       .catch(() => {
         // Without them the placeholders just say less.
@@ -116,7 +131,6 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
 
   const suggestions: Partial<Record<Field, string[]>> = {
     status: facets?.statuses.map((s) => s.name) ?? [],
-    assignee: facets?.assignees.map((u) => u.displayName) ?? [],
   };
 
   return (
@@ -132,6 +146,34 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
         {FIELDS.map(({ field, label, empty, hint }) => {
           const fallback = defaults?.[field] || empty;
           const listId = suggestions[field]?.length ? `jira-handoff-${batch.id}-${field}` : undefined;
+          if (field === "assignee") {
+            const value = saved.assignee;
+            // Saved before there was a list (a name typed in), or someone
+            // Jira no longer lists: kept as an option so the select doesn't
+            // show a choice that isn't the one saved.
+            const known = value === "" || people.some((person) => person.accountId === value);
+            return (
+              <label key={field} className="jira-handoff-field" title={hint}>
+                <span className="jira-handoff-label">{label}</span>
+                <select
+                  className="jira-input"
+                  value={value}
+                  disabled={busy}
+                  onChange={(e) => {
+                    if (e.target.value !== saved.assignee) onSave({ assignee: e.target.value });
+                  }}
+                >
+                  <option value="">{`From Settings: ${fallback}`}</option>
+                  {!known && <option value={value}>{value}</option>}
+                  {people.map((person) => (
+                    <option key={person.accountId} value={person.accountId}>
+                      {person.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            );
+          }
           return (
             <label key={field} className="jira-handoff-field" title={hint}>
               <span className="jira-handoff-label">{label}</span>
@@ -170,6 +212,27 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
             <span className="jira-handoff-text">
               {row.handoff ? (row.handoff.ok ? doneText(row.handoff) : row.handoff.error) : "not yet"}
             </span>
+            <input
+              className="jira-input jira-handoff-page"
+              value={pageOf(row.key)}
+              placeholder={preview[row.key]?.reportPage ? `From QA report: ${preview[row.key].reportPage}` : "Page, e.g. /products/..."}
+              title="The page this ticket's link opens on the preview theme: a path like /pages/about, or a full URL. Empty takes the page its QA report names, or the theme's home page"
+              aria-label={`Page for ${row.key}`}
+              disabled={busy || Boolean(row.handoff?.ok)}
+              spellCheck={false}
+              onChange={(e) => setPageEdits({ ...pageEdits, [row.key]: e.target.value })}
+              onBlur={() => commitPage(row.key)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+            {preview[row.key]?.url ? (
+              <a className="jira-linkish" href={preview[row.key].url} target="_blank" rel="noreferrer" title={preview[row.key].url}>
+                Preview
+              </a>
+            ) : (
+              <span />
+            )}
             {preview[row.key] && (
               <button
                 className="jira-linkish"
@@ -180,7 +243,7 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
                 {open === row.key ? "Hide comment" : "Comment"}
               </button>
             )}
-            {open === row.key && preview[row.key] && <pre className="jira-handoff-preview">{preview[row.key]}</pre>}
+            {open === row.key && preview[row.key] && <pre className="jira-handoff-preview">{preview[row.key].comment}</pre>}
           </li>
         ))}
       </ul>

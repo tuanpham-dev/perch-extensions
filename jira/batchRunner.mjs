@@ -783,6 +783,15 @@ export function createBatchRunner({
           shellWatch.forget(id);
           await store.update((d) => markQaFailed(d.batches[batch.id], reason, Date.now()));
         }
+      } else if (batch.qa && batch.qa.state !== "running" && batch.qa.awaiting && batch.qa.windowId) {
+        // Past running (shipped, say) nothing marks the run failed, but a
+        // prompt it was stuck on must not outlive the agent: once the window
+        // is gone or back at a shell, nothing is waiting on you there.
+        const id = batch.qa.windowId;
+        if (!live.has(id) || shellWatch.observe(id, live.get(id), now)) {
+          shellWatch.forget(id);
+          await store.update((d) => qaSeen(d.batches[batch.id], Date.now()));
+        }
       }
       for (const cluster of batch.clusters) {
         if (cluster.state !== "running" || !cluster.windowId) continue;
