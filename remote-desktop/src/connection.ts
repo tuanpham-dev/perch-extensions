@@ -15,6 +15,8 @@ export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 export interface ConnectionHandlers {
   requestedSize(): { width: number; height: number };
   pixelRatio(): number;
+  /** Formats this viewer's decoder reads, best first. */
+  codecs(): string[];
   onHello(hello: ServerHello): void;
   onFrame(frame: ParsedFrame): void;
   onMessage(msg: ServerMsg): void;
@@ -101,6 +103,7 @@ export class Connection {
         width: size.width,
         height: size.height,
         pixelRatio: this.handlers.pixelRatio(),
+        codecs: this.handlers.codecs(),
       });
     };
     ws.onmessage = (e: MessageEvent) => this.onMessage(e.data);
@@ -171,7 +174,7 @@ export class Connection {
         rttMs: this.stats.rttMs,
         gaps: this.gapsTotal,
       };
-      this.send({ t: "stats", fps: this.stats.fps, decodeMs: this.stats.decodeMs, gaps: this.gapsTotal });
+      this.send({ t: "stats", fps: this.stats.fps, decodeMs: this.stats.decodeMs, gaps: this.gapsTotal, kbps: this.stats.kbps });
       this.send({ t: "ping", seq: ++this.pingSeq, sent: now });
       this.windowFrames = 0;
       this.windowBytes = 0;

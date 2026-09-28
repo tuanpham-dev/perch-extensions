@@ -1,17 +1,20 @@
-// H.264 decoding, one stream per tile: WebCodecs (hardware where the
-// browser has it) or the bundled tinyh264 worker (software, constrained
-// baseline) when WebCodecs is missing or the user forces it. A frame no
-// larger than one encoder takes has a single tile covering it; a larger
-// display arrives as a grid, and every tile keeps its own decoder.
-import { H264_CODEC_STRING, splitNalUnits, type FrameTile, type ParsedFrame, type TileRect } from "./wire";
+// Decoding, one stream per tile: WebCodecs (hardware where the browser has
+// it; AV1 and H.264) or the bundled tinyh264 worker (software, H.264
+// constrained baseline only) when WebCodecs is missing or the user forces
+// it. A frame no larger than one encoder takes has a single tile covering
+// it; a larger display arrives as a grid, and every tile keeps its own
+// decoder.
+import { FORMATS, splitNalUnits, type FrameTile, type ParsedFrame, type TileRect } from "./wire";
 
 export type DecodedPicture = (
   | { kind: "video"; frame: VideoFrame }
   | { kind: "i420"; data: Uint8Array; codedWidth: number; codedHeight: number; width: number; height: number }
 ) & { rect: TileRect };
 
+export type DecoderKind = "webcodecs" | "wasm";
+
 export interface Decoder {
-  readonly kind: "webcodecs" | "wasm";
+  readonly kind: DecoderKind;
   decode(frame: ParsedFrame): void;
   /** Forget every tile's state so the next keyframes start fresh. */
   reset(): void;
@@ -19,7 +22,11 @@ export interface Decoder {
 }
 
 export interface DecoderOptions {
-  forceWasm: boolean;
+  kind: DecoderKind;
+  /** The server's codec string for the current stream (WebCodecs only),
+   * read whenever a tile's decoder is configured: it arrives with the
+   * server's hello, and the decoder is reset on every hello. */
+  codec(): string;
   workerUrl: string;
   onPicture(picture: DecodedPicture, decodeMs: number): void;
   onNeedKeyframe(): void;
@@ -31,21 +38,30 @@ interface TileDecoder {
 }
 
 export async function createDecoder(opts: DecoderOptions): Promise<Decoder> {
-  if (!opts.forceWasm && (await webCodecsSupported())) {
+  if (opts.kind === "webcodecs") {
     return new TiledDecoder("webcodecs", (rect) => new WebCodecsTile(rect, opts), () => {});
   }
   const router = await WasmRouter.start(opts);
   return new TiledDecoder("wasm", (rect) => router.tile(rect), () => router.close());
 }
 
-async function webCodecsSupported(): Promise<boolean> {
-  if (typeof VideoDecoder === "undefined" || typeof EncodedVideoChunk === "undefined") return false;
-  try {
-    const support = await VideoDecoder.isConfigSupported({ codec: H264_CODEC_STRING });
-    return support.supported === true;
-  } catch {
-    return false;
+/** Which decoder this browser uses and the formats it decodes, best first:
+ * every format WebCodecs says it supports, or constrained baseline alone
+ * for the software decoder. */
+export async function probeFormats(forceWasm: boolean): Promise<{ kind: DecoderKind; codecs: string[] }> {
+  if (!forceWasm && typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined") {
+    const codecs: string[] = [];
+    for (const f of FORMATS) {
+      try {
+        const support = await VideoDecoder.isConfigSupported({ codec: f.codec, optimizeForLatency: true });
+        if (support.supported === true) codecs.push(f.name);
+      } catch {
+        // not supported here
+      }
+    }
+    if (codecs.length > 0) return { kind: "webcodecs", codecs };
   }
+  return { kind: "wasm", codecs: ["h264-baseline"] };
 }
 
 const rectKey = (r: TileRect) => `${r.x},${r.y},${r.w},${r.h}`;
@@ -55,7 +71,7 @@ class TiledDecoder implements Decoder {
   private frameSize = "";
 
   constructor(
-    readonly kind: "webcodecs" | "wasm",
+    readonly kind: DecoderKind,
     private readonly make: (rect: TileRect) => TileDecoder,
     private readonly onClose: () => void,
   ) {}
@@ -121,7 +137,7 @@ class WebCodecsTile implements TileDecoder {
       },
     });
     decoder.configure({
-      codec: H264_CODEC_STRING,
+      codec: this.opts.codec(),
       optimizeForLatency: true,
       // The server converts BGRX to full-swing BT.601 without writing VUI
       // into the stream, so tell the decoder rather than let it assume

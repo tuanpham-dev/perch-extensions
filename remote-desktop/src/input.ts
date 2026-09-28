@@ -10,6 +10,9 @@ export interface InputTarget {
   /** Canvas client coordinates to remote pixels; null when unknown. */
   toRemote(clientX: number, clientY: number): { x: number; y: number } | null;
   onClipboardTruncated(): void;
+  /** True while another element (the phone keyboard's field) must keep
+   * focus when the canvas is tapped. */
+  keepFocus?(): boolean;
 }
 
 // Wheel notches: pixels per remote scroll step, with line and page deltas
@@ -172,7 +175,7 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
   };
 
   const onPointerDown = (e: PointerEvent) => {
-    canvas.focus({ preventScroll: true });
+    if (!target.keepFocus?.()) canvas.focus({ preventScroll: true });
     const button = xButton(e.button);
     if (button === null) return;
     e.preventDefault();

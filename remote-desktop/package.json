@@ -2,7 +2,7 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Remote Desktop",
   "description": "A Linux desktop streamed into a tab as low-latency H.264 video with full keyboard, mouse, clipboard and cursor control; the desktop follows the tab's size. Powered by QuicDesk, whose server ships in this package for Linux x86_64 and arm64.",
   "icon": "./icon.svg",
@@ -18,8 +18,8 @@
           "type": "string",
           "default": "managed",
           "enum": ["managed", "existing"],
-          "enumItemLabels": ["Managed display (Xvfb + desktop session)", "Existing display"],
-          "description": "Managed: start a virtual display (Xvfb) and a desktop session on it, and let the desktop follow the tab's size. Existing: attach to a display that is already running, such as :0 on a desktop machine; input goes to that real screen and its size is never changed. Takes effect on the next Start."
+          "enumItemLabels": ["Managed display (virtual X server + desktop session)", "Existing display"],
+          "description": "Managed: start a virtual display (Xvfb, or Xwayland on the GPU) and a desktop session on it, and let the desktop follow the tab's size. Existing: attach to a display that is already running, such as :0 on a desktop machine; input goes to that real screen and its size is never changed. Takes effect on the next Start."
         },
         "remoteDesktop.display": {
           "type": "string",
@@ -35,6 +35,13 @@
           "type": "string",
           "default": "us",
           "description": "Managed mode only: XKB layout applied to the virtual display (setxkbmap), e.g. us, de, fr. Keys are forwarded by physical position, so this should match the keyboard you type on."
+        },
+        "remoteDesktop.xServer": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "xvfb", "xwayland"],
+          "enumItemLabels": ["Auto (GPU when available)", "Xvfb (software rendering)", "Xwayland on the GPU"],
+          "description": "Managed mode only: the X server the desktop runs on. Xwayland runs inside a headless Weston on the GPU, so OpenGL and WebGL apps use the GPU; it needs weston, Xwayland and a GPU render node. Auto uses it when those are there and Xvfb otherwise. Xvfb renders apps in software and captures a little faster. Takes effect on the next Start."
         },
         "remoteDesktop.port": {
           "type": "integer",

@@ -5,9 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
 import { Connection, type ConnState, type ConnectionStats } from "./connection";
-import { createDecoder, type Decoder } from "./decoder";
+import { createDecoder, probeFormats, type Decoder, type DecoderKind } from "./decoder";
 import { Renderer } from "./render";
 import { attachInput } from "./input";
+import { EXTRA_KEYS, attachPhoneKeyboard, isStickyKey, isTouchDevice, type PhoneKeyboard } from "./keyboard";
 import { createClipboardBridge } from "./clipboard";
 import { AnchoredPopover } from "./popover";
 import {
@@ -16,6 +17,9 @@ import {
   deviceRatioChoice,
   effectivePixelRatio,
   fetchStatus,
+  fsControlsPos,
+  setFsControlsPos,
+  type ControlsPos,
   getHost,
   setDeviceFitToTab,
   setDeviceRatioChoice,
@@ -23,7 +27,7 @@ import {
   type RatioChoice,
   type RdStatus,
 } from "./host";
-import type { ParsedFrame, ServerHello, ServerMsg } from "./wire";
+import { BASELINE_CODEC_STRING, formatLabel, type ParsedFrame, type ServerHello, type ServerMsg } from "./wire";
 
 export interface ViewerProps {
   active: boolean;
@@ -40,6 +44,8 @@ interface Size {
 }
 
 const evenSize = (n: number) => Math.max(2, Math.round(n) & ~1);
+// How far a finger may move on the fullscreen controls and still tap.
+const DRAG_THRESHOLD_PX = 6;
 
 export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -47,7 +53,8 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const [status, setStatus] = useState<RdStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connState, setConnState] = useState<ConnState>("closed");
-  const [decoderKind, setDecoderKind] = useState<"webcodecs" | "wasm" | null>(null);
+  const [decoderKind, setDecoderKind] = useState<DecoderKind | null>(null);
+  const [streamFormat, setStreamFormat] = useState<string | null>(null);
   const [forceWasm, setForceWasm] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [stats, setStats] = useState<ConnectionStats | null>(null);
@@ -90,6 +97,33 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const clipboardRef = useRef(createClipboardBridge(setClipboardPending));
   const pixelRatioRef = useRef(pixelRatio);
   pixelRatioRef.current = pixelRatio;
+  // The phone keyboard: offered on touch devices. While it is up the
+  // picture fits into what is left above it and the extra keys, and the
+  // desktop keeps its size, so opening it does not reflow every app.
+  const [touch, setTouch] = useState(isTouchDevice());
+  const [kbOpen, setKbOpen] = useState(false);
+  // A session started by an older extension runs a server from before
+  // format negotiation (its hello has no codec string), which also predates
+  // the `text` message the phone keyboard types with: only keys like Enter
+  // would reach it. Say so instead of dropping what is typed.
+  const [legacyServer, setLegacyServer] = useState(false);
+  const [armedKeys, setArmedKeys] = useState<ReadonlySet<number>>(new Set());
+  // How much of the host the phone keyboard covers: nothing in a tab,
+  // where Perch already sizes the app to the space above it, but the whole
+  // keyboard in fullscreen, where the element keeps the screen's size.
+  const [kbInset, setKbInset] = useState(0);
+  // The floating fullscreen controls: where this device keeps them, and the
+  // drag in progress (a tap under DRAG_THRESHOLD_PX stays a tap).
+  const [fsPos, setFsPos] = useState<ControlsPos>(fsControlsPos());
+  const fsPosRef = useRef(fsPos);
+  fsPosRef.current = fsPos;
+  const fsControlsRef = useRef<HTMLDivElement | null>(null);
+  const fsDragRef = useRef<{ id: number; startX: number; startY: number; left: number; top: number; dragging: boolean } | null>(null);
+  const fsSuppressClickRef = useRef(false);
+  const kbOpenRef = useRef(false);
+  const kbRef = useRef<PhoneKeyboard | null>(null);
+  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const stripRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(() => {
     setError(null);
@@ -140,7 +174,16 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   // host even when the size was clamped; a follower's is scaled down to
   // fit, and up as well when this device fits the picture to the tab.
   const layout = useCallback(() => {
-    const host = hostSizeRef.current;
+    const full = hostSizeRef.current;
+    let inset = 0;
+    const vv = window.visualViewport;
+    if (kbOpenRef.current && vv && hostRef.current) {
+      const bottom = hostRef.current.getBoundingClientRect().bottom;
+      inset = Math.max(0, Math.round(bottom - (vv.offsetTop + vv.height)));
+    }
+    setKbInset(inset);
+    const stripHeight = kbOpenRef.current ? (stripRef.current?.offsetHeight ?? 0) : 0;
+    const host = { width: full.width, height: Math.max(0, full.height - stripHeight - inset) };
     const remote = remoteSizeRef.current;
     if (remote.width === 0 || host.width === 0) return;
     const driving = isDriverRef.current;
@@ -201,7 +244,9 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       const rect = el.getBoundingClientRect();
       hostSizeRef.current = { width: rect.width, height: rect.height };
       layout();
-      scheduleResize();
+      // The phone keyboard only covers the tab for a while: fit the
+      // picture, keep the desktop's size.
+      if (!kbOpenRef.current) scheduleResize();
     });
     observer.observe(el);
     const rect = el.getBoundingClientRect();
@@ -219,6 +264,27 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   useEffect(() => {
     layout();
   }, [fitToTab, layout]);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(pointer: coarse)");
+    const onChange = () => setTouch(mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  // The strip mounts with the keyboard: lay out again once it has a height,
+  // and follow the visual viewport while the phone keyboard slides in.
+  useEffect(() => {
+    layout();
+    const vv = window.visualViewport;
+    if (!kbOpen || !vv) return;
+    vv.addEventListener("resize", layout);
+    vv.addEventListener("scroll", layout);
+    return () => {
+      vv.removeEventListener("resize", layout);
+      vv.removeEventListener("scroll", layout);
+    };
+  }, [kbOpen, layout]);
 
   const chooseFitToTab = (on: boolean) => {
     setDeviceFitToTab(on);
@@ -251,6 +317,9 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     let disposed = false;
     let decoder: Decoder | null = null;
     let renderer: Renderer | null = null;
+    // What this browser decodes, best first; set before the connection
+    // starts, so the hello carries it.
+    let codecs: string[] = ["h264-baseline"];
     let detachInput: (() => void) | null = null;
     const port = status.port;
 
@@ -266,8 +335,11 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     const conn = new Connection(port, {
       requestedSize: () => requestedRef.current,
       pixelRatio: () => pixelRatioRef.current,
+      codecs: () => codecs,
       onHello: (hello) => {
         helloRef.current = hello;
+        setStreamFormat(hello.codec);
+        setLegacyServer(hello.codecString === undefined);
         remoteSizeRef.current = { width: hello.width, height: hello.height };
         setRemoteSize(remoteSizeRef.current);
         setViewers(hello.viewers);
@@ -359,19 +431,24 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     });
     connectionRef.current = conn;
 
-    createDecoder({
-      forceWasm,
-      workerUrl: getHost().assetUrl("dist/workers/h264.js"),
-      onPicture: (picture, decodeMs) => {
-        conn.reportDecode(decodeMs);
-        if (disposed) {
-          if (picture.kind === "video") picture.frame.close();
-          return;
-        }
-        renderer?.draw(picture);
-      },
-      onNeedKeyframe: () => conn.send({ t: "keyframe" }),
-    })
+    probeFormats(forceWasm)
+      .then((probe) => {
+        codecs = probe.codecs;
+        return createDecoder({
+          kind: probe.kind,
+          codec: () => helloRef.current?.codecString ?? BASELINE_CODEC_STRING,
+          workerUrl: getHost().assetUrl("dist/workers/h264.js"),
+          onPicture: (picture, decodeMs) => {
+            conn.reportDecode(decodeMs);
+            if (disposed) {
+              if (picture.kind === "video") picture.frame.close();
+              return;
+            }
+            renderer?.draw(picture);
+          },
+          onNeedKeyframe: () => conn.send({ t: "keyframe" }),
+        });
+      })
       .then((d) => {
         if (disposed) {
           d.close();
@@ -388,6 +465,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           send: (msg) => conn.send(msg),
           toRemote,
           onClipboardTruncated: () => setNotice("Pasted text was cut at 1 MB."),
+          keepFocus: () => kbRef.current?.isOpen() ?? false,
         });
         conn.start();
       })
@@ -395,9 +473,29 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
 
     const statsTimer = window.setInterval(() => setStats({ ...conn.stats }), STATS_REFRESH_MS);
 
+    const field = fieldRef.current;
+    if (field) {
+      kbRef.current = attachPhoneKeyboard({
+        field,
+        send: (msg) => conn.send(msg),
+        onOpenChange: (open) => {
+          kbOpenRef.current = open;
+          setKbOpen(open);
+          if (!open) {
+            // Back to the tab's full height, and the desktop follows it.
+            layout();
+            scheduleResize();
+          }
+        },
+        onArmedChange: setArmedKeys,
+      });
+    }
+
     return () => {
       disposed = true;
       window.clearInterval(statsTimer);
+      kbRef.current?.detach();
+      kbRef.current = null;
       detachInput?.();
       conn.stop();
       decoder?.close();
@@ -418,8 +516,13 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     const conn = connectionRef.current;
     if (!conn || conn.state !== "open") return;
     conn.send({ t: active && !docHidden ? "resume" : "pause" });
-    if (active && !docHidden) canvasRef.current?.focus({ preventScroll: true });
+    if (active && !docHidden && !kbRef.current?.isOpen()) canvasRef.current?.focus({ preventScroll: true });
   }, [active, docHidden, connState]);
+
+  // A hidden tab has no business holding the phone keyboard open.
+  useEffect(() => {
+    if (!active && kbRef.current?.isOpen()) kbRef.current.toggle();
+  }, [active]);
 
   // Fullscreen with Keyboard Lock where the browser has it (Chromium).
   const keyboard = (navigator as unknown as { keyboard?: { lock?: () => Promise<void>; unlock?: () => void } }).keyboard;
@@ -446,6 +549,57 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       // Fullscreen without reclaimed shortcuts; Escape still exits.
     }
     canvasRef.current?.focus({ preventScroll: true });
+  };
+
+  // Dragging the fullscreen controls. Pointer capture starts only once the
+  // move passes the threshold: captured earlier, the click would land on
+  // the container instead of the button that was tapped.
+  const onFsPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Keeps focus where it is (the phone keyboard's field stays open).
+    e.preventDefault();
+    const el = fsControlsRef.current;
+    const host = hostRef.current;
+    if (!el || !host) return;
+    // Where it is on screen, not offsetLeft/Top: those ignore the
+    // translate that places it.
+    const box = el.getBoundingClientRect();
+    const hostBox = host.getBoundingClientRect();
+    fsDragRef.current = {
+      id: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      left: box.left - hostBox.left,
+      top: box.top - hostBox.top,
+      dragging: false,
+    };
+  };
+  const onFsPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = fsDragRef.current;
+    const el = fsControlsRef.current;
+    const host = hostRef.current;
+    if (!drag || drag.id !== e.pointerId || !el || !host) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.dragging) {
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      drag.dragging = true;
+      el.setPointerCapture(e.pointerId);
+    }
+    const freeX = Math.max(1, host.clientWidth - el.offsetWidth);
+    const freeY = Math.max(1, host.clientHeight - el.offsetHeight);
+    const left = Math.min(freeX, Math.max(0, drag.left + dx));
+    const top = Math.min(freeY, Math.max(0, drag.top + dy));
+    setFsPos({ x: left / freeX, y: top / freeY });
+  };
+  const onFsPointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = fsDragRef.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    fsDragRef.current = null;
+    if (!drag.dragging) return;
+    // The click that ends a drag is not a tap on a button.
+    fsSuppressClickRef.current = true;
+    window.setTimeout(() => (fsSuppressClickRef.current = false), 0);
+    setFsControlsPos(fsPosRef.current);
   };
 
   const takeOver = () => {
@@ -491,6 +645,20 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
             >
               <Icon name="zoom-in" />
             </button>
+            {touch && (
+              <button
+                className={`rd-tool${kbOpen ? " rd-tool-on" : ""}`}
+                title={kbOpen ? "Close the phone keyboard" : "Open the phone keyboard"}
+                aria-pressed={kbOpen}
+                // Taking focus from the field would close the phone keyboard
+                // before the click could.
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => kbRef.current?.toggle()}
+              >
+                <Icon name="keyboard" />
+              </button>
+            )}
             {document.fullscreenEnabled && (
               <button
                 className="rd-tool"
@@ -551,6 +719,85 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         tabIndex={0}
         style={canvasBox ? { left: canvasBox.left, top: canvasBox.top, width: canvasBox.width, height: canvasBox.height } : { left: 0, top: 0, width: "100%", height: "100%" }}
       />
+      <textarea
+        ref={fieldRef}
+        className="rd-kb-field"
+        aria-label="Type on the desktop"
+        // Chords from a paired hardware keyboard belong to the desktop while
+        // the phone keyboard is open, not to Perch's shortcuts.
+        data-keyboard-capture="always"
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        rows={1}
+      />
+      {isFullscreen && touch && (
+        // Perch's toolbar is outside the fullscreen element, so a phone
+        // gets its two controls here.
+        <div
+          ref={fsControlsRef}
+          className="rd-fs-controls"
+          // The spot is a fraction of the free space: at 0 the left (top)
+          // edge, at 1 flush with the right (bottom) edge.
+          style={{
+            left: `${fsPos.x * 100}%`,
+            top: `${fsPos.y * 100}%`,
+            transform: `translate(${-fsPos.x * 100}%, ${-fsPos.y * 100}%)`,
+          }}
+          onPointerDown={onFsPointerDown}
+          onPointerMove={onFsPointerMove}
+          onPointerUp={onFsPointerEnd}
+          onPointerCancel={onFsPointerEnd}
+          onMouseDown={(e) => e.preventDefault()}
+          onClickCapture={(e) => {
+            if (!fsSuppressClickRef.current) return;
+            fsSuppressClickRef.current = false;
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+        >
+          <span className="rd-fs-grip" title="Drag to move" aria-hidden="true">
+            <Icon name="gripper" />
+          </span>
+          <button
+            type="button"
+            className={`rd-fs-control${kbOpen ? " rd-fs-control-on" : ""}`}
+            title={kbOpen ? "Close the phone keyboard" : "Open the phone keyboard"}
+            aria-pressed={kbOpen}
+            onClick={() => kbRef.current?.toggle()}
+          >
+            <Icon name="keyboard" />
+          </button>
+          <button type="button" className="rd-fs-control" title="Exit fullscreen" onClick={() => void toggleFullscreen()}>
+            <Icon name="screen-normal" />
+          </button>
+        </div>
+      )}
+      {kbOpen && (
+        <div
+          ref={stripRef}
+          className="rd-keys"
+          style={kbInset ? { bottom: kbInset } : undefined}
+          role="toolbar"
+          aria-label="Extra keys"
+          onPointerDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {EXTRA_KEYS.map((k) => (
+            <button
+              key={k.code}
+              type="button"
+              className="rd-key"
+              aria-label={k.title}
+              aria-pressed={isStickyKey(k.code) ? armedKeys.has(k.code) : undefined}
+              onClick={() => kbRef.current?.tapStripKey(k.code)}
+            >
+              {k.label}
+            </button>
+          ))}
+        </div>
+      )}
       {connState === "connecting" && <div className="rd-view-overlay">Connecting…</div>}
       {connState === "reconnecting" && <div className="rd-view-overlay rd-view-overlay-soft">Connection lost, reconnecting…</div>}
       {decoderKind === "wasm" && (
@@ -600,10 +847,15 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         </div>
       )}
       {notice && <div className="rd-view-notice">{notice}</div>}
+      {kbOpen && legacyServer && (
+        <div className="rd-view-banner rd-view-banner-top">
+          This session was started by an older version of the extension, whose server cannot type from the phone keyboard (only keys like Enter get through). Stop and Start it from the Remote Desktop panel.
+        </div>
+      )}
       {showStats && (
         <div className="rd-view-stats">
           <div>
-            {remoteSize.width}x{remoteSize.height} @ {pixelRatio.toFixed(2)}x, {decoderKind ?? "no decoder"}, {isDriver ? "driver" : `follower of ${desktopScale}x`}
+            {remoteSize.width}x{remoteSize.height} @ {pixelRatio.toFixed(2)}x, {streamFormat ? formatLabel(streamFormat) : "no stream"} via {decoderKind ?? "no decoder"}, {isDriver ? "driver" : `follower of ${desktopScale}x`}
           </div>
           <div>
             {stats ? `${stats.fps.toFixed(1)} fps, ${Math.round(stats.kbps)} kbps, rtt ${stats.rttMs.toFixed(0)} ms` : "no stats yet"}

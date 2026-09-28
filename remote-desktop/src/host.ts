@@ -141,3 +141,38 @@ export function effectivePixelRatio(): number {
   if (choice === "auto") return detectedPixelRatio();
   return Number(choice);
 }
+
+// Where this device keeps the floating fullscreen controls: fractions of
+// the free space across and down (0 is the left or top edge, 1 the right
+// or bottom), so the spot survives a rotation or another screen size.
+const FS_CONTROLS_POS_KEY = "remoteDesktop.fsControlsPos";
+
+export interface ControlsPos {
+  x: number;
+  y: number;
+}
+
+const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+
+export function fsControlsPos(): ControlsPos {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FS_CONTROLS_POS_KEY) ?? "null") as unknown;
+    if (raw && typeof raw === "object") {
+      const { x, y } = raw as Record<string, unknown>;
+      if (typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y)) {
+        return { x: clamp01(x), y: clamp01(y) };
+      }
+    }
+  } catch {
+    // Storage blocked or a bad value: the default spot.
+  }
+  return { x: 1, y: 0 };
+}
+
+export function setFsControlsPos(pos: ControlsPos): void {
+  try {
+    localStorage.setItem(FS_CONTROLS_POS_KEY, JSON.stringify({ x: clamp01(pos.x), y: clamp01(pos.y) }));
+  } catch {
+    // Storage blocked: the spot lasts for this page only.
+  }
+}

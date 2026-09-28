@@ -3,7 +3,8 @@
 // process tree; the core proxy only forwards ports it can attribute to a
 // terminal (server/src/ports.ts's getTunnelablePorts), and a plain detached
 // child here would get a 403 from /proxy/<port>/. In managed mode the server
-// itself starts Xvfb and the desktop session (--spawn-xvfb, --desktop) and
+// itself starts the X server and the desktop session (--spawn-display,
+// --desktop) and
 // takes them down when it exits, however it exits, so stopping the session
 // is all the cleanup there is. The session is created, typed into and killed
 // through the host session API, so this works on whichever terminal backend
@@ -38,6 +39,7 @@ const DEFAULTS = {
   display: ":101",
   desktopCommand: "xfce4-session",
   keyboardLayout: "us",
+  xServer: "auto",
   port: 14600,
   fps: 30,
   bitrateKbps: 8000,
@@ -136,6 +138,9 @@ function readSettings(raw) {
     display: String(get("display", DEFAULTS.display)).trim() || DEFAULTS.display,
     desktopCommand: String(get("desktopCommand", DEFAULTS.desktopCommand)),
     keyboardLayout: String(get("keyboardLayout", DEFAULTS.keyboardLayout)),
+    xServer: ["auto", "xvfb", "xwayland"].includes(get("xServer", DEFAULTS.xServer))
+      ? get("xServer", DEFAULTS.xServer)
+      : DEFAULTS.xServer,
     port: Number(get("port", DEFAULTS.port)) || DEFAULTS.port,
     fps: Number(get("fps", DEFAULTS.fps)) || DEFAULTS.fps,
     bitrateKbps: Number(get("bitrateKbps", DEFAULTS.bitrateKbps)) || DEFAULTS.bitrateKbps,
@@ -180,7 +185,7 @@ async function findServerBinary(serverPath) {
   for (const candidate of candidates) {
     try {
       const help = await run(candidate, ["--help"]);
-      if (!help.includes("--spawn-xvfb")) {
+      if (!help.includes("--spawn-display")) {
         binaryCache = { key, result: { installed: false, path: candidate, reason: "outdated" } };
         return binaryCache.result;
       }
@@ -268,7 +273,7 @@ export function activate({ router, log, getSettings, host }) {
         res.status(400).json({
           error:
             binary.reason === "outdated"
-              ? `${binary.path} is too old (no --spawn-xvfb); rebuild it from the QuicDesk repository.`
+              ? `${binary.path} is too old (no --spawn-display); rebuild it from the QuicDesk repository.`
               : "quicdesk-server was not found. Install it (see this extension's README) or set its path in Settings.",
         });
         return;
@@ -290,11 +295,12 @@ export function activate({ router, log, getSettings, host }) {
         "--bitrate", String(settings.bitrateKbps * 1000),
       ];
       if (settings.mode === "managed") {
-        // The server owns Xvfb and the desktop: it starts them, resizes the
-        // display to the tab, and ends them with itself. The scale hook
-        // gets the desktop's session bus from the server.
+        // The server owns the X server and the desktop: it starts them,
+        // resizes the display to the tab, and ends them with itself. The
+        // scale hook gets the desktop's session bus from the server.
         args.push(
-          "--spawn-xvfb",
+          "--spawn-display",
+          "--x-server", settings.xServer,
           "--xvfb-screen", XVFB_FRAMEBUFFER,
           "--dpi", String(settings.dpi),
           "--keyboard-layout", settings.keyboardLayout,

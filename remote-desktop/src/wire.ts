@@ -93,13 +93,27 @@ export function splitNalUnits(payload: Uint8Array): Uint8Array[] {
   return out;
 }
 
-// Constrained baseline needs no SPS/PPS description for WebCodecs when the
-// chunks carry Annex B start codes. The level (5.1 here) matters to
-// hardware decoders, which may refuse a 4K stream configured as level 3.0.
-export const H264_CODEC_STRING = "avc1.42E033";
+/** The stream formats, best first, with the codec string each is probed
+ * with (level 5.1, as the server encodes: hardware decoders may refuse a 4K
+ * stream configured as a lower level). H.264 chunks carry Annex B start
+ * codes and AV1 chunks low-overhead OBUs, so no description is needed. The
+ * server picks the best one both sides have: a server with only openh264
+ * sends constrained baseline whatever the browser can do. */
+export const FORMATS = [
+  { name: "av1", codec: "av01.0.13M.08", label: "AV1" },
+  { name: "h264", codec: "avc1.640033", label: "H.264" },
+  { name: "h264-baseline", codec: "avc1.42E033", label: "H.264 baseline" },
+] as const;
+export type FormatName = (typeof FORMATS)[number]["name"];
+/** Constrained baseline: what a server without format negotiation sends. */
+export const BASELINE_CODEC_STRING = "avc1.42E033";
+
+export function formatLabel(name: string): string {
+  return FORMATS.find((f) => f.name === name)?.label ?? name;
+}
 
 export type ClientMsg =
-  | { t: "hello"; version: number; name: string; width: number; height: number; pixelRatio: number }
+  | { t: "hello"; version: number; name: string; width: number; height: number; pixelRatio: number; codecs: string[] }
   | { t: "claim" }
   | { t: "scale"; ratio: number }
   | { t: "key"; code: number; down: boolean }
@@ -112,7 +126,8 @@ export type ClientMsg =
   | { t: "resume" }
   | { t: "keyframe" }
   | { t: "releaseKeys" }
-  | { t: "stats"; fps: number; decodeMs: number; gaps: number }
+  | { t: "text"; text: string }
+  | { t: "stats"; fps: number; decodeMs: number; gaps: number; kbps: number }
   | { t: "ping"; seq: number; sent: number };
 
 export interface ServerHello {
@@ -123,7 +138,11 @@ export interface ServerHello {
   maxWidth: number;
   maxHeight: number;
   fps: number;
+  /** The stream format this viewer gets: av1, h264 or h264-baseline. */
   codec: string;
+  /** The stream's codec string, for VideoDecoder.configure. Missing from
+   * servers older than format negotiation, which send baseline. */
+  codecString?: string;
   resize: boolean;
   clipboard: boolean;
   viewers: number;
@@ -155,4 +174,16 @@ export function clipClipboardText(text: string): { text: string; truncated: bool
   let cut = MAX_CLIPBOARD_BYTES;
   while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--;
   return { text: new TextDecoder().decode(bytes.subarray(0, cut)), truncated: true };
+}
+
+/** Most characters one `text` message may carry (the server's cap). */
+export const MAX_TEXT_CHARS = 4096;
+
+/** Split text into `text` messages of at most `max` characters (code
+ * points), never between the halves of a surrogate pair. */
+export function chunkText(text: string, max = MAX_TEXT_CHARS): string[] {
+  const chars = Array.from(text);
+  const out: string[] = [];
+  for (let i = 0; i < chars.length; i += max) out.push(chars.slice(i, i + max).join(""));
+  return out;
 }

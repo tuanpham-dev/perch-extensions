@@ -14,10 +14,18 @@ cd quicdesk
 cargo install --path crates/server
 ```
 
+The shipped server encodes in software with openh264, so the stream is H.264 constrained baseline. A server built with QuicDesk's GPU backends (`--features ffmpeg` or `gstreamer`, see its README) encodes on the GPU, and the viewer then negotiates the best format both sides support: AV1, then H.264 High, then baseline. Point `remoteDesktop.serverPath` at such a build to use it.
+
 Managed mode also needs `Xvfb`, `setxkbmap` and a desktop environment:
 
 ```sh
 sudo apt install -y xvfb x11-xserver-utils xfce4 dbus-x11
+```
+
+For a desktop whose apps render on the GPU (OpenGL, WebGL, video players), also install Weston and Xwayland. The host needs a GPU render node (`/dev/dri/renderD*`):
+
+```sh
+sudo apt install -y weston xwayland
 ```
 
 ## Usage
@@ -45,7 +53,7 @@ The desktop scale follows the driver's `remoteDesktop.pixelRatio`: on a managed 
 
 ## Managed and existing displays
 
-- **Managed** (default): the server starts `Xvfb` on the configured display, applies the keyboard layout and starts the desktop command with a D-Bus session bus of its own, then captures that display. It refuses a display that is already in use. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later. Everything the server started ends with it, so **Stop** (or a Perch restart, or the server being killed) leaves no Xvfb or desktop behind.
+- **Managed** (default): the server starts an X server on the configured display, applies the keyboard layout and starts the desktop command with a D-Bus session bus of its own, then captures that display. It refuses a display that is already in use. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later. Everything the server started ends with it, so **Stop** (or a Perch restart, or the server being killed) leaves no X server or desktop behind. `remoteDesktop.xServer` picks the X server: Xvfb renders apps in software, and Xwayland inside a headless Weston gives them the GPU. The default, `auto`, uses Xwayland when Weston, Xwayland and a render node are there, and Xvfb otherwise; the server's output in the session says which one started. Capture from the GPU costs a little more per frame than from Xvfb.
 - **Existing**: the server attaches to a display that already runs, such as `:0` on a desktop machine. Keyboard and mouse go to that real screen. The size is never changed; a screen larger than the tab is scaled down to fit, never up. Launch is not offered in this mode.
 
 ## Settings
@@ -56,6 +64,7 @@ The desktop scale follows the driver's `remoteDesktop.pixelRatio`: on a managed 
 | `remoteDesktop.display` | `:101` | Display to create (managed) or attach to (existing). |
 | `remoteDesktop.desktopCommand` | `xfce4-session` | Managed: the desktop session command. |
 | `remoteDesktop.keyboardLayout` | `us` | Managed: XKB layout for the virtual display. |
+| `remoteDesktop.xServer` | `auto` | Managed: `xvfb` (apps render in software), `xwayland` (a headless Weston on the GPU; apps render on the GPU) or `auto` (Xwayland when it can run, Xvfb otherwise). |
 | `remoteDesktop.port` | `14600` | Preferred loopback port; the next free one is used if taken. |
 | `remoteDesktop.fps` | `30` | Capture rate cap. |
 | `remoteDesktop.bitrateKbps` | `8000` | Bitrate cap; the stream adapts below it under loss. |
@@ -63,18 +72,19 @@ The desktop scale follows the driver's `remoteDesktop.pixelRatio`: on a managed 
 | `remoteDesktop.dpi` | `96` | Managed: DPI reported to apps. |
 | `remoteDesktop.serverPath` | empty | Path to your own `quicdesk-server`; empty means the binary shipped with the extension, then PATH, then `~/.cargo/bin`. |
 
-Changes to mode, display, desktop command, layout, fps, bitrate and DPI apply on the next Start. The managed display starts with a 7680x4320 framebuffer, the largest size a tab can request; bigger tabs are scaled. Anything above 4096x2304 is encoded as tiles.
+Changes to mode, display, desktop command, layout, X server, fps, bitrate and DPI apply on the next Start. The managed display starts with a 7680x4320 framebuffer, the largest size a tab can request; bigger tabs are scaled. Anything above 4096x2304 is encoded as tiles.
 
 ## The viewer tab
 
 - **Keyboard**: keys are forwarded by physical position, including modifiers, function keys and the numeric keypad. Keys held when the tab loses focus are released on the remote side.
+- **Phone keyboard**: on a touch device the toolbar has a keyboard button. It opens the phone's keyboard, and what you type is typed on the desktop as text, so accents, emoji and other scripts arrive as written whatever the desktop's layout. A strip of extra keys comes with it: Esc, Tab, the arrows, Home, End, PgUp, PgDn, and sticky Ctrl, Alt and Super that apply to the next key. While the keyboard is up the picture fits above it and the desktop keeps its size, so apps do not reflow each time it opens.
 - **Mouse**: left, middle and right buttons, both wheel axes; the browser context menu is suppressed over the desktop.
 - **Clipboard**: paste in the tab (Ctrl+V or Cmd+V) sends your clipboard text to the desktop before the keystroke, so the remote app pastes it. Text copied inside the desktop is written to your clipboard when the tab has focus; if the browser refuses, the **copy remote clipboard** toolbar button lights up and copies it on click. Text only, up to 1 MB.
 - **Cursor**: the pointer shape comes from the desktop (I-beam, resize arrows, busy), drawn as the tab's own cursor, so there is exactly one pointer.
 - **View settings** (toolbar, magnifier icon): the pixel ratio this device uses, with the detected value shown, and **Fit the picture to the tab**, which scales a follower's picture up as well as down to fill the tab's width or height with its aspect ratio kept. Both are kept in this browser only, so a phone and a desktop can differ while sharing the synced default. The popover closes on a click outside it or on Escape; a dismissing click on the desktop is not passed to the remote.
 - **Stats** (toolbar): remote size and pixel ratio, fps, bitrate, round-trip time, decode time, dropped frames and viewer count, plus a switch to force the software decoder.
 - **Fullscreen** (toolbar): real browser fullscreen, and every key goes to the desktop: Perch's own shortcuts (Ctrl+P, Ctrl+Tab, Ctrl+B...) stand down, and in Chromium-based browsers a keyboard lock hands over browser shortcuts like Ctrl+T or Alt+Tab too. Hold Escape to exit. **Ctrl+W still closes the browser tab**, even in fullscreen; browsers keep that one for themselves. Outside fullscreen, Perch's shortcuts keep working as usual.
-- **Decoding**: WebCodecs with hardware acceleration where the browser has it. Browsers without WebCodecs (Firefox before 130, older Safari) fall back to a bundled WebAssembly decoder with a banner saying so; it costs more CPU, so a lower pixel ratio helps there.
+- **Decoding**: WebCodecs with hardware acceleration where the browser has it. The tab tells the server which formats the browser decodes, and the server sends the best one it can encode; the stats panel names it. Browsers without WebCodecs (Firefox before 130, older Safari) fall back to a bundled WebAssembly decoder with a banner saying so; it costs more CPU, so a lower pixel ratio helps there.
 - **Reconnect**: if the connection drops (a Perch restart, a network blip) the tab keeps the last frame and reconnects with backoff while the session is running.
 
 ## Known limitations

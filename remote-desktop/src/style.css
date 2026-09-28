@@ -157,6 +157,14 @@
   pointer-events: none;
 }
 
+/* Above the picture's top edge: the bottom belongs to the extra keys while
+   the phone keyboard is up. */
+.rd-view-banner-top {
+  top: 0;
+  bottom: auto;
+  z-index: 3;
+}
+
 .rd-view-notice {
   position: absolute;
   left: 50%;
@@ -321,3 +329,109 @@
   color: var(--fg-inactive);
 }
 
+
+/* The phone keyboard: a field that is focusable (so the phone opens its
+   keyboard) but out of sight, with 16px text so iOS does not zoom in on
+   focus, and a strip of the keys a phone keyboard lacks. */
+.rd-kb-field {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  resize: none;
+  font-size: 16px;
+  color: transparent;
+  background: transparent;
+  caret-color: transparent;
+}
+
+.rd-keys {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--vscode-editorWidget-background, #252526);
+  border-top: 1px solid var(--vscode-widget-border, #454545);
+  z-index: 3;
+}
+
+.rd-keys::-webkit-scrollbar {
+  display: none;
+}
+
+.rd-key {
+  flex: 0 0 auto;
+  min-width: 34px;
+  height: 30px;
+  padding: 0 7px;
+  font-size: 13px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-button-border, #454545);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  touch-action: manipulation;
+}
+
+.rd-key[aria-pressed="true"] {
+  background: var(--vscode-button-background, #0e639c);
+  border-color: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+/* Fullscreen on a touch device: the keyboard and exit buttons, since
+   Perch's toolbar is not inside the fullscreen element. */
+.rd-fs-controls {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Room from the screen edges, inside the element so the fraction-based
+     spot still reaches them. */
+  padding: 8px;
+  z-index: 4;
+  /* A drag must stay a drag: without this the browser takes the touch for
+     a scroll or a zoom and cancels it. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.rd-fs-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(30, 30, 30, 0.7);
+  color: #bbb;
+  cursor: grab;
+}
+
+.rd-fs-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(30, 30, 30, 0.7);
+  color: #ddd;
+  touch-action: manipulation;
+}
+
+.rd-fs-control-on {
+  background: var(--vscode-button-background, #0e639c);
+  border-color: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}

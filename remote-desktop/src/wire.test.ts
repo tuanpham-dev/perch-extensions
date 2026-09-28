@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FRAME_HEADER_LEN, clipClipboardText, parseFrame, parseFrameHeader, splitNalUnits } from "./wire.ts";
+import { FRAME_HEADER_LEN, MAX_TEXT_CHARS, chunkText, clipClipboardText, parseFrame, parseFrameHeader, splitNalUnits } from "./wire.ts";
 
 function header(fields: { frameId: number; keyframe: boolean; width: number; height: number; timestampUs: number }): ArrayBuffer {
   const buf = new ArrayBuffer(FRAME_HEADER_LEN + 3);
@@ -79,4 +79,14 @@ test("parseFrame reads the tile table and payloads", () => {
   assert.equal(f.tiles[0].keyframe, true);
   assert.deepEqual(Array.from(f.tiles[1].data), [4, 5]);
   assert.equal(parseFrame(buf.slice(0, buf.byteLength - 1)), null, "truncated payload rejected");
+});
+
+test("text splits at the per-message cap, keeping emoji whole", () => {
+  assert.deepEqual(chunkText(""), []);
+  assert.deepEqual(chunkText("abc", 2), ["ab", "c"]);
+  assert.deepEqual(chunkText("a😀b😀", 2), ["a😀", "b😀"]);
+  const long = "x".repeat(10_000);
+  const parts = chunkText(long);
+  assert.deepEqual(parts.map((p) => p.length), [MAX_TEXT_CHARS, MAX_TEXT_CHARS, 10_000 - 2 * MAX_TEXT_CHARS]);
+  assert.equal(parts.join(""), long);
 });
