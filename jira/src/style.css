@@ -3929,3 +3929,21 @@
 }
 .jira-batchform-already { flex: none; font-size: 11px; color: var(--fg-inactive, #999); }
 .jira-rv-covers { margin: 2px 0 0; font-size: 11px; color: var(--fg-inactive, #999); }
+.jira-bqa-rounds { font-size: 11px; color: var(--fg-inactive, #999); }
+
+/* Answering an agent's prompt from the board. */
+.jira-aterm-live.waiting { color: hsl(35 80% 55%); }
+.jira-aterm-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid hsl(35 80% 55% / 0.5);
+  border-radius: 4px;
+  background: var(--jira-elevated);
+}
+.jira-aterm-question { font-size: 12.5px; font-weight: 600; }
+.jira-aterm-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.jira-aterm-options .jira-selaction { text-align: left; white-space: normal; }
+.jira-aterm-reply { display: flex; gap: 6px; }
+.jira-aterm-reply .jira-input { flex: 1; min-width: 0; }

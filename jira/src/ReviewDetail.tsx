@@ -2,6 +2,8 @@
 // each task's state with what can be done about it, the two reports, and the
 // buttons that publish them. Only reads the review; every action is a prop.
 import Icon from "./Icon";
+import AgentTerminal from "./AgentTerminal";
+import { getReviewTerminal, sendReviewKey } from "./batchApi";
 import type {
   CodeReport,
   PageShot,
@@ -283,6 +285,21 @@ export default function ReviewDetail({
       />
 
       {error && <div className="jira-rv-error">{error}</div>}
+      {running && (
+        <AgentTerminal
+          source={{
+            id: `review:${issueKey}`,
+            load: (task, lines) => getReviewTerminal(issueKey, task, lines),
+            send: (task, action, expect) => sendReviewKey(issueKey, task, action, expect),
+          }}
+          agents={[
+            { id: "code", label: "Code review", available: code?.state === "running" },
+            { id: "qa", label: "Visual QA", available: qa?.state === "running" },
+          ].filter((entry) => entry.available)}
+          preferred={code?.state === "running" ? "code" : "qa"}
+          onOpenTerminal={(task) => onOpenTerminal(task as ReviewTaskName)}
+        />
+      )}
       {!review && (
         <div className="jira-bdetail-actions">
           <span className="jira-bdetail-hint">Not reviewed yet.</span>

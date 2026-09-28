@@ -9,6 +9,7 @@ import { clearSticky, useStickyState } from "./stickyState";
 import QaBlock from "./QaBlock";
 import QaDiff from "./QaDiff";
 import AgentTerminal from "./AgentTerminal";
+import { getAgentTerminal, sendAgentKey } from "./batchApi";
 import type { AgentTarget } from "./AgentTerminal";
 import KeyLink from "./KeyLink";
 import type { Batch, TicketStateName, BatchQa, IntegrationState, TicketState } from "./batchTypes";
@@ -137,7 +138,11 @@ export default function BatchDetail({
 
       {ticket && agents.some((a) => a.available) && (
         <AgentTerminal
-          batchId={batch.id}
+          source={{
+            id: batch.id,
+            load: (agent, lines) => getAgentTerminal(batch.id, agent, lines),
+            send: (agent, action, expect) => sendAgentKey(batch.id, agent, action, expect),
+          }}
           agents={agents}
           preferred={preferredAgent}
           onOpenTerminal={(agent) => (agent === "qa" ? onOpenQaTerminal() : onOpenTerminal(agent))}
@@ -485,7 +490,10 @@ function QaVerdicts({
         </div>
       )}
 
-      {!live && (
+      {!live && batchQa.state === "shipped" && state === "approved" && (
+        <p className="jira-qav-hint">Merged into {batchQa.shippedInto || "production"} with this QA round.</p>
+      )}
+      {!live && batchQa.state !== "shipped" && (
         <p className="jira-qav-hint">The QA agent isn't running. Start it again from the board to act on this ticket.</p>
       )}
 

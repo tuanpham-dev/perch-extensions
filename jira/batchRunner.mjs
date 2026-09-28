@@ -40,6 +40,7 @@ import {
   markQaRefined,
   reopenTicket as reopenTicketModel,
   markStartStep,
+  notificationsFor,
   holdMessage,
   takeHeld,
   confirmQaExcluded,
@@ -90,6 +91,7 @@ import {
 } from "./brief.mjs";
 import { createControlServer } from "./batchControl.mjs";
 import { createShellWatch } from "./liveness.mjs";
+import { typedText } from "./agentPrompt.mjs";
 import { writeAndRender } from "./qaSpec.mjs";
 import { IMAGE_KINDS, readImage as readImageFile, writeImage } from "./evidence.mjs";
 
@@ -126,24 +128,6 @@ function sessionNameFor(branch) {
 // ONE message instead of each newline submitting what came before it.
 function asPaste(text) {
   return text.includes("\n") ? `\u001b[200~${text}\u001b[201~` : text;
-}
-
-// A message as typed at the keyboard rather than pasted, for Claude Code:
-// it files any paste of 20 characters or more away as <pasted_content> and
-// tells the model it is quoted material, so an instruction sent that way was
-// read as something to consider rather than something to do. Control bytes
-// are dropped (they would act as keys), tabs become spaces, and each newline
-// is Esc+Enter, which opens a line in its input box instead of submitting.
-//
-// Only for Claude Code: in other agents' composers Esc may interrupt, so
-// they keep the bracketed paste.
-function typedText(text) {
-  return String(text)
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "    ")
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
-    .split("\n")
-    .join("\x1b\r");
 }
 
 function forAgent(agentId, text) {
@@ -949,7 +933,10 @@ export function createBatchRunner({
     const restarting = Boolean(batch.qa && batch.qa.state !== "shipped" && batch.qa.branch);
     const production = restarting ? batch.qa.productionBranch : await productionBranchFor(batch.repo, settings);
     const template = String(settings["jira.qaBranchTemplate"] ?? "").trim() || QA_BRANCH_DEFAULT;
-    const branch = restarting ? batch.qa.branch : template.replace("{batch}", branchSlug(batch.name)).replace("{date}", yyyymmdd(Date.now()));
+    // A later round gets its own branch: the template's name with -2, -3...
+    const roundsDone = (batch.qaRounds?.length ?? 0) + (batch.qa?.state === "shipped" ? 1 : 0);
+    const baseBranch = template.replace("{batch}", branchSlug(batch.name)).replace("{date}", yyyymmdd(Date.now()));
+    const branch = restarting ? batch.qa.branch : roundsDone > 0 ? `${baseBranch}-${roundsDone + 1}` : baseBranch;
 
     // Recorded before anything is made, so a failure part way leaves a row
     // that says so rather than a worktree nobody can see.
@@ -1569,6 +1556,21 @@ export function createBatchRunner({
       })
       .catch((err) => log(`could not clear unfinished starts: ${err.message}`));
 
+    // Browser notifications for what is back with you, read off each change
+    // to the document; see notificationsFor for which changes count.
+    if (host?.notifications?.push) {
+      self.unsubscribeNotify = store.onChange((before, after) => {
+        void (async () => {
+          for (const note of notificationsFor(before, after)) {
+            const batch = after.batches[note.batchId];
+            const settings = await settingsForRepo(batch?.repo);
+            if (settings["jira.pushNotifications"] === false) continue;
+            await host.notifications.push({ title: note.title, body: note.body, windowId: note.windowId }).catch((err) => log(`push failed: ${err.message}`));
+          }
+        })().catch((err) => log(`notifications failed: ${err.message}`));
+      });
+    }
+
     if (host?.agentHooks?.subscribe) {
       self.unsubscribe = host.agentHooks.subscribe({
         events: HOOK_EVENTS,
@@ -1644,6 +1646,7 @@ export function createBatchRunner({
     clearInterval(self.sweepTimer);
     try {
       self.unsubscribe?.();
+      self.unsubscribeNotify?.();
     } catch {
       // Already unsubscribed by the host.
     }

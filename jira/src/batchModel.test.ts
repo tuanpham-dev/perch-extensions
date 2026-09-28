@@ -61,6 +61,8 @@ import {
   confirmQaExcluded,
   openChange,
   qaOwesReport,
+  isShipped,
+  notificationsFor,
   markQaShipping,
   setHandoffConfig,
   effectiveHandoff,
@@ -1013,6 +1015,8 @@ test("the hand-off is owed to every approved ticket, then only to the ones that 
     approveQa(batch, key, {}, NOW + 6);
   }
   excludeFromQa(batch, "CAP-3", "not mine", NOW + 7);
+  assert.deepEqual(handoffPending(batch), [], "nothing is handed off before it ships");
+  markQaShipped(batch, "main", NOW + 7);
   assert.deepEqual(handoffPending(batch), ["CAP-1", "CAP-2"]);
   markHandedOff(batch, "CAP-1", { url: "https://x/p", ok: true }, NOW + 8);
   markHandedOff(batch, "CAP-2", { url: "https://x/p", ok: false, error: "no transition to QA" }, NOW + 8);
@@ -1390,4 +1394,57 @@ test("a card dragged down within its cluster lands where it was dropped", () => 
   // Up is unaffected.
   moveTicket(batch, "CAP-3", "c1", 0, NOW + 2);
   assert.deepEqual(batch.clusters[0].keys, ["CAP-3", "CAP-2", "CAP-1"]);
+});
+
+test("another QA round after a ship keeps the first as a round, and only shipped tickets are handed off", () => {
+  const batch = qaStarted("CAP-1", "CAP-2");
+  markQaMerging(batch, "CAP-1", NOW + 4);
+  markQaMerged(batch, "CAP-1", "a", NOW + 5);
+  approveQa(batch, "CAP-1", {}, NOW + 6);
+  excludeFromQa(batch, "CAP-2", "later", NOW + 6);
+  markQaShipped(batch, "main", NOW + 7, "m1");
+  assert.deepEqual(handoffPending(batch), ["CAP-1"]);
+
+  // Nothing new reviewed: no second round.
+  assert.equal(startQa(batch, { branch: "qa/b-2", productionBranch: "main", worktreePath: "", now: NOW + 8 }).ok, false);
+
+  // CAP-2 comes back into review: reset it the way a re-merge would allow.
+  batch.ticketStates["CAP-2"].integration.state = "none";
+  batch.ticketStates["CAP-2"].integration.pending = null;
+  assert.equal(startQa(batch, { branch: "qa/b-2", productionBranch: "main", worktreePath: "", now: NOW + 9 }).ok, true);
+  assert.equal(batch.qa?.branch, "qa/b-2");
+  assert.equal(batch.qaRounds.length, 1);
+  assert.deepEqual(batch.qaRounds[0].keys, ["CAP-1"]);
+  assert.equal(batch.qaRounds[0].shippedCommit, "m1");
+
+  // Approved in round 2 but not shipped yet: not handed off.
+  markQaMerging(batch, "CAP-2", NOW + 10);
+  markQaMerged(batch, "CAP-2", "b", NOW + 11);
+  approveQa(batch, "CAP-2", {}, NOW + 12);
+  assert.equal(isShipped(batch, batch.ticketStates["CAP-2"].integration), false);
+  assert.deepEqual(handoffPending(batch), ["CAP-1"]);
+  markQaShipped(batch, "main", NOW + 13, "m2");
+  assert.deepEqual(handoffPending(batch), ["CAP-1", "CAP-2"]);
+});
+
+test("notifications: a ticket needing you, a finished cluster, a verdict waiting, a stop", () => {
+  const before = running("CAP-1");
+  const id = before.clusters[0].id;
+  ticketReport(before, id, "CAP-1", "start", { now: NOW + 1 });
+  const doc = (batch: unknown) => ({ version: 1, batches: { b1: JSON.parse(JSON.stringify(batch)) } });
+
+  const waiting = JSON.parse(JSON.stringify(before));
+  hookEvent(waiting, "win-1", "permission", NOW + 2);
+  const needs = notificationsFor(doc(before), doc(waiting));
+  assert.deepEqual(needs.map((n: { title: string; windowId: string }) => [n.title, n.windowId]), [["CAP-1 needs you", "win-1"]]);
+
+  const done = JSON.parse(JSON.stringify(before));
+  ticketReport(done, id, "CAP-1", "done", { summary: "x", now: NOW + 3 });
+  assert.deepEqual(notificationsFor(doc(before), doc(done)).map((n: { title: string }) => n.title), ['"One" finished its tickets']);
+
+  const stopped = JSON.parse(JSON.stringify(before));
+  markStopped(stopped, id, "the agent exited", NOW + 4);
+  assert.deepEqual(notificationsFor(doc(before), doc(stopped)).map((n: { title: string; body: string }) => [n.title, n.body]), [['"One" stopped', "the agent exited"]]);
+
+  assert.deepEqual(notificationsFor(doc(before), doc(before)), [], "nothing changed, nothing sent");
 });

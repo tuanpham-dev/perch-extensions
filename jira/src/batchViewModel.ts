@@ -212,10 +212,18 @@ export function shipBlockers(batch: Batch): string[] {
 }
 
 // The approved tickets still owed a successful hand-off.
+// Mirrors the server: only a ticket whose round has shipped is handed off.
+export function isShippedTicket(batch: Batch, key: string): boolean {
+  const shipped = batch.ticketStates[key].integration?.shipped;
+  if (shipped === true) return true;
+  if (shipped === false) return false;
+  return batch.qa?.state === "shipped" || (batch.qaRounds?.length ?? 0) > 0;
+}
+
 export function handoffPending(batch: Batch): string[] {
   return Object.keys(batch.ticketStates).filter((key) => {
     const integration = batch.ticketStates[key].integration;
-    return integration?.state === "approved" && !integration.handoff?.ok;
+    return integration?.state === "approved" && isShippedTicket(batch, key) && !integration.handoff?.ok;
   });
 }
 

@@ -139,6 +139,7 @@ export default function BatchBoard({
   const blockers = shipBlockers(batch);
   const approvedCount = Object.values(batch.ticketStates).filter((t) => t.integration?.state === "approved").length;
   const owed = handoffPending(batch);
+  const rounds = batch.qaRounds ?? [];
   const qaBoard = qaLive ? qaColumns(batch).filter((column) => column.cards.length > 0 || ["queue", "verifying", "approved"].includes(column.id)) : [];
   const pending = feedbackPending(batch);
   const notices = batch.clusters.flatMap((cluster) => {
@@ -334,6 +335,20 @@ export default function BatchBoard({
         )}
         {qaLive && qa.state === "shipped" && (
           <button
+            className="jira-selaction"
+            disabled={busy || queue.length === 0}
+            title={
+              queue.length === 0
+                ? "Nothing new is reviewed - another round would have nothing to merge"
+                : `Cut a fresh QA branch from production for the ${queue.length} ticket${queue.length === 1 ? "" : "s"} reviewed since`
+            }
+            onClick={onStartQa}
+          >
+            Start another QA round
+          </button>
+        )}
+        {(qa?.state === "shipped" || rounds.length > 0) && (
+          <button
             className="jira-selaction primary"
             disabled={busy || owed.length === 0}
             title={owed.length === 0 ? "Every approved ticket has been handed off" : `Move ${owed.length} ticket${owed.length === 1 ? "" : "s"} to QA in Jira, assign and comment`}
@@ -414,7 +429,7 @@ export default function BatchBoard({
         </div>
       )}
 
-      {qaLive && qa.state === "shipped" && <HandoffPanel batch={batch} busy={busy} facets={facets} onSave={onHandoffConfig} />}
+      {(qa?.state === "shipped" || rounds.length > 0) && <HandoffPanel batch={batch} busy={busy} facets={facets} onSave={onHandoffConfig} />}
       {qaLive && (
         <div className="jira-bqa-strip" title={qa.awaiting ?? undefined}>
           <span className="jira-key">{qa.branch}</span>
@@ -431,6 +446,14 @@ export default function BatchBoard({
             </span>
           )}
           {qa.state === "shipped" && <span className="jira-bqa-shipped">merged into {qa.shippedInto}</span>}
+          {rounds.length > 0 && (
+            <span
+              className="jira-bqa-rounds"
+              title={rounds.map((round, i) => `Round ${i + 1}: ${round.branch} into ${round.shippedInto} - ${round.keys.join(", ") || "nothing approved"}`).join("\n")}
+            >
+              round {rounds.length + 1} - {rounds.length} earlier round{rounds.length === 1 ? "" : "s"} shipped
+            </span>
+          )}
         </div>
       )}
       <div className="jira-bboard-cols">

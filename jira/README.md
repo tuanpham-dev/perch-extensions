@@ -467,25 +467,42 @@ card to verify it and give a verdict:
 
 | Verdict | What happens |
 | --- | --- |
-| **Approve** | The ticket is done and its commit stays. A note you add is refined into something a teammate can act on, shown to you first, and kept for the Jira comment. |
-| **Request a change** | The QA agent edits the QA worktree and does **not** commit. Look again; approving then amends the fix into that ticket's commit. One ticket stays one commit however many rounds it takes. |
-| **Exclude** | Left out of this run, with a reason. If it was already merged its commit is dropped. |
+| **Approve** | The ticket is done and its commit stays. A note you add is restated by the QA agent, which has the ticket's context, into something a teammate can act on, shown to you first, and kept for the Jira comment. |
+| **Request a change** | The QA agent edits the QA worktree and does **not** commit, then updates the ticket's QA report and screenshots. Look again; approving then amends the fix into that ticket's commit. One ticket stays one commit however many rounds it takes. |
+| **Exclude** | Left out of this run, with a reason. If it was merged, or was being merged, its commit is dropped. |
+| **Reopen** | Takes an approval back before the branch ships: the ticket is verified again. |
+
+There is one QA working tree, so only one ticket has a change open at a time: while one does,
+Merge and Request a change on the others wait. An approval with a fix shows **amending** and an
+exclusion with a commit shows **dropping** until the QA agent confirms the git work, and Merge
+to production waits for both. A ticket on the QA branch gets no cluster feedback box and no
+Accept - changes to it go through the QA agent - and while a batch has a QA run, Accept is
+refused on the board. Each ticket's QA section also shows its **Changes**: the diff against the
+commit before it, with the uncommitted edits while a change is open.
 
 A pick that will not apply cleanly is the QA agent's to resolve when the conflict is
 mechanical; when it is a judgement about what the ticket meant, the ticket shows **conflicted**
 and its cluster's agent is told, the same way feedback reaches it. Feedback on a ticket that is
 on the QA branch goes to the QA agent, never back to its cluster.
 
-**Merge to production** is offered once nothing is merged-but-unapproved or conflicted; it
-names what is blocking it until then. The QA agent rebases onto the production branch if it
-has moved, merges with `--no-ff`, and stops. **Nothing is ever pushed** - that is yours.
+**Merge to production** is offered once nothing is merged-but-unapproved, conflicted, or waiting
+on an amend or drop; it names what is blocking it until then, and shows **merging** until the
+agent reports. The QA agent checks that the primary worktree is clean and on the production
+branch - and stops with a note if not - rebases onto the production branch if it has moved,
+merges with `--no-ff`, and reports the merge commit. **Nothing is ever pushed** - that is yours.
+
+After a ship, **Start another QA round** takes the tickets reviewed since: a fresh branch cut
+from production, named like the first with `-2`, `-3`, and its own worktree. Earlier rounds
+stay listed; only tickets whose round has shipped are handed off.
 
 **Hand off to Jira** runs after that, from the extension itself: every approved ticket is moved
 to `jira.qaStatus`, assigned to `jira.qaAssignee` (a display name, an email or an account id,
 resolved against the project's assignable users - a name that matches nobody or several people
 stops the hand-off before anything is written), and given one comment: the preview URL from
 `jira.previewUrlTemplate`, then the QA report's problem, fix and how to QA, then your note.
-It is reported per ticket, and running it again touches only the ones that failed.
+It is reported per ticket, step by step, and running it again finishes only what failed: a
+status change that already happened is not repeated and a comment is never posted twice. One
+hand-off runs per batch at a time, and each row shows the exact comment before it goes out.
 
 The status, assignee and preview URL can be set per batch in the **Hand-off** panel above the
 list. A field left empty uses the setting, which the field shows as its placeholder. The values
@@ -493,8 +510,10 @@ are saved on the batch, so a retry uses the same ones. The preview URL may carry
 the setting.
 
 If the QA agent dies, the board says so and **Start QA again** reuses its worktree and branch -
-every merge so far is on disk - and tells the new agent to read `git status` first, since a fix
-may be sitting uncommitted. With `jira.startQaOnFirstReview` on, QA starts by itself when the
+every merge so far is on disk - and its brief lists what was in flight: a pick, an open change,
+a note waiting to be restated. A merge that was never reported can be sent again (**Ask
+again**) or excluded. The agent keeps its log and screenshots outside the worktree, so they can
+never end up in a ticket's commit. With `jira.startQaOnFirstReview` on, QA starts by itself when the
 batch's first ticket reaches Review.
 
 The QA agent reports with its own `jira-batch` verbs (`qa-start`, `qa-merged`, `qa-fixing`,
@@ -517,6 +536,7 @@ a skill's business, and each cluster runs with two of them:
 | `jira.productionBranch` | `` | Where a QA branch is cut from and merged back into. Empty uses the repository's default branch |
 | `jira.qaBranchTemplate` | `qa/{batch}` | How a QA branch is named - `{batch}` the batch name as a slug, `{date}` today as YYYYMMDD |
 | `jira.startQaOnFirstReview` | `false` | Start the QA agent by itself when the batch's first ticket reaches Review |
+| `jira.pushNotifications` | `true` | Browser notifications for batch events that need you (see When a worker dies) |
 | `jira.qaStatus` | `QA` | The Jira status handed-off tickets are moved to, matched by name |
 | `jira.qaAssignee` | `` | Who handed-off tickets are assigned to: a display name, an email or an account id. Empty leaves the assignee alone |
 | `jira.previewUrlTemplate` | `` | The URL a handed-off ticket's comment points at; `{key}` is replaced by the ticket key |
@@ -623,11 +643,12 @@ line, with the batch and cluster ids in its environment. POSIX `sh` around
 | `jira-batch qa <KEY> --status pass\|fail\|partial\|blocked` | File the QA report: `--problem`, `--fix`, `--steps` (repeatable), `--notes`, `--files`, `--before <path>`, `--after <path>`, `--shot <path>[:<caption>]` (repeatable) |
 | `jira-batch qa-start [--url <preview>]` | QA agent: the branch is cut and the server is serving the QA worktree |
 | `jira-batch qa-merged <KEY> --commit <sha>` | QA agent: the ticket is squashed onto the branch; again with the new sha after amending a fix in |
-| `jira-batch qa-fixing <KEY> [--what <text>]` | QA agent: a requested change is made in the worktree and not committed |
+| `jira-batch qa-fixing <KEY> [--what <text>] [report flags]` | QA agent: a requested change is made in the worktree and not committed; with the `qa` report flags it also updates the ticket's report |
+| `jira-batch qa-refined <KEY> [--id <id>] --text <text>` | QA agent: the approval note, restated (or `--as-written yes`) |
 | `jira-batch qa-approved <KEY> --commit <sha>` | QA agent: the fix is amended into the ticket's commit |
 | `jira-batch qa-excluded <KEY> --why <text>` | QA agent: left out, and its commit dropped if it had one |
 | `jira-batch qa-conflict <KEY> --files <path>... --why <text>` | QA agent: the pick would not apply and the resolution is a judgement call |
-| `jira-batch qa-shipped --into <branch>` | QA agent: the QA branch is merged into the production branch, never pushed |
+| `jira-batch qa-shipped --into <branch> [--commit <sha>]` | QA agent: the QA branch is merged into the production branch, never pushed |
 | `jira-batch note <text>` | Record something against the cluster |
 | `jira-batch brief` | Print the cluster's full brief: every ticket, its comments, the rules |
 | `jira-batch status` | This cluster and where each of its tickets stands |
@@ -639,10 +660,24 @@ whoever is reading that terminal.
 
 ### When a worker dies
 
-A sweep every 15 seconds marks a cluster **stopped** as soon as its window is gone, and
-puts whatever it was mid-way through back in the queue. Only a missing window counts - an
-agent that is merely quiet may be thinking. **Resume** opens a new window on the same
-worktree, relaunches the agent and tells it where the cluster stands.
+A sweep every 15 seconds marks a cluster **stopped** when its window is gone, or when the
+window has been back at a plain shell for 30 seconds (the agent exited), and puts whatever it
+was mid-way through back in the queue. An agent that is merely quiet may be thinking, so
+quiet alone never counts. The board shows why it stopped, its latest note, and any error.
+**Resume** opens a new window on the same worktree, relaunches the agent and tells it where
+the cluster stands, with the feedback for anything sent back for rework.
+
+After a Perch restart, agents that come back in their old windows keep working: `jira-batch`
+finds its socket beside its own install folder and its batch by the window, and the agent is
+told the command's full path.
+
+While an agent waits on a permission prompt, its ticket's **Agent terminal** shows the prompt's
+options as buttons, with Esc and a reply box; anything you send to it meanwhile (feedback,
+new tickets) is held until it is past the prompt. With `jira.pushNotifications` on, a browser
+that turned on notifications in Perch hears about a ticket that needs you, a cluster that
+finished, an agent that stopped, a QA ticket ready for your verdict, and a failed hand-off.
+
+A closed cluster's unfinished tickets can be moved to another cluster from their detail.
 
 Closing a cluster keeps its worktree and branch for review; removing the worktree keeps
 the branch, never touches the repository itself, and asks twice if there is uncommitted

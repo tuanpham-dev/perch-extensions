@@ -55,6 +55,7 @@ import {
   setHandoffConfig,
   discardProposal,
   setBatchAgent,
+  isShipped,
   effectiveHandoff,
   requestQaRefine,
   markQaRefined,
@@ -66,6 +67,7 @@ import { createBatchStore, newId } from "./batchStore.mjs";
 import { buildClusterPrompt, heuristicClusters, parseClusterReply, singleCluster } from "./analysis.mjs";
 import { createBatchRunner } from "./batchRunner.mjs";
 import { buildQaDiff } from "./qaDiff.mjs";
+import { answerPrompt, promptOf, typedText } from "./agentPrompt.mjs";
 import { findTicketLinks } from "./links.mjs";
 import { createReviewStore } from "./reviewStore.mjs";
 import { createReviewRunner } from "./reviewRunner.mjs";
@@ -2528,29 +2530,108 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   // the QA agent. Only windows this batch started can be read - the id is
   // looked up on the batch, never taken from the request.
   const TERMINAL_LINES_MAX = 2000;
+  const PROMPT_LINES = 60;
+
+  // An agent window's screen for the board: the text with some history, and
+  // the prompt it is showing.
+  async function terminalView(agent, windowId, sessionName, lines, waiting) {
+    if (!windowId) return { agent, windowId: "", sessionName, text: "", closed: true, prompt: null, waiting: false };
+    if (typeof host?.sessions?.capture !== "function") throw tooOld("this Perch cannot read terminal screens - update it");
+    try {
+      const text = await host.sessions.capture(windowId, { scrollback: lines });
+      // Some history too: in a short window the prompt starts above the
+      // visible rows. The parser only takes a prompt whose footer is among the
+      // last lines, so an old one scrolled up is never read as current.
+      const screen = await host.sessions.capture(windowId, { scrollback: PROMPT_LINES });
+      return { agent, windowId, sessionName, text, closed: false, prompt: promptOf(screen), waiting: Boolean(waiting) };
+    } catch {
+      // The window is gone (the agent's terminal was closed) or the backend
+      // could not read it: either way there is no screen to show.
+      return { agent, windowId, sessionName, text: "", closed: true, prompt: null, waiting: false };
+    }
+  }
+
+  // An answer to that prompt, typed into the agent's window.
+  async function answerAgent(windowId, agentId, body) {
+    if (!windowId) throw conflict("that agent has no terminal");
+    if (typeof host?.sessions?.capture !== "function" || typeof host?.sessions?.sendTextToWindow !== "function") {
+      throw tooOld("this Perch cannot read or type into terminal screens - update it");
+    }
+    const result = await answerPrompt({
+      capture: () => host.sessions.capture(windowId, { scrollback: PROMPT_LINES }),
+      send: (bytes, submit) => host.sessions.sendTextToWindow(windowId, bytes, submit),
+      typed: (text) => (/claude/i.test(String(agentId ?? "")) ? typedText(text) : text),
+      action: body?.action,
+      expect: typeof body?.expect === "string" ? body.expect : "",
+    });
+    if (!result.ok) throw conflict(result.error);
+  }
+
+  // What an agent's terminal shows right now: its screen plus some history
+  // above it, as plain text, so the batch view can show what the agent is
+  // doing without opening its terminal. `agent` is a cluster id, or "qa" for
+  // the QA agent. Only windows this batch started can be read - the id is
+  // looked up on the batch, never taken from the request.
+  function batchAgent(batch, agent) {
+    const owner = agent === "qa" ? batch.qa : batch.clusters.find((cluster) => cluster.id === agent);
+    if (!owner) throw notFound(agent === "qa" ? "this batch has no QA agent" : `no cluster ${agent}`);
+    const waiting = agent === "qa" ? Boolean(batch.qa?.awaiting) : clusterState(batch, owner) === "waiting";
+    const agentId = agent === "qa" ? batch.qa?.agentId || batch.agentId : owner.agentId;
+    return { owner, waiting, agentId };
+  }
+
   router.get(
     "/batches/:id/terminal",
     route(async (req, res) => {
       const batch = batchOr404(await batches.get(), req.params.id);
       const agent = typeof req.query.agent === "string" ? req.query.agent : "";
-      const owner = agent === "qa" ? batch.qa : batch.clusters.find((cluster) => cluster.id === agent);
-      if (!owner) throw notFound(agent === "qa" ? "this batch has no QA agent" : `no cluster ${agent}`);
-      const windowId = owner.windowId ?? "";
+      const { owner, waiting } = batchAgent(batch, agent);
       const lines = Math.min(TERMINAL_LINES_MAX, Math.max(0, Number(req.query.lines) || 300));
       res.setHeader("cache-control", "no-store");
-      if (!windowId) {
-        res.json({ agent, windowId: "", sessionName: owner.sessionName ?? "", text: "", closed: true });
-        return;
-      }
-      if (typeof host?.sessions?.capture !== "function") throw tooOld("this Perch cannot read terminal screens - update it");
-      try {
-        const text = await host.sessions.capture(windowId, { scrollback: lines });
-        res.json({ agent, windowId, sessionName: owner.sessionName ?? "", text, closed: false });
-      } catch {
-        // The window is gone (the agent's terminal was closed) or the backend
-        // could not read it: either way there is no screen to show.
-        res.json({ agent, windowId, sessionName: owner.sessionName ?? "", text: "", closed: true });
-      }
+      res.json(await terminalView(agent, owner.windowId ?? "", owner.sessionName ?? "", lines, waiting));
+    }),
+  );
+
+  // Answering a batch agent's prompt: { agent, action, expect }.
+  router.post(
+    "/batches/:id/agent-key",
+    route(async (req, res) => {
+      const batch = batchOr404(await batches.get(), req.params.id);
+      const agent = typeof req.body?.agent === "string" ? req.body.agent : "";
+      const { owner, agentId } = batchAgent(batch, agent);
+      await answerAgent(owner.windowId ?? "", agentId, req.body);
+      res.json({ ok: true });
+    }),
+  );
+
+  // The same two for a ticket review's agents, by task.
+  function reviewAgent(review, task) {
+    const current = review?.tasks?.[task];
+    if (!current) throw notFound(`no ${task} task on this review`);
+    return current;
+  }
+
+  router.get(
+    "/reviews/:key/terminal",
+    route(async (req, res) => {
+      const key = String(req.params.key ?? "").toUpperCase();
+      const task = typeof req.query.task === "string" ? req.query.task : "";
+      const current = reviewAgent((await reviews.get()).reviews[key], task);
+      const lines = Math.min(TERMINAL_LINES_MAX, Math.max(0, Number(req.query.lines) || 300));
+      res.setHeader("cache-control", "no-store");
+      const windowId = current.state === "running" ? current.windowId ?? "" : "";
+      res.json(await terminalView(task, windowId, "", lines, false));
+    }),
+  );
+
+  router.post(
+    "/reviews/:key/agent-key",
+    route(async (req, res) => {
+      const key = String(req.params.key ?? "").toUpperCase();
+      const task = typeof req.body?.agent === "string" ? req.body.agent : "";
+      const current = reviewAgent((await reviews.get()).reviews[key], task);
+      await answerAgent(current.state === "running" ? current.windowId ?? "" : "", current.agentId, req.body);
+      res.json({ ok: true });
     }),
   );
 
@@ -2608,7 +2689,7 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
       const cfg = await readConfig(batch.repo);
       const { previewUrl: urlTemplate } = effectiveHandoff(batch.handoffConfig, cfg.settings);
       const tickets = Object.keys(batch.ticketStates)
-        .filter((key) => batch.ticketStates[key].integration?.state === "approved")
+        .filter((key) => batch.ticketStates[key].integration?.state === "approved" && isShipped(batch, batch.ticketStates[key].integration))
         .map((key) => {
           const ticket = batch.ticketStates[key];
           const url = urlTemplate.replace("{key}", key);
@@ -2640,7 +2721,10 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   async function runHandoff(req, res, id) {
     {
       const batch = batchOr404(await batches.get(), id);
-      if (!batch.qa || batch.qa.state !== "shipped") throw conflict("merge to production first - the hand-off says the work is on the main branch");
+      // Any round merged into production has something to hand off, even
+      // while a later round is still running.
+      const shippedSomething = batch.qa?.state === "shipped" || (batch.qaRounds?.length ?? 0) > 0;
+      if (!shippedSomething) throw conflict("merge to production first - the hand-off says the work is on the main branch");
       const cfg = await readConfig(batch.repo);
       if (!cfg.siteUrl || !cfg.email || !cfg.apiToken) throw bad("jira is not configured");
       // Values sent with the click are this batch's config from now on, so a

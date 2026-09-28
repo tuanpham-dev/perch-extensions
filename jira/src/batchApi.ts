@@ -16,7 +16,7 @@ import type {
   Proposal,
   SkillsResponse,
   StartResponse,
- AgentTerminalResponse, HandoffConfig, HandoffConfigResponse, QaDiffResponse, QaStartResponse } from "./batchTypes";
+ AgentKeyAction, AgentTerminalResponse, HandoffConfig, HandoffConfigResponse, QaDiffResponse, QaStartResponse } from "./batchTypes";
 import type { LookupResponse } from "./batchTypes";
 
 export function lookupIssues(keys: string[] | string): Promise<LookupResponse> {
@@ -307,4 +307,16 @@ export function qaAskAgain(id: string, key: string): Promise<BatchResponse> {
 // Declines the tickets an "Add to batch" brought; they leave the batch.
 export function discardProposal(id: string): Promise<BatchResponse & { removed: string[] }> {
   return apiPost(`/batches/${encodeURIComponent(id)}/proposal/discard`, {});
+}
+
+export function sendAgentKey(id: string, agent: string, action: AgentKeyAction, expect: string): Promise<{ ok: boolean }> {
+  return apiPost(`/batches/${encodeURIComponent(id)}/agent-key`, { agent, action, expect });
+}
+
+export function getReviewTerminal(key: string, task: string, lines = 300): Promise<AgentTerminalResponse> {
+  return apiGet<AgentTerminalResponse>(`/reviews/${encodeURIComponent(key)}/terminal?task=${encodeURIComponent(task)}&lines=${lines}`);
+}
+
+export function sendReviewKey(key: string, task: string, action: AgentKeyAction, expect: string): Promise<{ ok: boolean }> {
+  return apiPost(`/reviews/${encodeURIComponent(key)}/agent-key`, { agent: task, action, expect });
 }

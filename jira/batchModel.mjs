@@ -112,6 +112,18 @@ function normalizeBatch(id, raw, now) {
     unclustered: Array.isArray(raw.unclustered) ? raw.unclustered.filter((k) => typeof k === "string") : [],
     pendingProposal: isObject(raw.pendingProposal) ? raw.pendingProposal : null,
     qa: normalizeQa(raw.qa),
+    // Earlier QA runs, each already merged into production, kept for the
+    // record once another round starts.
+    qaRounds: Array.isArray(raw.qaRounds)
+      ? raw.qaRounds.filter(isObject).map((round) => ({
+          branch: str(round.branch),
+          productionBranch: str(round.productionBranch),
+          shippedInto: str(round.shippedInto),
+          shippedAt: typeof round.shippedAt === "number" ? round.shippedAt : null,
+          shippedCommit: str(round.shippedCommit),
+          keys: Array.isArray(round.keys) ? round.keys.filter((k) => typeof k === "string") : [],
+        }))
+      : [],
     handoffConfig: normalizeHandoffConfig(raw.handoffConfig),
   };
 }
@@ -263,6 +275,7 @@ export function newBatch({ id, name, repo, criteria, readCodebase, tickets, now 
     pendingProposal: null,
     // The QA branch and the agent that owns it, once one has been started.
     qa: null,
+    qaRounds: [],
     handoffConfig: normalizeHandoffConfig(null),
   };
 }
@@ -1312,6 +1325,10 @@ function newIntegration() {
     // excluded ticket's commit to remove). Shipping waits for it.
     pending: null,
     fixReported: true,
+    // Whether its approved commit has been merged into production: only
+    // those are handed off, so a ticket approved in a round that has not
+    // shipped yet waits. Null on records from before rounds existed.
+    shipped: false,
     // The approval note being restated by the QA agent, which has the
     // ticket's context: null until asked, then pending until it answers.
     // Kept here rather than in the form so it survives the pane going away
@@ -1347,6 +1364,7 @@ function normalizeIntegration(raw) {
     pending: raw.pending === "amend" || raw.pending === "drop" ? raw.pending : null,
     // False from a change request until the agent reports making it.
     fixReported: raw.fixReported !== false,
+    shipped: raw.shipped === true ? true : raw.shipped === false ? false : null,
     refine: isObject(raw.refine)
       ? {
           id: str(raw.refine.id),
@@ -1444,6 +1462,30 @@ function requireQa(batch) {
 export function startQa(batch, { branch, productionBranch, worktreePath, now }) {
   if (batch.qa && batch.qa.state === "running") {
     return { ok: false, error: `QA is already running on ${batch.qa.branch}` };
+  }
+  // Another round after a ship: the shipped run is kept as a round and a
+  // fresh one starts, for the tickets reviewed since.
+  if (batch.qa?.state === "shipped") {
+    if (qaQueue(batch).length === 0) {
+      return { ok: false, error: "nothing new is reviewed - there would be nothing to merge in another round" };
+    }
+    batch.qaRounds = [
+      ...(batch.qaRounds ?? []),
+      {
+        branch: batch.qa.branch,
+        productionBranch: batch.qa.productionBranch,
+        shippedInto: batch.qa.shippedInto,
+        shippedAt: batch.qa.shippedAt,
+        shippedCommit: batch.qa.shippedCommit ?? "",
+        keys: Object.keys(batch.ticketStates).filter((key) => {
+          const integration = batch.ticketStates[key].integration;
+          return integration?.state === "approved" && isShipped(batch, integration);
+        }),
+      },
+    ];
+    // Whatever shipped in it is marked so, before the run it came from goes.
+    for (const key of batch.qaRounds.at(-1).keys) batch.ticketStates[key].integration.shipped = true;
+    batch.qa = null;
   }
   if (qaQueue(batch).length === 0 && !batch.qa) {
     return { ok: false, error: "nothing is in review yet - there would be nothing to merge" };
@@ -1640,6 +1682,7 @@ export function approveQa(batch, key, { note = "", refinedNote = "", postedNote 
   // tells the agent which of the two it is.
   const amend = integration.state === "fixing";
   integration.state = "approved";
+  integration.shipped = false;
   integration.pending = amend ? "amend" : null;
   integration.refine = null;
   integration.note = str(note);
@@ -1760,6 +1803,9 @@ export function markQaShipped(batch, into, now, commit = "") {
   batch.qa.state = "shipped";
   batch.qa.shipping = null;
   batch.qa.shippedAt = now;
+  for (const ticket of Object.values(batch.ticketStates)) {
+    if (ticket.integration?.state === "approved") ticket.integration.shipped = true;
+  }
   batch.qa.shippedInto = str(into);
   batch.qa.shippedCommit = str(commit);
   batch.updatedAt = now;
@@ -1790,8 +1836,15 @@ export function markHandedOff(batch, key, { url = "", ok = false, error = "", st
 export function handoffPending(batch) {
   return Object.keys(batch.ticketStates).filter((key) => {
     const integration = batch.ticketStates[key].integration;
-    return integration?.state === "approved" && !integration.handoff?.ok;
+    return integration?.state === "approved" && isShipped(batch, integration) && !integration.handoff?.ok;
   });
+}
+
+// A record from before rounds existed says nothing; it shipped if the run did.
+export function isShipped(batch, integration) {
+  if (integration?.shipped === true) return true;
+  if (integration?.shipped === false) return false;
+  return batch.qa?.state === "shipped" || (batch.qaRounds?.length ?? 0) > 0;
 }
 
 // The QA agent's window gets the same four hook events a cluster's does, and
@@ -1826,6 +1879,57 @@ export function qaSeen(batch, now) {
   batch.qa.awaiting = null;
   batch.updatedAt = now;
   return { ok: true };
+}
+
+// What deserves a browser notification between two versions of the
+// document: things that are back with you while you may be elsewhere. Each
+// carries the window it concerns, which the notification opens on click;
+// one with no window gets a key of its own, for the host's per-window rate
+// limit.
+export function notificationsFor(before, after) {
+  const out = [];
+  for (const [id, next] of Object.entries(after?.batches ?? {})) {
+    const prev = before?.batches?.[id];
+    if (!prev || next.archivedAt) continue;
+    const name = next.name;
+    for (const [key, ticket] of Object.entries(next.ticketStates)) {
+      const was = prev.ticketStates?.[key];
+      const cluster = clusterOfKey(next, key);
+      if (ticket.state === "needs-you" && was?.state !== "needs-you") {
+        const note = ticket.history.at(-1)?.note || "waiting on you";
+        out.push({ batchId: id, windowId: cluster?.windowId || `jira:${id}:${key}`, title: `${key} needs you`, body: `${name} - ${note}` });
+      }
+      const integration = ticket.integration;
+      const wasIntegration = was?.integration;
+      const merged = integration?.state === "merged" && wasIntegration?.state === "merging";
+      const fixed = integration?.state === "fixing" && integration.fixReported === true && wasIntegration?.fixReported === false;
+      if (merged || fixed) {
+        out.push({
+          batchId: id,
+          windowId: next.qa?.windowId || `jira:${id}:${key}`,
+          title: `${key} is ready for your verdict`,
+          body: `${name} - ${merged ? "merged onto the QA branch" : "the change you asked for is made"}`,
+        });
+      }
+      const handoff = integration?.handoff;
+      if (handoff && !handoff.ok && handoff.at !== wasIntegration?.handoff?.at) {
+        out.push({ batchId: id, windowId: `jira:${id}:${key}:handoff`, title: `Hand-off of ${key} failed`, body: handoff.error || name });
+      }
+    }
+    for (const cluster of next.clusters) {
+      const was = prev.clusters?.find((entry) => entry.id === cluster.id);
+      if (!was) continue;
+      if (cluster.state === "stopped" && was.state !== "stopped") {
+        out.push({ batchId: id, windowId: was.windowId || `jira:${id}:${cluster.id}`, title: `"${cluster.name}" stopped`, body: cluster.stoppedReason || name });
+      } else if (clusterState(next, cluster) === "idle" && clusterState(prev, was) !== "idle" && isStarted(cluster)) {
+        out.push({ batchId: id, windowId: cluster.windowId || `jira:${id}:${cluster.id}`, title: `"${cluster.name}" finished its tickets`, body: `${name} - ready for review` });
+      }
+    }
+    if (next.qa?.state === "idle" && prev.qa?.state === "running" && next.qa.lastError) {
+      out.push({ batchId: id, windowId: prev.qa.windowId || `jira:${id}:qa`, title: "The QA agent stopped", body: `${name} - ${next.qa.lastError}` });
+    }
+  }
+  return out;
 }
 
 export function diffEvents(before, after) {

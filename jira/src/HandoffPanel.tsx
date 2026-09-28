@@ -16,6 +16,7 @@ import Icon from "./Icon";
 import KeyLink from "./KeyLink";
 import { getHandoffConfig, getHandoffPreview } from "./batchApi";
 import type { Batch, HandoffConfig } from "./batchTypes";
+import { isShippedTicket } from "./batchViewModel";
 import type { Facets } from "./types";
 import { useStickyState } from "./stickyState";
 
@@ -95,7 +96,9 @@ export default function HandoffPanel({ batch, busy, facets, onSave }: HandoffPan
   }, [batch.id]);
 
   const rows = Object.keys(batch.ticketStates)
-    .filter((key) => batch.ticketStates[key].integration?.state === "approved")
+    // Only what has reached production: a ticket approved in a round that
+    // has not shipped yet is not ready to hand off.
+    .filter((key) => batch.ticketStates[key].integration?.state === "approved" && isShippedTicket(batch, key))
     .map((key) => ({ key, handoff: batch.ticketStates[key].integration?.handoff ?? null, summary: batch.tickets[key]?.summary ?? "" }));
   if (rows.length === 0) return null;
   const done = rows.filter((row) => row.handoff?.ok).length;

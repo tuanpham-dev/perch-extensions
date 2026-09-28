@@ -200,6 +200,8 @@ export interface Batch {
   pendingProposal: Proposal | null;
   // Absent on a batch written before it existed; the server fills it in.
   handoffConfig?: HandoffConfig;
+  // Earlier QA runs, each merged into production before the next started.
+  qaRounds?: { branch: string; productionBranch: string; shippedInto: string; shippedAt: number | null; shippedCommit: string; keys: string[] }[];
   // The QA branch and the agent that owns it. Null until Start QA; absent on
   // a batch written before it existed.
   qa?: BatchQa | null;
@@ -304,6 +306,8 @@ export interface TicketIntegration {
   // pending until it answers) or by the extension's model as a fallback.
   // Git work asked for and not yet confirmed by the QA agent.
   pending?: "amend" | "drop" | null;
+  // Whether its approved commit is in production; null on older records.
+  shipped?: boolean | null;
   refine: {
     note: string;
     state: "pending" | "done";
@@ -323,7 +327,15 @@ export interface AgentTerminalResponse {
   sessionName: string;
   text: string;
   closed: boolean;
+  // The prompt on screen, when one can be read; answered by option number.
+  prompt?: { signature: string; kind: string; title: string; question: string; options: { n: number; label: string }[] } | null;
+  // The agent is waiting on you (a permission hook fired) - with no readable
+  // prompt, the board offers plain keys instead.
+  waiting?: boolean;
 }
+
+// An answer to that prompt.
+export type AgentKeyAction = { type: "option"; n: number } | { type: "key"; key: string } | { type: "text"; text: string };
 
 // GET /batches/:id/qa/diff. Raw patches: the client parses them
 // (diffModel.mjs), so the server stays a thin git call.
