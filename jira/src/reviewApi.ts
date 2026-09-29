@@ -1,6 +1,7 @@
 // The review routes, and their event stream. Same conventions as batchApi.ts.
 import { apiGet, apiPost } from "./api";
 import type { ReviewDocument, ReviewTaskName, StartReviewResult } from "./reviewTypes";
+import { openServerEvents, type EventSourceLike } from "./serverEvents";
 
 const BASE = "/reviews";
 
@@ -50,12 +51,12 @@ export function storefrontPasswordSet(project: string): Promise<{ set: boolean; 
 // ---- The event stream ----
 // A copy of batchApi's subscription, for /reviews/events. Two streams rather
 // than one shared, so neither flow's route or event names leak into the other.
-const EVENTS_URL = "/api/ext/perch.jira/reviews/events";
+const EVENTS_PATH = "/reviews/events";
 const MIN_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
 
 export function subscribeReviewEvents(onChange: (key: string) => void, onReconnect?: () => void): () => void {
-  let source: EventSource | null = null;
+  let source: EventSourceLike | null = null;
   let retry = MIN_RETRY_MS;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -63,7 +64,7 @@ export function subscribeReviewEvents(onChange: (key: string) => void, onReconne
 
   const connect = () => {
     if (stopped) return;
-    source = new EventSource(EVENTS_URL);
+    source = openServerEvents(EVENTS_PATH);
     source.addEventListener("open", () => {
       retry = MIN_RETRY_MS;
       if (everOpened) onReconnect?.();

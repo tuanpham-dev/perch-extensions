@@ -163,6 +163,7 @@ import type {
   WorktreeResponse,
   WorktreeRow,
 } from "./types";
+import { setServerEventSource, type EventSourceLike } from "./serverEvents";
 
 // ---- Module-level host bridge ----
 
@@ -4375,6 +4376,9 @@ interface ExtensionContext {
     component: () => ReturnType<typeof JiraStatusItem>;
   }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
+  // Newer Perch only: an event stream shared by every window (see
+  // serverEvents.ts).
+  serverEventSource?(path: string): EventSourceLike;
   assetUrl(relPath: string): string;
   settings: SettingsApi;
   app: {
@@ -4401,6 +4405,7 @@ interface ExtensionContext {
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
   setApiFetcher(ctx.serverFetch);
+  setServerEventSource(ctx.serverEventSource ? ctx.serverEventSource.bind(ctx) : null);
   getActiveContext = ctx.app.getActiveContext;
   onDidChangeContext = ctx.app.onDidChangeContext;
   openSessionWindow = ctx.app.openSessionWindow;
@@ -4616,5 +4621,6 @@ export function deactivate(): void {
   openViewerTab = null;
   for (const dispose of disposeBridge) dispose();
   disposeBridge = [];
+  setServerEventSource(null);
   listeners.clear();
 }

@@ -18,6 +18,7 @@ import type {
   StartResponse,
  AgentKeyAction, AgentTerminalResponse, HandoffConfig, HandoffConfigResponse, QaDiffResponse, QaStartResponse } from "./batchTypes";
 import type { LookupResponse } from "./batchTypes";
+import { openServerEvents, type EventSourceLike } from "./serverEvents";
 
 export function lookupIssues(keys: string[] | string): Promise<LookupResponse> {
   return apiPost<LookupResponse>("/issues/lookup", { keys });
@@ -216,16 +217,16 @@ export function deleteBatch(id: string): Promise<{ ok: boolean }> {
 
 // ---- The event stream ----
 //
-// EventSource rather than the extension's serverFetch: it is a GET with no
-// body, it reconnects on its own, and the host's fetch wrapper has nothing to
-// add to it. The path is the extension's own route, same origin.
+// An event stream rather than the extension's serverFetch: it is a GET with
+// no body and it reconnects on its own. Opened through serverEvents.ts, so
+// every Perch window shares one connection for it.
 //
 // EventSource retries by itself, but only while the server is merely slow; a
 // connection the browser gives up on (a server restart) needs a new one, and
 // a backoff so a server that stays down is not hammered. `onReconnect` is how
 // the board refetches after a gap, since events that happened while the
 // stream was down were never delivered.
-const EVENTS_URL = "/api/ext/perch.jira/batches/events";
+const EVENTS_PATH = "/batches/events";
 const MIN_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
 
@@ -233,7 +234,7 @@ export function subscribeBatchEvents(
   onChange: (batchId: string) => void,
   onReconnect?: () => void,
 ): () => void {
-  let source: EventSource | null = null;
+  let source: EventSourceLike | null = null;
   let retry = MIN_RETRY_MS;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -241,7 +242,7 @@ export function subscribeBatchEvents(
 
   const connect = () => {
     if (stopped) return;
-    source = new EventSource(EVENTS_URL);
+    source = openServerEvents(EVENTS_PATH);
     source.addEventListener("open", () => {
       retry = MIN_RETRY_MS;
       // Not on the first connection: the caller has just loaded the batch.
