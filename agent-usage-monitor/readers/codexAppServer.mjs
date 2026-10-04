@@ -29,6 +29,18 @@ async function ask(methods) {
   let nextId = 1;
   let buf = "";
 
+  // A spawn failure (codex not on PATH) arrives as an 'error' event; with no
+  // listener it is thrown as an unhandled error and takes the whole server
+  // down. Fail the pending calls instead, and swallow the EPIPE that writing
+  // to the dead child's stdin raises.
+  let spawnError = null;
+  child.on("error", (err) => {
+    spawnError = err;
+    for (const resolve of [...pending.values()]) resolve({ error: { message: err.message } });
+    pending.clear();
+  });
+  child.stdin.on("error", () => {});
+
   child.stdout.on("data", (chunk) => {
     buf += chunk.toString();
     let nl;
@@ -52,6 +64,7 @@ async function ask(methods) {
 
   const call = (method, params, timeoutMs) =>
     new Promise((resolve, reject) => {
+      if (spawnError) return reject(spawnError);
       const id = nextId++;
       const timer = setTimeout(() => {
         if (pending.delete(id)) reject(new Error(`codex app-server timed out: ${method}`));

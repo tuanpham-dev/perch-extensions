@@ -2,7 +2,7 @@
   "name": "agent-usage-monitor",
   "private": true,
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "displayName": "Agent Usage Monitor",
   "description": "How much each coding agent has burned, in the status bar: a usage item per agent (5-hour and weekly limits, token blocks per window, burn rate, and real spend where the agent reports it) plus an item showing the model running in the terminal you are looking at. Reads what Claude Code and Codex already write locally, and asks each CLI for its limits once a minute (claude -p /usage, codex app-server); no auto-continue, which Claude Code now does itself.",
   "icon": "./icon.svg",
