@@ -1,33 +1,44 @@
-// The viewer tab: connects to the running session through the proxy,
-// decodes and draws frames, forwards input, follows the tab's size, relays
-// clipboard and cursor, pauses while hidden, and reconnects on its own.
+// The viewer tab: connects to the running qr-host through the proxy,
+// decodes and draws frames, forwards input, asks for the display size and
+// scale it wants while it drives, relays clipboard, cursor shapes, audio
+// and files, pauses while hidden, and reconnects on its own.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
 import { Connection, type ConnState, type ConnectionStats } from "./connection";
-import { createDecoder, probeFormats, type Decoder, type DecoderKind } from "./decoder";
+import { createDecoder, hasWebCodecs, probeDecoders, type Decoder } from "./decoder";
 import { Renderer } from "./render";
 import { attachInput } from "./input";
 import { EXTRA_KEYS, attachPhoneKeyboard, isStickyKey, isTouchDevice, type PhoneKeyboard } from "./keyboard";
 import { createClipboardBridge } from "./clipboard";
+import { createFileTransfer, type FileTransfer } from "./files";
+import { AudioPipe } from "./audio";
 import { AnchoredPopover } from "./popover";
+import { fetchStatus, getHost, type RdStatus } from "./host";
 import {
+  PRESETS,
+  RATES,
+  clampSize,
   detectedPixelRatio,
-  deviceFitToTab,
   deviceRatioChoice,
   effectivePixelRatio,
-  fetchStatus,
   fsControlsPos,
-  setFsControlsPos,
-  type ControlsPos,
-  getHost,
-  setDeviceFitToTab,
+  loadViewSettings,
+  saveViewSettings,
   setDeviceRatioChoice,
+  setFsControlsPos,
   syncedRatioChoice,
+  viewerId,
+  type ControlsPos,
+  type Quality,
   type RatioChoice,
-  type RdStatus,
-} from "./host";
-import { BASELINE_CODEC_STRING, formatLabel, type ParsedFrame, type ServerHello, type ServerMsg } from "./wire";
+  type ViewMode,
+  type TouchMode,
+  type ViewSettings,
+} from "./settings";
+import { View, ZOOM_MAX, ZOOM_MIN, type Box } from "./view";
+import { ClipKind, DisplayKind, DisplayTarget, Kind, QualityLevel, decodeAudio, type CodecCap, type Msg } from "./qr/proto";
+import { codecLabel } from "./wire";
 
 export interface ViewerProps {
   active: boolean;
@@ -35,17 +46,30 @@ export interface ViewerProps {
   setTitle?: (title: string) => void;
 }
 
-const RESIZE_DEBOUNCE_MS = 250;
+const REQUEST_DEBOUNCE_MS = 300;
 const STATS_REFRESH_MS = 1000;
+// Protocol error codes the viewer reacts to.
+const ERROR_BUSY = 6;
+const ERROR_REPLACED = 10;
 
 interface Size {
   width: number;
   height: number;
 }
 
-const evenSize = (n: number) => Math.max(2, Math.round(n) & ~1);
 // How far a finger may move on the fullscreen controls and still tap.
 const DRAG_THRESHOLD_PX = 6;
+// A tab smaller than this in either direction is hidden or collapsed, not
+// a size anyone wants the desktop to take.
+const MIN_FOLLOW_PX = 64;
+
+const QUALITY_LEVEL: Record<Quality, number> = { high: QualityLevel.HIGH, medium: QualityLevel.MEDIUM, low: QualityLevel.LOW };
+
+/** The size a tab asks for when following: even, within what the host takes. */
+function followSize(cssWidth: number, cssHeight: number, ratio: number): [number, number] {
+  const even = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.round(v))) & ~1;
+  return [even(cssWidth * ratio, 320, 7680), even(cssHeight * ratio, 200, 4320)];
+}
 
 export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -53,65 +77,69 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const [status, setStatus] = useState<RdStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connState, setConnState] = useState<ConnState>("closed");
-  const [decoderKind, setDecoderKind] = useState<DecoderKind | null>(null);
-  const [streamFormat, setStreamFormat] = useState<string | null>(null);
-  const [forceWasm, setForceWasm] = useState(false);
+  const [codec, setCodec] = useState<number | null>(null);
+  const [encoder, setEncoder] = useState<string | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [stats, setStats] = useState<ConnectionStats | null>(null);
   const [remoteSize, setRemoteSize] = useState<Size>({ width: 0, height: 0 });
-  const [canvasBox, setCanvasBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [canvasBox, setCanvasBox] = useState<Box | null>(null);
   const [viewers, setViewers] = useState(0);
   const [clipboardPending, setClipboardPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [docHidden, setDocHidden] = useState(document.hidden);
   const [pixelRatio, setPixelRatio] = useState(effectivePixelRatio());
-  const [showScale, setShowScale] = useState(false);
+  const [showView, setShowView] = useState(false);
   const [deviceChoice, setDeviceChoice] = useState<RatioChoice | null>(deviceRatioChoice());
-  const [fitToTab, setFitToTab] = useState(deviceFitToTab());
-  const fitToTabRef = useRef(fitToTab);
-  fitToTabRef.current = fitToTab;
-  const scaleButtonRef = useRef<HTMLButtonElement | null>(null);
-  // The driver's pixel ratio: what a follower lays the picture out by.
-  const driverRatioRef = useRef(1);
+  const [viewSettings, setViewSettings] = useState<ViewSettings>(loadViewSettings());
+  const [customSize, setCustomSize] = useState<{ w: string; h: string }>({ w: "", h: "" });
+  const [zoomPct, setZoomPct] = useState(100);
+  const [cursorInPicture, setCursorInPicture] = useState(false);
+  const [audioOn, setAudioOn] = useState(false);
+  const [audioPackets, setAudioPackets] = useState(0);
+  const viewButtonRef = useRef<HTMLButtonElement | null>(null);
   // Driver or follower: the display follows one viewer's size and scale;
   // a follower only fits the picture, at the driver's scale.
   const [isDriver, setIsDriver] = useState(true);
   const [desktopScale, setDesktopScale] = useState(1);
   const isDriverRef = useRef(true);
-  const desktopScaleRef = useRef(1);
+  const driverRatioRef = useRef(1);
   const wasDriverRef = useRef(false);
-  // Bumped by Retry and by a decoder switch: a canvas keeps its first
-  // context type for life (2D for WebCodecs, WebGL for the software path),
-  // so each rebuild of the stack gets a fresh canvas element.
+  // Set on each (re)connect and cleared by the first seat message after
+  // it: only that first seat may trigger a claim-back, so a driver that is
+  // taken over later does not snatch the seat straight back.
+  const firstSeatRef = useRef(false);
+  // Bumped by Retry: each rebuild of the stack gets a fresh canvas element.
   const [generation, setGeneration] = useState(0);
 
   const connectionRef = useRef<Connection | null>(null);
-  const helloRef = useRef<ServerHello | null>(null);
+  const decoderRef = useRef<Decoder | null>(null);
   const remoteSizeRef = useRef<Size>({ width: 0, height: 0 });
   const hostSizeRef = useRef<Size>({ width: 0, height: 0 });
-  const requestedRef = useRef<Size>({ width: 1280, height: 720 });
-  const resizeInFlightRef = useRef(false);
-  const resizeQueuedRef = useRef<Size | null>(null);
-  const resizeTimerRef = useRef<number | null>(null);
+  const requestTimerRef = useRef<number | null>(null);
+  const lastRequestRef = useRef("");
+  const displayKindRef = useRef(-1);
+  const infoSeenRef = useRef(false);
   const clipboardRef = useRef(createClipboardBridge(setClipboardPending));
+  const filesRef = useRef<FileTransfer | null>(null);
+  const audioRef = useRef<AudioPipe | null>(null);
+  const cursorUrlRef = useRef<string | null>(null);
+  const applyCursorRef = useRef<(() => void) | null>(null);
   const pixelRatioRef = useRef(pixelRatio);
   pixelRatioRef.current = pixelRatio;
+  const viewSettingsRef = useRef(viewSettings);
+  viewSettingsRef.current = viewSettings;
   // The phone keyboard: offered on touch devices. While it is up the
   // picture fits into what is left above it and the extra keys, and the
   // desktop keeps its size, so opening it does not reflow every app.
   const [touch, setTouch] = useState(isTouchDevice());
   const [kbOpen, setKbOpen] = useState(false);
-  // A session started by an older extension runs a server from before
-  // format negotiation (its hello has no codec string), which also predates
-  // the `text` message the phone keyboard types with: only keys like Enter
-  // would reach it. Say so instead of dropping what is typed.
-  const [legacyServer, setLegacyServer] = useState(false);
   const [armedKeys, setArmedKeys] = useState<ReadonlySet<number>>(new Set());
   // How much of the host the phone keyboard covers: nothing in a tab,
   // where Perch already sizes the app to the space above it, but the whole
   // keyboard in fullscreen, where the element keeps the screen's size.
   const [kbInset, setKbInset] = useState(0);
+  const kbInsetRef = useRef(0);
   // The floating fullscreen controls: where this device keeps them, and the
   // drag in progress (a tap under DRAG_THRESHOLD_PX stays a tap).
   const [fsPos, setFsPos] = useState<ControlsPos>(fsControlsPos());
@@ -124,6 +152,28 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const kbRef = useRef<PhoneKeyboard | null>(null);
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // The view transform: created once; its stage is the host minus the
+  // phone keyboard's strip and inset.
+  const viewRef = useRef<View | null>(null);
+  if (!viewRef.current) {
+    viewRef.current = new View({
+      size: () => {
+        const full = hostSizeRef.current;
+        const stripHeight = kbOpenRef.current ? (stripRef.current?.offsetHeight ?? 0) : 0;
+        return { width: full.width, height: Math.max(0, full.height - stripHeight - kbInsetRef.current) };
+      },
+      origin: () => {
+        const rect = hostRef.current?.getBoundingClientRect();
+        return { left: rect?.left ?? 0, top: rect?.top ?? 0 };
+      },
+    });
+    viewRef.current.onChange = (box) => {
+      setCanvasBox({ ...box });
+      setZoomPct(Math.round(viewRef.current!.zoom * 100));
+    };
+  }
+  const view = viewRef.current;
 
   const load = useCallback(() => {
     setError(null);
@@ -168,73 +218,79 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
-  // Place the canvas: the remote screen at its intended CSS size (remote
-  // pixels over the pixel ratio, the driver's for a follower), centered in
-  // the host. The driver's picture was sized for its tab, so it fills the
-  // host even when the size was clamped; a follower's is scaled down to
-  // fit, and up as well when this device fits the picture to the tab.
+  const showNotice = useCallback((text: string | null, ms = 2500) => {
+    setNotice(text);
+    if (text && ms > 0) window.setTimeout(() => setNotice((n) => (n === text ? null : n)), ms);
+  }, []);
+
+  // Place the canvas: the picture at the view's scale (the driver's pixel
+  // ratio for a follower), centered in the host, panned when zoomed.
   const layout = useCallback(() => {
-    const full = hostSizeRef.current;
     let inset = 0;
     const vv = window.visualViewport;
     if (kbOpenRef.current && vv && hostRef.current) {
       const bottom = hostRef.current.getBoundingClientRect().bottom;
       inset = Math.max(0, Math.round(bottom - (vv.offsetTop + vv.height)));
     }
+    kbInsetRef.current = inset;
     setKbInset(inset);
-    const stripHeight = kbOpenRef.current ? (stripRef.current?.offsetHeight ?? 0) : 0;
-    const host = { width: full.width, height: Math.max(0, full.height - stripHeight - inset) };
-    const remote = remoteSizeRef.current;
-    if (remote.width === 0 || host.width === 0) return;
-    const driving = isDriverRef.current;
-    const ratio = (driving ? pixelRatioRef.current : driverRatioRef.current) || 1;
-    const cssW = remote.width / ratio;
-    const cssH = remote.height / ratio;
-    const fit = Math.min(driving || fitToTabRef.current ? Infinity : 1, host.width / cssW, host.height / cssH);
-    const width = cssW * fit;
-    const height = cssH * fit;
-    setCanvasBox({ left: (host.width - width) / 2, top: (host.height - height) / 2, width, height });
-  }, []);
+    if (remoteSizeRef.current.width === 0 || hostSizeRef.current.width === 0) return;
+    view.ratio = (isDriverRef.current ? pixelRatioRef.current : driverRatioRef.current) || 1;
+    view.mode = viewSettingsRef.current.view;
+    view.zoomLocked = viewSettingsRef.current.lockZoom;
+    view.picture = { ...remoteSizeRef.current };
+    view.layout();
+    applyCursorRef.current?.();
+    // The drawn pointer (trackpad mode) sits in picture coordinates: a
+    // pan or zoom moves it too.
+    setLayoutTick((n) => n + 1);
+  }, [view]);
 
-  const desiredSize = useCallback((): Size => {
-    const host = hostSizeRef.current;
-    const hello = helloRef.current;
+  /** The size, refresh and scale to ask the host for. */
+  const wanted = useCallback(() => {
     const ratio = pixelRatioRef.current;
-    let width = evenSize(host.width * ratio);
-    let height = evenSize(host.height * ratio);
-    if (hello) {
-      width = Math.min(width, evenSize(hello.maxWidth));
-      height = Math.min(height, evenSize(hello.maxHeight));
-    }
-    return { width, height };
+    const s = viewSettingsRef.current;
+    const host = hostSizeRef.current;
+    const [width, height] = s.sizeMode === "fixed" ? clampSize(s.fixedW, s.fixedH) : followSize(host.width, host.height, ratio);
+    return { width, height, refresh: s.hz, scalePct: Math.round(ratio * 100), target: DisplayTarget.VIRTUAL };
   }, []);
 
-  const sendResize = useCallback(
-    (size: Size) => {
-      const conn = connectionRef.current;
-      const hello = helloRef.current;
-      if (!conn || !hello || !hello.resize || !isDriverRef.current) return;
-      if (size.width === remoteSizeRef.current.width && size.height === remoteSizeRef.current.height) return;
-      // Already asked for exactly this and still waiting: nothing to add.
-      if (resizeInFlightRef.current && size.width === requestedRef.current.width && size.height === requestedRef.current.height) return;
-      if (resizeInFlightRef.current) {
-        resizeQueuedRef.current = size;
-        return;
-      }
-      resizeInFlightRef.current = true;
-      requestedRef.current = size;
-      conn.send({ t: "resize", width: size.width, height: size.height });
+  /** Asks the host for the display this tab wants, 300 ms after the last
+   * change; only the driver's requests apply, and a fixed desktop (X11)
+   * keeps its size. */
+  const requestDisplay = useCallback(
+    (now = false) => {
+      if (requestTimerRef.current !== null) window.clearTimeout(requestTimerRef.current);
+      requestTimerRef.current = window.setTimeout(
+        () => {
+          requestTimerRef.current = null;
+          const conn = connectionRef.current;
+          if (!conn || conn.state !== "open" || !isDriverRef.current) return;
+          if (displayKindRef.current < 0 || displayKindRef.current === DisplayKind.FIXED) return;
+          // The phone keyboard only covers the tab for a while: fit the
+          // picture, keep the desktop's size.
+          if (kbOpenRef.current && viewSettingsRef.current.sizeMode === "follow") return;
+          // A tab that is hidden or collapsed measures (nearly) nothing;
+          // asking for that would shrink the desktop for every viewer.
+          if (viewSettingsRef.current.sizeMode === "follow") {
+            const host = hostSizeRef.current;
+            if (document.hidden || host.width < MIN_FOLLOW_PX || host.height < MIN_FOLLOW_PX) return;
+          }
+          const w = wanted();
+          const key = JSON.stringify(w);
+          if (key === lastRequestRef.current) return;
+          lastRequestRef.current = key;
+          conn.send({ t: "DisplayRequest", stream: 0, ...w });
+        },
+        now ? 0 : REQUEST_DEBOUNCE_MS,
+      );
     },
-    [],
+    [wanted],
   );
 
-  const scheduleResize = useCallback(() => {
-    if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current);
-    resizeTimerRef.current = window.setTimeout(() => {
-      resizeTimerRef.current = null;
-      sendResize(desiredSize());
-    }, RESIZE_DEBOUNCE_MS);
-  }, [desiredSize, sendResize]);
+  const sendQuality = useCallback(() => {
+    connectionRef.current?.send({ t: "Quality", level: QUALITY_LEVEL[viewSettingsRef.current.quality] });
+  }, []);
 
   // Host size tracking.
   useEffect(() => {
@@ -244,26 +300,18 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       const rect = el.getBoundingClientRect();
       hostSizeRef.current = { width: rect.width, height: rect.height };
       layout();
-      // The phone keyboard only covers the tab for a while: fit the
-      // picture, keep the desktop's size.
-      if (!kbOpenRef.current) scheduleResize();
+      if (viewSettingsRef.current.sizeMode === "follow") requestDisplay();
     });
     observer.observe(el);
     const rect = el.getBoundingClientRect();
     hostSizeRef.current = { width: rect.width, height: rect.height };
-    requestedRef.current = desiredSize();
     return () => observer.disconnect();
-  }, [layout, scheduleResize, desiredSize, status?.running]);
+  }, [layout, requestDisplay, status?.running]);
 
   useEffect(() => {
     layout();
-    scheduleResize();
-    connectionRef.current?.send({ t: "scale", ratio: pixelRatio });
-  }, [pixelRatio, layout, scheduleResize]);
-
-  useEffect(() => {
-    layout();
-  }, [fitToTab, layout]);
+    requestDisplay();
+  }, [pixelRatio, layout, requestDisplay]);
 
   useEffect(() => {
     const mql = window.matchMedia("(pointer: coarse)");
@@ -286,134 +334,219 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     };
   }, [kbOpen, layout]);
 
-  const chooseFitToTab = (on: boolean) => {
-    setDeviceFitToTab(on);
-    setFitToTab(on);
+  const applyViewSettings = useCallback(
+    (next: Partial<ViewSettings>) => {
+      const merged = { ...viewSettingsRef.current, ...next };
+      viewSettingsRef.current = merged;
+      saveViewSettings(merged);
+      setViewSettings(merged);
+      layout();
+      if ("sizeMode" in next || "fixedW" in next || "fixedH" in next || "hz" in next) requestDisplay(true);
+      if ("quality" in next) sendQuality();
+    },
+    [layout, requestDisplay, sendQuality],
+  );
+
+  const applyCustomSize = () => {
+    const w = Number(customSize.w);
+    const h = Number(customSize.h);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+    const [fixedW, fixedH] = clampSize(w, h);
+    applyViewSettings({ sizeMode: "fixed", fixedW, fixedH });
   };
 
-  const closeScale = useCallback(() => {
-    setShowScale(false);
+  const closeView = useCallback(() => {
+    setShowView(false);
     canvasRef.current?.focus({ preventScroll: true });
   }, []);
 
   const applyDriver = useCallback(
     (you: boolean, scale: number, driverRatio: number) => {
+      const was = isDriverRef.current;
       isDriverRef.current = you;
-      desktopScaleRef.current = scale;
       driverRatioRef.current = driverRatio;
       setIsDriver(you);
       setDesktopScale(scale);
       if (you) wasDriverRef.current = true;
       layout();
+      if (you && !was) {
+        lastRequestRef.current = "";
+        requestDisplay(true);
+        sendQuality();
+      }
     },
-    [layout],
+    [layout, requestDisplay, sendQuality],
   );
 
-  // The streaming stack, rebuilt when the port or the decoder choice changes.
+  // The host's cursor image is in remote pixels; CSS draws a cursor image
+  // pixel for pixel, so at a pixel ratio above 1 it is scaled down to the
+  // picture's CSS size first, hotspot included, or it would show at twice
+  // the size with the tip in the wrong place.
+  const cursorRef = useRef<{ png: Uint8Array; xhot: number; yhot: number; width: number; height: number } | null>(null);
+  // Trackpad mode draws the desktop's pointer itself (a phone has none).
+  const [padPos, setPadPos] = useState<{ x: number; y: number } | null>(null);
+  const [, setLayoutTick] = useState(0);
+  const [padCursor, setPadCursor] = useState<{ url: string; xhot: number; yhot: number; width: number; height: number } | null>(null);
+  const cursorAppliedRef = useRef<{ png: Uint8Array; ratio: number } | null>(null);
+  const applyCursor = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const shape = cursorRef.current;
+    const ratio = view.ratio || 1;
+    if (!shape) {
+      if (cursorUrlRef.current) URL.revokeObjectURL(cursorUrlRef.current);
+      cursorUrlRef.current = null;
+      cursorAppliedRef.current = null;
+      canvas.style.cursor = "";
+      return;
+    }
+    const applied = cursorAppliedRef.current;
+    if (applied && applied.png === shape.png && applied.ratio === ratio) return;
+    cursorAppliedRef.current = { png: shape.png, ratio };
+    const blob = new Blob([shape.png as BlobPart], { type: "image/png" });
+    const show = (url: string, scale: number) => {
+      if (cursorAppliedRef.current?.png !== shape.png || cursorAppliedRef.current.ratio !== ratio) return;
+      if (cursorUrlRef.current) URL.revokeObjectURL(cursorUrlRef.current);
+      cursorUrlRef.current = url.startsWith("blob:") ? url : null;
+      canvas.style.cursor = `url(${url}) ${Math.round(shape.xhot * scale)} ${Math.round(shape.yhot * scale)}, default`;
+    };
+    if (ratio === 1 || typeof createImageBitmap === "undefined") {
+      show(URL.createObjectURL(blob), 1);
+      return;
+    }
+    createImageBitmap(blob)
+      .then((bmp) => {
+        const scale = 1 / ratio;
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(bmp.width * scale));
+        c.height = Math.max(1, Math.round(bmp.height * scale));
+        c.getContext("2d")?.drawImage(bmp, 0, 0, c.width, c.height);
+        bmp.close();
+        show(c.toDataURL("image/png"), scale);
+      })
+      .catch(() => show(URL.createObjectURL(blob), 1));
+  }, [view]);
+  applyCursorRef.current = applyCursor;
+  const setCursorShape = useCallback(
+    (png: Uint8Array | null, xhot: number, yhot: number, width = 0, height = 0) => {
+      cursorRef.current = png ? { png, xhot, yhot, width, height } : null;
+      applyCursor();
+      setPadCursor((old) => {
+        if (old) URL.revokeObjectURL(old.url);
+        return png ? { url: URL.createObjectURL(new Blob([png as BlobPart], { type: "image/png" })), xhot, yhot, width, height } : null;
+      });
+    },
+    [applyCursor],
+  );
+
+  // The streaming stack, rebuilt when the port changes or Retry is pressed.
   useEffect(() => {
     if (!status?.running || !status.port) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (!hasWebCodecs()) {
+      setError("This browser has no WebCodecs; the viewer needs a current Chrome, Edge, Firefox or Safari.");
+      return;
+    }
     let disposed = false;
-    let decoder: Decoder | null = null;
     let renderer: Renderer | null = null;
-    // What this browser decodes, best first; set before the connection
-    // starts, so the hello carries it.
-    let codecs: string[] = ["h264-baseline"];
+    let decoders: CodecCap[] = [];
     let detachInput: (() => void) | null = null;
     const port = status.port;
 
-    const toRemote = (clientX: number, clientY: number) => {
-      const rect = canvas.getBoundingClientRect();
-      const remote = remoteSizeRef.current;
-      if (rect.width === 0 || remote.width === 0) return null;
-      const x = Math.round(((clientX - rect.left) / rect.width) * remote.width);
-      const y = Math.round(((clientY - rect.top) / rect.height) * remote.height);
-      return { x: Math.max(0, Math.min(remote.width - 1, x)), y: Math.max(0, Math.min(remote.height - 1, y)) };
-    };
-
     const conn = new Connection(port, {
-      requestedSize: () => requestedRef.current,
-      pixelRatio: () => pixelRatioRef.current,
-      codecs: () => codecs,
-      onHello: (hello) => {
-        helloRef.current = hello;
-        setStreamFormat(hello.codec);
-        setLegacyServer(hello.codecString === undefined);
-        remoteSizeRef.current = { width: hello.width, height: hello.height };
-        setRemoteSize(remoteSizeRef.current);
-        setViewers(hello.viewers);
-        decoder?.reset();
-        applyDriver(hello.driver, hello.scale, hello.driverRatio);
-        // A driver that lost its seat to a reconnect takes it back.
-        if (!hello.driver && wasDriverRef.current) conn.send({ t: "claim" });
-        // The hello size already reflects the requested one when the server
-        // could resize; otherwise this is a no-op and the canvas scales.
-        resizeInFlightRef.current = false;
-        scheduleResize();
-        if (!active || document.hidden) conn.send({ t: "pause" });
-        canvas.focus({ preventScroll: true });
-      },
-      onFrame: (frame: ParsedFrame) => {
-        const header = frame.header;
-        if (header.width !== remoteSizeRef.current.width || header.height !== remoteSizeRef.current.height) {
-          remoteSizeRef.current = { width: header.width, height: header.height };
-          setRemoteSize(remoteSizeRef.current);
-          layout();
-        }
-        renderer?.setSize(header.width, header.height);
-        decoder?.decode(frame);
-      },
-      onMessage: (msg: ServerMsg) => {
+      decoders: () => decoders,
+      viewerId,
+      onControl: (msg: Msg) => {
+        if (filesRef.current?.onControl(msg)) return;
         switch (msg.t) {
-          case "driver":
-            applyDriver(msg.you, msg.scale, msg.driverRatio);
-            if (msg.you) scheduleResize();
+          case "HelloAck":
+            firstSeatRef.current = true;
+            infoSeenRef.current = false;
+            displayKindRef.current = -1;
+            lastRequestRef.current = "";
+            decoderRef.current?.reset();
+            sendQuality();
+            if (!active || document.hidden) conn.send({ t: "Pause", paused: true });
+            canvas.focus({ preventScroll: true });
             break;
-          case "resized": {
-            // The display is shared: this may answer another viewer's
-            // request, and the display takes whichever size was asked for
-            // last. Never re-request here just because the size is not
-            // ours, or two viewers of different sizes fight forever; a
-            // viewer asks only when its own host changes.
+          case "StreamStarted":
+            if (msg.stream !== 0) break;
+            setCodec(msg.codec);
             remoteSizeRef.current = { width: msg.width, height: msg.height };
             setRemoteSize(remoteSizeRef.current);
+            decoderRef.current?.reset();
             layout();
-            const wasMine = resizeInFlightRef.current;
-            resizeInFlightRef.current = false;
-            const queued = resizeQueuedRef.current;
-            resizeQueuedRef.current = null;
-            if (queued) sendResize(queued);
-            else if (wasMine) {
-              // The host changed while our request was out: ask once more
-              // for what it wants now (not for what the server answered).
-              const want = desiredSize();
-              const asked = requestedRef.current;
-              if (want.width !== asked.width || want.height !== asked.height) scheduleResize();
+            break;
+          case "DisplayInfo":
+            if (msg.stream !== 0) break;
+            displayKindRef.current = msg.kind;
+            if (msg.note) showNotice(msg.note, 6000);
+            if (!infoSeenRef.current) {
+              infoSeenRef.current = true;
+              requestDisplay(true);
             }
             break;
-          }
-          case "clipboard":
-            void clipboardRef.current.remoteText(msg.text);
+          case "CursorInfo":
+            setCursorInPicture(msg.inPicture);
+            if (msg.inPicture) setCursorShape(null, 0, 0);
             break;
-          case "cursor":
-            canvas.style.cursor = `url(data:image/png;base64,${msg.png}) ${msg.xhot} ${msg.yhot}, auto`;
+          case "Cursor":
+            setCursorShape(msg.png, msg.xhot, msg.yhot, msg.width, msg.height);
             break;
-          case "viewers":
-            setViewers(msg.n);
+          case "Clipboard":
+            if (msg.kind === ClipKind.TEXT) void clipboardRef.current.remoteText(new TextDecoder().decode(msg.data));
+            else if (msg.kind === ClipKind.PNG) void clipboardRef.current.remoteImage(msg.data);
             break;
-          case "error":
-            setNotice(msg.reason);
+          case "HostStats":
+            if (msg.stream === 0) setEncoder(msg.encoder);
+            break;
+          case "Error":
+            if (msg.code === ERROR_BUSY) showNotice("Another client is connected to this host.", 8000);
+            else if (msg.code === ERROR_REPLACED) showNotice(msg.text, 8000);
+            else showNotice(msg.text, 8000);
             break;
           default:
             break;
         }
       },
+      onSeat: (seat) => {
+        setViewers(seat.viewers);
+        setCursorInPicture(seat.cursorInPicture);
+        if (seat.cursorInPicture) setCursorShape(null, 0, 0);
+        applyDriver(seat.driver, seat.scalePct / 100, seat.driverRatioPct / 100);
+        // A driver that lost its seat to a reconnect (a Perch restart, a
+        // network blip) takes it back: judged on the first seat after the
+        // connection opened, never on a later hand-over to another tab.
+        const first = firstSeatRef.current;
+        firstSeatRef.current = false;
+        if (first && !seat.driver && wasDriverRef.current) conn.claim();
+      },
+      onVideo: (frame) => {
+        const { width, height } = frame.meta;
+        if (width !== remoteSizeRef.current.width || height !== remoteSizeRef.current.height) {
+          remoteSizeRef.current = { width, height };
+          setRemoteSize(remoteSizeRef.current);
+          layout();
+        }
+        renderer?.setSize(width, height);
+        decoderRef.current?.decode(frame);
+      },
+      onDatagram: (payload) => {
+        if (payload[0] !== Kind.AUDIO) return;
+        const audio = audioRef.current;
+        if (!audio) return;
+        try {
+          audio.push(decodeAudio(payload));
+        } catch {
+          // a malformed packet
+        }
+      },
+      onFile: (chunk) => filesRef.current?.onChunk(chunk),
       onState: (state, attempt) => {
         setConnState(state);
         if (state === "reconnecting") {
-          resizeInFlightRef.current = false;
-          resizeQueuedRef.current = null;
+          filesRef.current?.reset();
           // Past the first quick retry, ask the server side whether the
           // session still exists: after Stop there is nothing to reconnect
           // to, and the tab should say so instead of retrying forever.
@@ -430,92 +563,112 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       },
     });
     connectionRef.current = conn;
+    filesRef.current = createFileTransfer({
+      transport: { send: (m) => conn.send(m), sendFile: (c) => conn.sendFile(c), bufferedAmount: () => conn.bufferedAmount() },
+      onNotice: (text) => showNotice(text, text && /^(Sent|Received|.*failed|.*damaged|.*checked|Not connected)/.test(text) ? 4000 : 0),
+    });
 
-    probeFormats(forceWasm)
-      .then((probe) => {
-        codecs = probe.codecs;
-        return createDecoder({
-          kind: probe.kind,
-          codec: () => helloRef.current?.codecString ?? BASELINE_CODEC_STRING,
-          workerUrl: getHost().assetUrl("dist/workers/h264.js"),
-          onPicture: (picture, decodeMs) => {
-            conn.reportDecode(decodeMs);
-            if (disposed) {
-              if (picture.kind === "video") picture.frame.close();
-              return;
-            }
-            renderer?.draw(picture);
-          },
-          onNeedKeyframe: () => conn.send({ t: "keyframe" }),
-        });
-      })
-      .then((d) => {
-        if (disposed) {
-          d.close();
+    probeDecoders()
+      .then((caps) => {
+        if (disposed) return;
+        decoders = caps;
+        if (caps.length === 0) {
+          setError("This browser's WebCodecs decodes none of AV1, H.265 or H.264.");
           return;
         }
-        decoder = d;
-        setDecoderKind(d.kind);
-        renderer = new Renderer(canvas, d.kind === "webcodecs" ? "2d" : "webgl");
+        const decoder = createDecoder({
+          onPicture: (frame, decodeMs) => {
+            conn.reportDecode(decodeMs);
+            if (disposed) {
+              frame.close();
+              return;
+            }
+            renderer?.draw(frame);
+          },
+          onNeedKeyframe: () => {
+            conn.reportLost();
+            conn.send({ t: "KeyframeReq", stream: 0 });
+          },
+        });
+        decoderRef.current = decoder;
+        renderer = new Renderer(canvas);
         if (!renderer.ready) {
           setError("This browser cannot draw the stream (no canvas context).");
           return;
         }
         detachInput = attachInput(canvas, {
-          send: (msg) => conn.send(msg),
-          toRemote,
-          onClipboardTruncated: () => setNotice("Pasted text was cut at 1 MB."),
+          sendInput: (e) => conn.sendInput(e),
+          sendClipboard: (kind, data) => conn.send({ t: "Clipboard", kind, data }),
+          view,
+          onClipboardTruncated: () => showNotice("Pasted text was cut at 16 MB."),
           keepFocus: () => kbRef.current?.isOpen() ?? false,
+          toggleKeyboard: () => kbRef.current?.toggle(),
+          touchMode: () => viewSettingsRef.current.touchMode,
+          onPointerMoved: (x, y) => {
+            if (viewSettingsRef.current.touchMode === "trackpad") setPadPos({ x, y });
+          },
         });
         conn.start();
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
 
-    const statsTimer = window.setInterval(() => setStats({ ...conn.stats }), STATS_REFRESH_MS);
-
-    const field = fieldRef.current;
-    if (field) {
-      kbRef.current = attachPhoneKeyboard({
-        field,
-        send: (msg) => conn.send(msg),
-        onOpenChange: (open) => {
-          kbOpenRef.current = open;
-          setKbOpen(open);
-          if (!open) {
-            // Back to the tab's full height, and the desktop follows it.
-            layout();
-            scheduleResize();
-          }
-        },
-        onArmedChange: setArmedKeys,
-      });
-    }
+    const statsTimer = window.setInterval(() => {
+      setStats({ ...conn.stats });
+      setAudioPackets(audioRef.current?.packets ?? 0);
+    }, STATS_REFRESH_MS);
 
     return () => {
       disposed = true;
       window.clearInterval(statsTimer);
-      kbRef.current?.detach();
-      kbRef.current = null;
       detachInput?.();
       conn.stop();
-      decoder?.close();
+      decoderRef.current?.close();
+      decoderRef.current = null;
+      filesRef.current = null;
       connectionRef.current = null;
-      helloRef.current = null;
-      if (resizeTimerRef.current !== null) {
-        window.clearTimeout(resizeTimerRef.current);
-        resizeTimerRef.current = null;
+      setCursorShape(null, 0, 0);
+      if (requestTimerRef.current !== null) {
+        window.clearTimeout(requestTimerRef.current);
+        requestTimerRef.current = null;
       }
     };
     // `active` is handled by the pause effect below; rebuilding on it would
     // reconnect on every tab switch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.running, status?.port, forceWasm, generation]);
+  }, [status?.running, status?.port, generation]);
+
+  // The phone keyboard follows its field: mounted on touch devices, which
+  // a tab may become after the stream started (a laptop's touch screen,
+  // a browser whose pointer type changes), so it is attached on its own.
+  useEffect(() => {
+    const field = fieldRef.current;
+    if (!field) return;
+    const kb = attachPhoneKeyboard({
+      field,
+      send: (e) => connectionRef.current?.sendInput(e),
+      onOpenChange: (open) => {
+        kbOpenRef.current = open;
+        setKbOpen(open);
+        if (!open) {
+          // Back to the tab's full height, and the desktop follows it.
+          layout();
+          requestDisplay();
+        }
+      },
+      onArmedChange: setArmedKeys,
+    });
+    kbRef.current = kb;
+    return () => {
+      kb.detach();
+      if (kbRef.current === kb) kbRef.current = null;
+    };
+  }, [touch, layout, requestDisplay]);
 
   // Pause while nobody can see the tab.
   useEffect(() => {
     const conn = connectionRef.current;
     if (!conn || conn.state !== "open") return;
-    conn.send({ t: active && !docHidden ? "resume" : "pause" });
+    conn.send({ t: "Pause", paused: !(active && !docHidden) });
     if (active && !docHidden && !kbRef.current?.isOpen()) canvasRef.current?.focus({ preventScroll: true });
   }, [active, docHidden, connState]);
 
@@ -523,6 +676,52 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   useEffect(() => {
     if (!active && kbRef.current?.isOpen()) kbRef.current.toggle();
   }, [active]);
+
+  // Audio: the pipe is made inside a click (browsers want a gesture). A
+  // browser that had it on gets it back on the first press in the tab.
+  useEffect(() => {
+    if (!viewSettings.audio || audioRef.current || !AudioPipe.supported()) return;
+    const el = hostRef.current;
+    if (!el) return;
+    const arm = () => {
+      if (!audioRef.current && viewSettingsRef.current.audio) {
+        audioRef.current = new AudioPipe();
+        setAudioOn(true);
+      }
+    };
+    el.addEventListener("pointerdown", arm, { once: true });
+    el.addEventListener("keydown", arm, { once: true });
+    return () => {
+      el.removeEventListener("pointerdown", arm);
+      el.removeEventListener("keydown", arm);
+    };
+  }, [viewSettings.audio, status?.running]);
+
+  useEffect(
+    () => () => {
+      audioRef.current?.close();
+      audioRef.current = null;
+    },
+    [],
+  );
+
+  const toggleAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.close();
+      audioRef.current = null;
+      setAudioOn(false);
+      applyViewSettings({ audio: false });
+      return;
+    }
+    if (!AudioPipe.supported()) {
+      showNotice("This browser cannot decode the desktop's audio (no WebCodecs AudioDecoder).");
+      return;
+    }
+    audioRef.current = new AudioPipe();
+    audioRef.current.resume();
+    setAudioOn(true);
+    applyViewSettings({ audio: true });
+  };
 
   // Fullscreen with Keyboard Lock where the browser has it (Chromium).
   const keyboard = (navigator as unknown as { keyboard?: { lock?: () => Promise<void>; unlock?: () => void } }).keyboard;
@@ -604,13 +803,28 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
 
   const takeOver = () => {
     wasDriverRef.current = true;
-    connectionRef.current?.send({ t: "claim" });
+
+    connectionRef.current?.claim();
   };
 
   const copyPending = async () => {
     const ok = await clipboardRef.current.copyPending();
-    setNotice(ok ? "Copied the desktop's clipboard." : "The browser refused the clipboard write.");
-    window.setTimeout(() => setNotice(null), 2500);
+    showNotice(ok ? "Copied the desktop's clipboard." : "The browser refused the clipboard write.");
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+  };
+  const onDrop = (e: React.DragEvent) => {
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    for (const f of files) void filesRef.current?.offer(f);
+  };
+
+  const zoomTo = (z: number) => {
+    view.setZoom(z);
+    canvasRef.current?.focus({ preventScroll: true });
   };
 
   // The host keeps inactive tabs mounted and shares the toolbar slot, so
@@ -635,15 +849,23 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
               <Icon name="clippy" />
             </button>
             <button
-              ref={scaleButtonRef}
+              ref={viewButtonRef}
               data-menu-trigger="true"
               aria-haspopup="dialog"
-              aria-expanded={showScale}
-              className={`rd-tool${showScale ? " rd-tool-on" : ""}`}
-              title="View settings for this device: pixel ratio, fit to tab"
-              onClick={() => setShowScale((v) => !v)}
+              aria-expanded={showView}
+              className={`rd-tool${showView ? " rd-tool-on" : ""}`}
+              title="View settings for this device: size, pixel ratio, view, zoom, quality"
+              onClick={() => setShowView((v) => !v)}
             >
-              <Icon name="zoom-in" />
+              <Icon name="settings" />
+            </button>
+            <button
+              className={`rd-tool${audioOn ? " rd-tool-on" : ""}`}
+              title={audioOn ? "Mute the desktop's audio" : "Play the desktop's audio"}
+              aria-pressed={audioOn}
+              onClick={toggleAudio}
+            >
+              <Icon name={audioOn ? "unmute" : "mute"} />
             </button>
             {touch && (
               <button
@@ -705,11 +927,19 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     );
   }
 
+  const presetKey = `${viewSettings.fixedW}x${viewSettings.fixedH}`;
+  const presetValue = PRESETS.some(([w, h]) => `${w}x${h}` === presetKey) ? presetKey : "custom";
+
   return (
-    <div ref={hostRef} className={`rd-view-host${isFullscreen ? " rd-view-fullscreen" : ""}`}>
+    <div
+      ref={hostRef}
+      className={`rd-view-host${isFullscreen ? " rd-view-fullscreen" : ""}${cursorInPicture ? " rd-view-cursor-remote" : ""}`}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       {toolbar}
       <canvas
-        key={`${forceWasm ? "wasm" : "webcodecs"}-${generation}`}
+        key={generation}
         ref={canvasRef}
         // In fullscreen every key belongs to the desktop: Perch's own
         // shortcuts stand down (core honours this attribute) and Keyboard
@@ -719,6 +949,20 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         tabIndex={0}
         style={canvasBox ? { left: canvasBox.left, top: canvasBox.top, width: canvasBox.width, height: canvasBox.height } : { left: 0, top: 0, width: "100%", height: "100%" }}
       />
+      {touch && viewSettings.touchMode === "trackpad" && padPos && padCursor && !cursorInPicture && (
+        <img
+          className="rd-view-pad-cursor"
+          src={padCursor.url}
+          alt=""
+          draggable={false}
+          style={{
+            left: view.x + padPos.x * view.scale - padCursor.xhot / (view.ratio || 1),
+            top: view.y + padPos.y * view.scale - padCursor.yhot / (view.ratio || 1),
+            width: padCursor.width / (view.ratio || 1),
+            height: padCursor.height / (view.ratio || 1),
+          }}
+        />
+      )}
       <textarea
         ref={fieldRef}
         className="rd-kb-field"
@@ -800,13 +1044,68 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       )}
       {connState === "connecting" && <div className="rd-view-overlay">Connecting…</div>}
       {connState === "reconnecting" && <div className="rd-view-overlay rd-view-overlay-soft">Connection lost, reconnecting…</div>}
-      {decoderKind === "wasm" && (
-        <div className="rd-view-banner">
-          Software decoder in use{forceWasm ? " (forced)" : ": this browser has no WebCodecs"}. Expect higher CPU use; a lower pixel ratio helps.
-        </div>
-      )}
-      {showScale && (
-        <AnchoredPopover anchorRef={scaleButtonRef} onClose={closeScale} label="View settings for this device" className="rd-popover">
+      {showView && (
+        <AnchoredPopover anchorRef={viewButtonRef} onClose={closeView} label="View settings for this device" className="rd-popover">
+          <div className="rd-popover-section">
+            <div className="rd-popover-title">Size{isDriver ? "" : " (applies when this tab drives)"}</div>
+            <label className="rd-popover-option">
+              <input type="radio" name="rd-size" checked={viewSettings.sizeMode === "follow"} onChange={() => applyViewSettings({ sizeMode: "follow" })} />
+              <span>Follow the tab</span>
+            </label>
+            <label className="rd-popover-option">
+              <input type="radio" name="rd-size" checked={viewSettings.sizeMode === "fixed"} onChange={() => applyViewSettings({ sizeMode: "fixed" })} />
+              <span>Fixed resolution</span>
+              <span className="rd-popover-hint">{viewSettings.fixedW}x{viewSettings.fixedH}</span>
+            </label>
+            <div className="rd-popover-row">
+              <select
+                className="rd-select"
+                aria-label="Resolution preset"
+                value={presetValue}
+                onChange={(e) => {
+                  if (e.target.value === "custom") return;
+                  const [w, h] = e.target.value.split("x").map(Number);
+                  applyViewSettings({ sizeMode: "fixed", fixedW: w, fixedH: h });
+                }}
+              >
+                {PRESETS.map(([w, h]) => (
+                  <option key={`${w}x${h}`} value={`${w}x${h}`}>
+                    {w}x{h}
+                  </option>
+                ))}
+                <option value="custom">Custom</option>
+              </select>
+              <select className="rd-select" aria-label="Refresh rate" value={viewSettings.hz} onChange={(e) => applyViewSettings({ hz: Number(e.target.value) })}>
+                {RATES.map((r) => (
+                  <option key={r} value={r}>
+                    {r} Hz
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="rd-popover-row">
+              <input
+                className="rd-input rd-input-size"
+                aria-label="Custom width"
+                placeholder="width"
+                inputMode="numeric"
+                value={customSize.w}
+                onChange={(e) => setCustomSize({ ...customSize, w: e.target.value })}
+              />
+              <span className="rd-popover-x">x</span>
+              <input
+                className="rd-input rd-input-size"
+                aria-label="Custom height"
+                placeholder="height"
+                inputMode="numeric"
+                value={customSize.h}
+                onChange={(e) => setCustomSize({ ...customSize, h: e.target.value })}
+              />
+              <button className="rd-btn rd-btn-small" type="button" onClick={applyCustomSize} disabled={!customSize.w || !customSize.h}>
+                Apply
+              </button>
+            </div>
+          </div>
           <div className="rd-popover-section">
             <div className="rd-popover-title">Pixel ratio on this device</div>
             <label className="rd-popover-option">
@@ -824,17 +1123,78 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
               </label>
             ))}
           </div>
+          {touch && (
+            <div className="rd-popover-section">
+              <div className="rd-popover-title">Touch</div>
+              {(
+                [
+                  ["direct", "Direct", "the pointer goes where you touch"],
+                  ["trackpad", "Trackpad", "one finger moves the pointer; tap to click, tap twice and hold to drag"],
+                ] as [TouchMode, string, string][]
+              ).map(([mode, label, hint]) => (
+                <label key={mode} className="rd-popover-option">
+                  <input type="radio" name="rd-touch" checked={viewSettings.touchMode === mode} onChange={() => applyViewSettings({ touchMode: mode })} />
+                  <span>{label}</span>
+                  <span className="rd-popover-hint">{hint}</span>
+                </label>
+              ))}
+            </div>
+          )}
           <div className="rd-popover-section">
             <div className="rd-popover-title">View</div>
+            {(
+              [
+                ["fit", "Fit", "shrinks a large picture, never enlarges"],
+                ["fill", "Fill the tab", "fills the tab, aspect ratio kept"],
+                ["native", "100%", "one remote pixel per device pixel"],
+              ] as [ViewMode, string, string][]
+            ).map(([mode, label, hint]) => (
+              <label key={mode} className="rd-popover-option">
+                <input type="radio" name="rd-view" checked={viewSettings.view === mode} onChange={() => applyViewSettings({ view: mode })} />
+                <span>{label}</span>
+                <span className="rd-popover-hint">{hint}</span>
+              </label>
+            ))}
+          </div>
+          <div className="rd-popover-section">
+            <div className="rd-popover-title">Zoom</div>
+            <div className="rd-popover-row rd-popover-zoom">
+              <button className="rd-btn" title="Zoom out" disabled={zoomPct <= ZOOM_MIN * 100} onClick={() => zoomTo(view.zoom / 1.25)}>
+                <Icon name="zoom-out" />
+              </button>
+              <button className="rd-btn" title="Back to 100%" onClick={() => zoomTo(1)}>
+                {zoomPct}%
+              </button>
+              <button className="rd-btn" title="Zoom in" disabled={zoomPct >= ZOOM_MAX * 100} onClick={() => zoomTo(view.zoom * 1.25)}>
+                <Icon name="zoom-in" />
+              </button>
+            </div>
             <label className="rd-popover-option">
-              <input type="checkbox" checked={fitToTab} onChange={(e) => chooseFitToTab(e.target.checked)} />
-              <span>Fit the picture to the tab (keeps the aspect ratio)</span>
+              <input type="checkbox" checked={viewSettings.lockZoom} onChange={(e) => applyViewSettings({ lockZoom: e.target.checked })} />
+              <span>Lock zoom</span>
+              <span className="rd-popover-hint">a pinch or Ctrl+wheel changes nothing; the buttons still do</span>
             </label>
+          </div>
+          <div className="rd-popover-section">
+            <div className="rd-popover-title">Quality</div>
+            {(
+              [
+                ["high", "High", "full bit budget"],
+                ["medium", "Medium", "40%"],
+                ["low", "Low", "15%, smoothest on a weak link"],
+              ] as [Quality, string, string][]
+            ).map(([q, label, hint]) => (
+              <label key={q} className="rd-popover-option">
+                <input type="radio" name="rd-quality" checked={viewSettings.quality === q} onChange={() => applyViewSettings({ quality: q })} />
+                <span>{label}</span>
+                <span className="rd-popover-hint">{hint}</span>
+              </label>
+            ))}
           </div>
           <div className="rd-popover-footer">
             {isDriver
-              ? `This tab drives: the desktop follows its size at ${pixelRatio}x.`
-              : `Following another viewer at ${desktopScale}x; fitting scales its picture up or down to fill this tab.`}
+              ? `This tab drives: the desktop follows its ${viewSettings.sizeMode === "fixed" ? "fixed resolution" : "size"} at ${pixelRatio}x.`
+              : `Following another viewer at ${desktopScale}x; the view and zoom only change how this tab shows its picture.`}
           </div>
         </AnchoredPopover>
       )}
@@ -847,23 +1207,17 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         </div>
       )}
       {notice && <div className="rd-view-notice">{notice}</div>}
-      {kbOpen && legacyServer && (
-        <div className="rd-view-banner rd-view-banner-top">
-          This session was started by an older version of the extension, whose server cannot type from the phone keyboard (only keys like Enter get through). Stop and Start it from the Remote Desktop panel.
-        </div>
-      )}
       {showStats && (
         <div className="rd-view-stats">
           <div>
-            {remoteSize.width}x{remoteSize.height} @ {pixelRatio.toFixed(2)}x, {streamFormat ? formatLabel(streamFormat) : "no stream"} via {decoderKind ?? "no decoder"}, {isDriver ? "driver" : `follower of ${desktopScale}x`}
+            {remoteSize.width}x{remoteSize.height} @ {pixelRatio.toFixed(2)}x, {codec !== null ? codecLabel(codec) : "no stream"} via WebCodecs
+            {encoder ? ` from ${encoder}` : ""}, {isDriver ? "driver" : `follower of ${desktopScale}x`}
           </div>
           <div>
             {stats ? `${stats.fps.toFixed(1)} fps, ${Math.round(stats.kbps)} kbps, rtt ${stats.rttMs.toFixed(0)} ms` : "no stats yet"}
           </div>
-          <div>{stats ? `decode ${stats.decodeMs.toFixed(1)} ms, gaps ${stats.gaps}, viewers ${viewers}` : ""}</div>
-          <label className="rd-view-stats-toggle">
-            <input type="checkbox" checked={forceWasm} onChange={(e) => setForceWasm(e.target.checked)} /> force software decoder
-          </label>
+          <div>{stats ? `decode ${stats.decodeMs.toFixed(1)} ms, lost ${stats.lost}, viewers ${viewers}, zoom ${zoomPct}%` : ""}</div>
+          <div>{audioOn ? `audio on, ${audioPackets} packets` : "audio off"}{cursorInPicture ? ", cursor in picture" : ""}</div>
         </div>
       )}
     </div>

@@ -1,173 +1,271 @@
-// The WebSocket wire format shared with quicdesk-server (crates/server/src/
-// wire.rs): JSON text messages tagged by `t`, and binary video frames with a
-// 28-byte little-endian header ahead of the H.264 Annex B payload.
+// The WebSocket framing between the viewer and qr-host's gateway
+// (quick-remote docs/protocol.md, "WebSocket transport"): every message is
+// binary, its first byte names the channel, and the payloads are the
+// protocol's own encodings (src/qr/proto.ts). This module holds what is
+// not in the vendored protocol: the channel byte, the video frame layout,
+// the gateway's seat messages, file chunks and the codec strings. It
+// imports nothing, so the unit tests run it under Node as it is; the
+// little-endian reading and writing here mirror proto.ts's Reader/Writer.
 
-export const FRAME_HEADER_LEN = 28;
-/** Header plus tile count (u16) and a reserved u16. */
-export const FRAME_PREFIX_LEN = 32;
-/** Per tile: u16 x, y, width, height, u32 flags, u32 byte length. */
-export const TILE_DESC_LEN = 16;
-const FLAG_KEYFRAME = 1;
+const Codec = { H264: 1, H265: 2, AV1: 3 } as const;
 
-export interface TileRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-export interface FrameTile {
-  rect: TileRect;
-  keyframe: boolean;
-  data: Uint8Array;
-}
-
-/** A frame as the server sends it: the whole picture's header plus one
- * tile per encoder (one covering the frame unless the display is larger
- * than one encoder takes; tiles the encoder skipped are absent). */
-export interface ParsedFrame {
-  header: FrameHeader;
-  tiles: FrameTile[];
-}
-
-export function parseFrame(buf: ArrayBuffer): ParsedFrame | null {
-  const header = parseFrameHeader(buf);
-  if (!header || buf.byteLength < FRAME_PREFIX_LEN) return null;
-  const dv = new DataView(buf);
-  const count = dv.getUint16(28, true);
-  let desc = FRAME_PREFIX_LEN;
-  let at = desc + count * TILE_DESC_LEN;
-  if (at > buf.byteLength) return null;
-  const tiles: FrameTile[] = [];
-  for (let i = 0; i < count; i++, desc += TILE_DESC_LEN) {
-    const len = dv.getUint32(desc + 12, true);
-    if (at + len > buf.byteLength) return null;
-    tiles.push({
-      rect: { x: dv.getUint16(desc, true), y: dv.getUint16(desc + 2, true), w: dv.getUint16(desc + 4, true), h: dv.getUint16(desc + 6, true) },
-      keyframe: (dv.getUint32(desc + 8, true) & FLAG_KEYFRAME) === FLAG_KEYFRAME,
-      data: new Uint8Array(buf, at, len),
-    });
-    at += len;
+class Reader {
+  private pos = 0;
+  private readonly buf: Uint8Array;
+  private readonly dv: DataView;
+  constructor(buf: Uint8Array) {
+    this.buf = buf;
+    this.dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   }
-  return { header, tiles };
-}
-
-export interface FrameHeader {
-  frameId: number;
-  keyframe: boolean;
-  width: number;
-  height: number;
-  timestampUs: number;
-}
-
-export function parseFrameHeader(buf: ArrayBuffer): FrameHeader | null {
-  if (buf.byteLength < FRAME_HEADER_LEN) return null;
-  const dv = new DataView(buf);
-  return {
-    frameId: Number(dv.getBigUint64(0, true)),
-    keyframe: (dv.getUint32(8, true) & FLAG_KEYFRAME) === FLAG_KEYFRAME,
-    width: dv.getUint32(12, true),
-    height: dv.getUint32(16, true),
-    timestampUs: Number(dv.getBigUint64(20, true)),
-  };
-}
-
-// Annex B start codes (00 00 01, usually preceded by another 00) delimit
-// NAL units. Each returned slice keeps its start code.
-export function splitNalUnits(payload: Uint8Array): Uint8Array[] {
-  const starts: number[] = [];
-  for (let i = 0; i + 2 < payload.length; i++) {
-    if (payload[i] === 0 && payload[i + 1] === 0 && payload[i + 2] === 1) {
-      // Prefer the 4-byte form when a zero precedes the 3-byte code.
-      const start = i > 0 && payload[i - 1] === 0 ? i - 1 : i;
-      if (starts.length === 0 || start > starts[starts.length - 1] + 3) starts.push(start);
-      i += 2;
-    }
+  private need(n: number): void {
+    if (this.pos + n > this.buf.length) throw new Error("message truncated");
   }
-  if (starts.length === 0) return payload.length > 0 ? [payload] : [];
-  const out: Uint8Array[] = [];
-  for (let n = 0; n < starts.length; n++) {
-    const end = n + 1 < starts.length ? starts[n + 1] : payload.length;
-    out.push(payload.subarray(starts[n], end));
+  remaining(): number {
+    return this.buf.length - this.pos;
   }
+  finish(): void {
+    if (this.remaining() !== 0) throw new Error(`${this.remaining()} trailing bytes`);
+  }
+  u8(): number {
+    this.need(1);
+    return this.dv.getUint8(this.pos++);
+  }
+  bool(): boolean {
+    return this.u8() !== 0;
+  }
+  u16(): number {
+    this.need(2);
+    const v = this.dv.getUint16(this.pos, true);
+    this.pos += 2;
+    return v;
+  }
+  u32(): number {
+    this.need(4);
+    const v = this.dv.getUint32(this.pos, true);
+    this.pos += 4;
+    return v;
+  }
+  u64(): bigint {
+    this.need(8);
+    const v = this.dv.getBigUint64(this.pos, true);
+    this.pos += 8;
+    return v;
+  }
+  rest(): Uint8Array {
+    const s = this.buf.subarray(this.pos);
+    this.pos = this.buf.length;
+    return s;
+  }
+  str(): string {
+    const n = this.u32();
+    this.need(n);
+    const s = this.buf.subarray(this.pos, this.pos + n);
+    this.pos += n;
+    return new TextDecoder("utf-8", { fatal: true }).decode(s);
+  }
+}
+
+class Writer {
+  private buf = new Uint8Array(64);
+  private len = 0;
+  private dv = new DataView(this.buf.buffer);
+  private room(n: number): void {
+    if (this.len + n <= this.buf.length) return;
+    let cap = this.buf.length * 2;
+    while (cap < this.len + n) cap *= 2;
+    const b = new Uint8Array(cap);
+    b.set(this.buf.subarray(0, this.len));
+    this.buf = b;
+    this.dv = new DataView(b.buffer);
+  }
+  u8(v: number): this {
+    this.room(1);
+    this.dv.setUint8(this.len, v);
+    this.len += 1;
+    return this;
+  }
+  bool(v: boolean): this {
+    return this.u8(v ? 1 : 0);
+  }
+  u16(v: number): this {
+    this.room(2);
+    this.dv.setUint16(this.len, v, true);
+    this.len += 2;
+    return this;
+  }
+  u32(v: number): this {
+    this.room(4);
+    this.dv.setUint32(this.len, v, true);
+    this.len += 4;
+    return this;
+  }
+  raw(v: Uint8Array): this {
+    this.room(v.length);
+    this.buf.set(v, this.len);
+    this.len += v.length;
+    return this;
+  }
+  str(v: string): this {
+    const b = new TextEncoder().encode(v);
+    return this.u32(b.length).raw(b);
+  }
+  done(): Uint8Array {
+    return this.buf.slice(0, this.len);
+  }
+}
+
+export const Channel = { CONTROL: 0, INPUT: 1, VIDEO: 2, DATAGRAM: 3, FILE: 4, SEAT: 5 } as const;
+
+/** A whole message: the channel byte in front of the payload. */
+export function wrap(channel: number, payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(1 + payload.length);
+  out[0] = channel;
+  out.set(payload, 1);
   return out;
 }
 
-/** The stream formats, best first, with the codec string each is probed
- * with (level 5.1, as the server encodes: hardware decoders may refuse a 4K
- * stream configured as a lower level). H.264 chunks carry Annex B start
- * codes and AV1 chunks low-overhead OBUs, so no description is needed. The
- * server picks the best one both sides have: a server with only openh264
- * sends constrained baseline whatever the browser can do. */
-export const FORMATS = [
-  { name: "av1", codec: "av01.0.13M.08", label: "AV1" },
-  { name: "h264", codec: "avc1.640033", label: "H.264" },
-  { name: "h264-baseline", codec: "avc1.42E033", label: "H.264 baseline" },
-] as const;
-export type FormatName = (typeof FORMATS)[number]["name"];
-/** Constrained baseline: what a server without format negotiation sends. */
-export const BASELINE_CODEC_STRING = "avc1.42E033";
+// ---- Video (channel 2): stream u8, FrameMeta (42 bytes), access unit ----
 
-export function formatLabel(name: string): string {
-  return FORMATS.find((f) => f.name === name)?.label ?? name;
-}
+export const FRAME_META_LEN = 42;
+export const FrameFlags = { KEYFRAME: 1, CHROMA444: 2, REFRESH: 4 } as const;
 
-export type ClientMsg =
-  | { t: "hello"; version: number; name: string; width: number; height: number; pixelRatio: number; codecs: string[] }
-  | { t: "claim" }
-  | { t: "scale"; ratio: number }
-  | { t: "key"; code: number; down: boolean }
-  | { t: "move"; x: number; y: number }
-  | { t: "button"; button: number; down: boolean }
-  | { t: "wheel"; dx: number; dy: number }
-  | { t: "resize"; width: number; height: number }
-  | { t: "clipboard"; text: string }
-  | { t: "pause" }
-  | { t: "resume" }
-  | { t: "keyframe" }
-  | { t: "releaseKeys" }
-  | { t: "text"; text: string }
-  | { t: "stats"; fps: number; decodeMs: number; gaps: number; kbps: number }
-  | { t: "ping"; seq: number; sent: number };
-
-export interface ServerHello {
-  t: "hello";
-  version: number;
+export interface FrameMeta {
+  codec: number;
+  flags: number;
   width: number;
   height: number;
-  maxWidth: number;
-  maxHeight: number;
-  fps: number;
-  /** The stream format this viewer gets: av1, h264 or h264-baseline. */
-  codec: string;
-  /** The stream's codec string, for VideoDecoder.configure. Missing from
-   * servers older than format negotiation, which send baseline. */
-  codecString?: string;
-  resize: boolean;
-  clipboard: boolean;
-  viewers: number;
-  /** Whether this viewer drives the display's size and scale. */
-  driver: boolean;
-  /** The desktop's UI scale (the driver's pixel ratio). */
-  scale: number;
-  /** The driver's pixel ratio: followers lay the picture out by it. */
-  driverRatio: number;
+  /** Access-unit length as the host wrote it. */
+  len: number;
+  captureUs: bigint;
+  encodeStartUs: bigint;
+  encodeEndUs: bigint;
+  /** Host monotonic clock: only differences between frames mean anything here. */
+  sendUs: bigint;
 }
 
-export type ServerMsg =
-  | ServerHello
-  | { t: "driver"; you: boolean; scale: number; driverRatio: number }
-  | { t: "resized"; width: number; height: number }
-  | { t: "clipboard"; text: string }
-  | { t: "cursor"; width: number; height: number; xhot: number; yhot: number; png: string }
-  | { t: "pong"; seq: number; sent: number }
-  | { t: "viewers"; n: number }
-  | { t: "error"; reason: string };
+export interface VideoFrame {
+  stream: number;
+  meta: FrameMeta;
+  keyframe: boolean;
+  au: Uint8Array;
+}
 
-export const WS_PROTOCOL_VERSION = 1;
-export const MAX_CLIPBOARD_BYTES = 1024 * 1024;
+/** Parses a channel-2 payload (after the channel byte); null when malformed. */
+export function parseVideo(payload: Uint8Array): VideoFrame | null {
+  if (payload.length < 1 + FRAME_META_LEN) return null;
+  const r = new Reader(payload);
+  const stream = r.u8();
+  const meta: FrameMeta = {
+    codec: r.u8(),
+    flags: r.u8(),
+    width: r.u16(),
+    height: r.u16(),
+    len: r.u32(),
+    captureUs: r.u64(),
+    encodeStartUs: r.u64(),
+    encodeEndUs: r.u64(),
+    sendUs: r.u64(),
+  };
+  const au = r.rest();
+  if (au.length !== meta.len) return null;
+  return { stream, meta, keyframe: (meta.flags & FrameFlags.KEYFRAME) !== 0, au };
+}
 
-// Clip text to the server's cap without splitting a UTF-8 sequence.
+// ---- Seat (channel 5): sub u8, then Seat (1, host → viewer) or Claim (2) ----
+
+export interface Seat {
+  driver: boolean;
+  scalePct: number;
+  driverRatioPct: number;
+  viewers: number;
+  cursorInPicture: boolean;
+}
+
+export type SeatMessage = ({ t: "Seat" } & Seat) | { t: "Claim"; viewerId: string };
+
+export function encodeSeatMessage(m: SeatMessage): Uint8Array {
+  const w = new Writer();
+  if (m.t === "Seat") {
+    w.u8(1).bool(m.driver).u16(m.scalePct).u16(m.driverRatioPct).u16(m.viewers).bool(m.cursorInPicture);
+  } else {
+    w.u8(2).str(m.viewerId);
+  }
+  return w.done();
+}
+
+export function decodeSeatMessage(payload: Uint8Array): SeatMessage {
+  const r = new Reader(payload);
+  const sub = r.u8();
+  let m: SeatMessage;
+  if (sub === 1) {
+    m = { t: "Seat", driver: r.bool(), scalePct: r.u16(), driverRatioPct: r.u16(), viewers: r.u16(), cursorInPicture: r.bool() };
+  } else if (sub === 2) {
+    m = { t: "Claim", viewerId: r.str() };
+  } else {
+    throw new Error(`unknown seat message ${sub}`);
+  }
+  r.finish();
+  return m;
+}
+
+export const claimMessage = (viewerId: string) => wrap(Channel.SEAT, encodeSeatMessage({ t: "Claim", viewerId }));
+
+// ---- File (channel 4): id u32, last bool, bytes ----
+
+export interface FileChunk {
+  id: number;
+  last: boolean;
+  data: Uint8Array;
+}
+
+export function encodeFileChunk(c: FileChunk): Uint8Array {
+  return new Writer().u32(c.id).bool(c.last).raw(c.data).done();
+}
+
+export function decodeFileChunk(payload: Uint8Array): FileChunk {
+  const r = new Reader(payload);
+  return { id: r.u32(), last: r.bool(), data: r.rest() };
+}
+
+export const fileMessage = (c: FileChunk) => wrap(Channel.FILE, encodeFileChunk(c));
+
+// ---- Codecs ----
+
+/** The WebCodecs codec string, from the keyframe's parameter sets (ported
+ * from quick-remote web/src/main.ts). */
+export function codecString(codec: number, au: Uint8Array): string {
+  if (codec === Codec.H264) {
+    for (let i = 0; i + 7 < au.length; i++) {
+      if (au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 1 && (au[i + 3] & 0x1f) === 7) {
+        const h = (x: number) => x.toString(16).padStart(2, "0");
+        return `avc1.${h(au[i + 4])}${h(au[i + 5])}${h(au[i + 6])}`;
+      }
+    }
+    return "avc1.640033";
+  }
+  if (codec === Codec.H265) return "hev1.1.6.L153.B0";
+  return "av01.0.08M.08";
+}
+
+export function codecLabel(codec: number): string {
+  switch (codec) {
+    case Codec.H264:
+      return "H.264";
+    case Codec.H265:
+      return "H.265";
+    case Codec.AV1:
+      return "AV1";
+    default:
+      return `codec ${codec}`;
+  }
+}
+
+// ---- Text limits ----
+
+/** The protocol's cap on a clipboard payload. */
+export const MAX_CLIPBOARD_BYTES = 16 * 1024 * 1024;
+
+// Clip text to the cap without splitting a UTF-8 sequence.
 export function clipClipboardText(text: string): { text: string; truncated: boolean } {
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= MAX_CLIPBOARD_BYTES) return { text, truncated: false };
@@ -176,11 +274,11 @@ export function clipClipboardText(text: string): { text: string; truncated: bool
   return { text: new TextDecoder().decode(bytes.subarray(0, cut)), truncated: true };
 }
 
-/** Most characters one `text` message may carry (the server's cap). */
+/** Most characters one `Text` input event carries. */
 export const MAX_TEXT_CHARS = 4096;
 
-/** Split text into `text` messages of at most `max` characters (code
- * points), never between the halves of a surrogate pair. */
+/** Split text into events of at most `max` characters (code points), never
+ * between the halves of a surrogate pair. */
 export function chunkText(text: string, max = MAX_TEXT_CHARS): string[] {
   const chars = Array.from(text);
   const out: string[] = [];

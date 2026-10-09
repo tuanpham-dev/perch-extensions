@@ -1,6 +1,6 @@
 // KeyboardEvent.code (physical key, UI Events KeyboardEvent code values) to
-// Linux evdev keycodes (input-event-codes.h), which is what quicdesk-server
-// injects; its XTest backend adds the X11 offset itself. Forwarding by
+// Linux evdev keycodes (input-event-codes.h), which is what qr-host
+// injects; its XTest and virtual-keyboard backends map them to the display. Forwarding by
 // position means the remote XKB layout decides what a key types.
 
 export const codeToEvdev: Record<string, number> = {

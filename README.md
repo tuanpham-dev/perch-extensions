@@ -25,7 +25,7 @@ Optional [Perch](https://github.com/tuanpham-dev/perch) extensions, packaged as 
 | Full Keyboard | on-screen keyboard | first-party (Perch) | MIT |
 | One-Hand Operation | bottom gesture bar (swipe, double tap, long press) | first-party (Perch) | MIT |
 | GUI Apps | run Linux GUI apps on the server, viewed/controlled in the browser via xpra (adaptive HTML5 remote display) | first-party (Perch) | MIT |
-| Remote Desktop | a whole Linux desktop in a tab as low-latency H.264 video with full keyboard, mouse, clipboard and cursor control; a managed virtual display follows the tab's size, or attach to an existing display; powered by QuicDesk, whose server ships in the package for Linux x86_64 and arm64 | first-party (Perch) | MIT |
+| Remote Desktop | a whole Linux desktop in a tab as low-latency video (AV1, H.265 or H.264 from the GPU where the host has one) with full keyboard, mouse, clipboard, cursor and audio, image clipboard and file transfer; a managed virtual desktop follows the tab's size and scale, or attach to an existing X11 or Wayland desktop; several tabs share one desktop with one driver; powered by QuickRemote, whose `qr-host` downloads from its GitHub releases with one click | first-party (Perch) | MIT |
 | Dark Modern | color theme (with full `tokenColors`) | flattened from [microsoft/vscode](https://github.com/microsoft/vscode)'s `dark_modern.json` include chain | MIT |
 | Light Modern | color theme (with full `tokenColors`) | flattened from [microsoft/vscode](https://github.com/microsoft/vscode)'s `light_modern.json` include chain | MIT |
 | GitHub Theme | color theme (9 variants: light, dark, dimmed, high contrast, colorblind) | [primer/github-vscode-theme](https://github.com/primer/github-vscode-theme) | MIT |

@@ -1,124 +1,91 @@
-// Decoding, one stream per tile: WebCodecs (hardware where the browser has
-// it; AV1 and H.264) or the bundled tinyh264 worker (software, H.264
-// constrained baseline only) when WebCodecs is missing or the user forces
-// it. A frame no larger than one encoder takes has a single tile covering
-// it; a larger display arrives as a grid, and every tile keeps its own
-// decoder.
-import { FORMATS, splitNalUnits, type FrameTile, type ParsedFrame, type TileRect } from "./wire";
+// Decoding with WebCodecs: one stream, configured from each keyframe's
+// parameter sets (the codec string can change when the host restarts the
+// stream with another encoder). Hardware where the browser has it. There
+// is no software fallback: a browser without WebCodecs gets a banner.
+import { Codec, type CodecCap } from "./qr/proto";
+import { codecString, type VideoFrame as WireFrame } from "./wire";
 
-export type DecodedPicture = (
-  | { kind: "video"; frame: VideoFrame }
-  | { kind: "i420"; data: Uint8Array; codedWidth: number; codedHeight: number; width: number; height: number }
-) & { rect: TileRect };
-
-export type DecoderKind = "webcodecs" | "wasm";
+/** Frames a decoder may hold before the viewer skips to the next keyframe. */
+const MAX_QUEUED_FRAMES = 4;
 
 export interface Decoder {
-  readonly kind: DecoderKind;
-  decode(frame: ParsedFrame): void;
-  /** Forget every tile's state so the next keyframes start fresh. */
+  decode(frame: WireFrame): void;
+  /** Forget the stream's state so the next keyframe starts fresh. */
   reset(): void;
   close(): void;
+  /** The codec string in use, once configured. */
+  readonly codec: string;
 }
 
 export interface DecoderOptions {
-  kind: DecoderKind;
-  /** The server's codec string for the current stream (WebCodecs only),
-   * read whenever a tile's decoder is configured: it arrives with the
-   * server's hello, and the decoder is reset on every hello. */
-  codec(): string;
-  workerUrl: string;
-  onPicture(picture: DecodedPicture, decodeMs: number): void;
+  onPicture(frame: VideoFrame, decodeMs: number): void;
+  /** The decoder lost its way: the host should send a keyframe. */
   onNeedKeyframe(): void;
 }
 
-interface TileDecoder {
-  decode(tile: FrameTile, timestampUs: number): void;
-  close(): void;
+export function hasWebCodecs(): boolean {
+  return typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined";
 }
 
-export async function createDecoder(opts: DecoderOptions): Promise<Decoder> {
-  if (opts.kind === "webcodecs") {
-    return new TiledDecoder("webcodecs", (rect) => new WebCodecsTile(rect, opts), () => {});
-  }
-  const router = await WasmRouter.start(opts);
-  return new TiledDecoder("wasm", (rect) => router.tile(rect), () => router.close());
-}
-
-/** Which decoder this browser uses and the formats it decodes, best first:
- * every format WebCodecs says it supports, or constrained baseline alone
- * for the software decoder. */
-export async function probeFormats(forceWasm: boolean): Promise<{ kind: DecoderKind; codecs: string[] }> {
-  if (!forceWasm && typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined") {
-    const codecs: string[] = [];
-    for (const f of FORMATS) {
+/** What this browser decodes, best first, as the hello carries it. Ported
+ * from quick-remote web/src/main.ts (`decoderCaps`). */
+export async function probeDecoders(): Promise<CodecCap[]> {
+  const out: CodecCap[] = [];
+  if (!hasWebCodecs()) return out;
+  const tries: [number, string][] = [
+    [Codec.AV1, "av01.0.08M.08"],
+    [Codec.H265, "hev1.1.6.L153.B0"],
+    [Codec.H264, "avc1.640033"],
+  ];
+  for (const [codec, s] of tries) {
+    for (const hw of [true, false]) {
       try {
-        const support = await VideoDecoder.isConfigSupported({ codec: f.codec, optimizeForLatency: true });
-        if (support.supported === true) codecs.push(f.name);
+        const accel = hw ? "prefer-hardware" : "prefer-software";
+        const r = await VideoDecoder.isConfigSupported({ codec: s, hardwareAcceleration: accel });
+        if (!r.supported) continue;
+        // The largest picture this decoder takes (Chrome checks the coded
+        // size against what the hardware reports).
+        let [maxWidth, maxHeight] = [1920, 1080];
+        for (const [w, h] of [
+          [8192, 4352],
+          [7680, 4320],
+          [4096, 4096],
+          [4096, 2304],
+        ]) {
+          const big = await VideoDecoder.isConfigSupported({ codec: s, codedWidth: w, codedHeight: h, hardwareAcceleration: accel }).catch(
+            () => ({ supported: false }),
+          );
+          if (big.supported) {
+            [maxWidth, maxHeight] = [w, h];
+            break;
+          }
+        }
+        out.push({ codec, hw, maxWidth, maxHeight, chroma444: false });
+        break;
       } catch {
-        // not supported here
+        // unsupported here
       }
     }
-    if (codecs.length > 0) return { kind: "webcodecs", codecs };
   }
-  return { kind: "wasm", codecs: ["h264-baseline"] };
+  return out;
 }
 
-const rectKey = (r: TileRect) => `${r.x},${r.y},${r.w},${r.h}`;
-
-class TiledDecoder implements Decoder {
-  private tiles = new Map<string, TileDecoder>();
-  private frameSize = "";
-
-  constructor(
-    readonly kind: DecoderKind,
-    private readonly make: (rect: TileRect) => TileDecoder,
-    private readonly onClose: () => void,
-  ) {}
-
-  decode(frame: ParsedFrame): void {
-    // A new frame size means a new tile grid: every stream restarts.
-    const size = `${frame.header.width}x${frame.header.height}`;
-    if (size !== this.frameSize) {
-      this.reset();
-      this.frameSize = size;
-    }
-    for (const tile of frame.tiles) {
-      const key = rectKey(tile.rect);
-      let dec = this.tiles.get(key);
-      if (!dec) {
-        dec = this.make(tile.rect);
-        this.tiles.set(key, dec);
-      }
-      dec.decode(tile, frame.header.timestampUs);
-    }
-  }
-
-  reset(): void {
-    for (const t of this.tiles.values()) t.close();
-    this.tiles.clear();
-  }
-
-  close(): void {
-    this.reset();
-    this.onClose();
-  }
+export function createDecoder(opts: DecoderOptions): Decoder {
+  return new WebCodecsDecoder(opts);
 }
 
-class WebCodecsTile implements TileDecoder {
-  private decoder: VideoDecoder;
+class WebCodecsDecoder implements Decoder {
+  private decoder: VideoDecoder | null = null;
   private seenKeyframe = false;
   private submitted = new Map<number, number>();
   private closed = false;
+  private asked = 0;
+  codec = "";
 
-  constructor(
-    private readonly rect: TileRect,
-    private readonly opts: DecoderOptions,
-  ) {
-    this.decoder = this.build();
-  }
+  constructor(private readonly opts: DecoderOptions) {}
 
-  private build(): VideoDecoder {
+
+  private build(codec: string): VideoDecoder {
     const decoder = new VideoDecoder({
       output: (frame) => {
         const started = this.submitted.get(frame.timestamp);
@@ -128,181 +95,74 @@ class WebCodecsTile implements TileDecoder {
           frame.close();
           return;
         }
-        this.opts.onPicture({ kind: "video", frame, rect: this.rect }, decodeMs);
+        this.opts.onPicture(frame, decodeMs);
       },
       error: () => {
         // A corrupt or out-of-order chunk: start over from the next keyframe.
-        this.restart();
-        this.opts.onNeedKeyframe();
+        this.reset();
+        this.needKeyframe();
       },
     });
-    decoder.configure({
-      codec: this.opts.codec(),
-      optimizeForLatency: true,
-      // The server converts BGRX to full-swing BT.601 without writing VUI
-      // into the stream, so tell the decoder rather than let it assume
-      // limited range and crush the blacks.
-      colorSpace: { primaries: "bt709", transfer: "iec61966-2-1", matrix: "smpte170m", fullRange: true },
-    } as VideoDecoderConfig);
+    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
     return decoder;
   }
 
-  private restart(): void {
+  // At most one request per 250 ms: the host ignores faster ones anyway.
+  private needKeyframe(): void {
+    const now = performance.now();
+    if (now - this.asked < 250) return;
+    this.asked = now;
+    this.opts.onNeedKeyframe();
+  }
+
+  decode(frame: WireFrame): void {
+    if (this.closed) return;
+    if (frame.keyframe) {
+      const s = codecString(frame.meta.codec, frame.au);
+      if (!this.decoder || s !== this.codec || this.decoder.state !== "configured") {
+        this.reset();
+        this.codec = s;
+        this.decoder = this.build(s);
+      }
+      this.seenKeyframe = true;
+    } else if (!this.seenKeyframe || !this.decoder || this.decoder.state !== "configured") {
+      this.needKeyframe();
+      return;
+    }
+    // A decoder that cannot keep up would queue frames without bound and
+    // show each one later than the last: skip to the next keyframe
+    // instead, so what is shown stays current (the host also lowers the
+    // frame rate from the decode times the viewer reports).
+    if (!frame.keyframe && this.decoder!.decodeQueueSize > MAX_QUEUED_FRAMES) {
+      this.seenKeyframe = false;
+      this.submitted.clear();
+      this.needKeyframe();
+      return;
+    }
+    const timestamp = Number(frame.meta.captureUs & 0xffffffffffffn);
+    this.submitted.set(timestamp, performance.now());
+    try {
+      this.decoder!.decode(new EncodedVideoChunk({ type: frame.keyframe ? "key" : "delta", timestamp, data: frame.au }));
+    } catch {
+      this.reset();
+      this.needKeyframe();
+    }
+  }
+
+  reset(): void {
     this.seenKeyframe = false;
     this.submitted.clear();
     try {
-      this.decoder.close();
+      this.decoder?.close();
     } catch {
       // already closed
     }
-    if (!this.closed) this.decoder = this.build();
-  }
-
-  decode(tile: FrameTile, timestampUs: number): void {
-    if (this.closed) return;
-    if (!this.seenKeyframe) {
-      if (!tile.keyframe) return;
-      this.seenKeyframe = true;
-    }
-    if (this.decoder.state !== "configured") {
-      this.restart();
-      if (!tile.keyframe) {
-        this.opts.onNeedKeyframe();
-        return;
-      }
-      this.seenKeyframe = true;
-    }
-    this.submitted.set(timestampUs, performance.now());
-    try {
-      this.decoder.decode(new EncodedVideoChunk({ type: tile.keyframe ? "key" : "delta", timestamp: timestampUs, data: tile.data }));
-    } catch {
-      this.restart();
-      this.opts.onNeedKeyframe();
-    }
+    this.decoder = null;
+    this.codec = "";
   }
 
   close(): void {
     this.closed = true;
-    try {
-      this.decoder.close();
-    } catch {
-      // already closed
-    }
-  }
-}
-
-interface WorkerPicture {
-  type: "pictureReady";
-  renderStateId: number;
-  width: number;
-  height: number;
-  data: ArrayBuffer;
-}
-
-/** One tinyh264 worker for every tile; each tile is a render state in it. */
-class WasmRouter {
-  private tiles = new Map<number, WasmTile>();
-  private nextId = 1;
-
-  private constructor(
-    private readonly worker: Worker,
-    private readonly opts: DecoderOptions,
-  ) {
-    worker.onmessage = (e: MessageEvent<WorkerPicture | { type: string }>) => {
-      if (e.data.type !== "pictureReady") return;
-      const pic = e.data as WorkerPicture;
-      this.tiles.get(pic.renderStateId)?.picture(pic);
-    };
-  }
-
-  static async start(opts: DecoderOptions): Promise<WasmRouter> {
-    // The bundle is fetched here and started from a Blob URL rather than by
-    // its own URL: a script request made by the worker itself goes through
-    // the host's service worker as a worker-destination request, which was
-    // observed to hang without ever loading; the page's own fetch of the
-    // same file works. The bundle is self-contained (its WebAssembly is
-    // embedded), so nothing else is loaded from the worker side.
-    const res = await fetch(opts.workerUrl);
-    if (!res.ok) throw new Error(`software decoder bundle: ${res.status} ${res.statusText}`);
-    const blobUrl = URL.createObjectURL(new Blob([await res.text()], { type: "text/javascript" }));
-    return new Promise((resolve, reject) => {
-      const worker = new Worker(blobUrl, { type: "module" });
-      const timeout = window.setTimeout(() => {
-        worker.terminate();
-        reject(new Error("software decoder did not start"));
-      }, 15000);
-      worker.onmessage = (e: MessageEvent<{ type: string }>) => {
-        if (e.data?.type === "decoderReady") {
-          window.clearTimeout(timeout);
-          URL.revokeObjectURL(blobUrl);
-          resolve(new WasmRouter(worker, opts));
-        }
-      };
-      worker.onerror = (e) => {
-        window.clearTimeout(timeout);
-        reject(new Error(e.message || "software decoder failed to load"));
-      };
-    });
-  }
-
-  tile(rect: TileRect): TileDecoder {
-    const id = this.nextId++;
-    const t = new WasmTile(id, rect, this.worker, this.opts, () => this.tiles.delete(id));
-    this.tiles.set(id, t);
-    return t;
-  }
-
-  close(): void {
-    this.worker.terminate();
-  }
-}
-
-class WasmTile implements TileDecoder {
-  private seenKeyframe = false;
-  private submittedAt: number[] = [];
-
-  constructor(
-    private readonly id: number,
-    private readonly rect: TileRect,
-    private readonly worker: Worker,
-    private readonly opts: DecoderOptions,
-    private readonly onClose: () => void,
-  ) {}
-
-  picture(pic: WorkerPicture): void {
-    // Pictures come out in submission order; the decoded size is
-    // macroblock-aligned, the tile rect carries the size to show.
-    const started = this.submittedAt.shift();
-    this.opts.onPicture(
-      {
-        kind: "i420",
-        data: new Uint8Array(pic.data),
-        codedWidth: pic.width,
-        codedHeight: pic.height,
-        width: Math.min(this.rect.w, pic.width),
-        height: Math.min(this.rect.h, pic.height),
-        rect: this.rect,
-      },
-      started === undefined ? 0 : performance.now() - started,
-    );
-  }
-
-  decode(tile: FrameTile): void {
-    if (!this.seenKeyframe) {
-      if (!tile.keyframe) return;
-      this.seenKeyframe = true;
-    }
-    this.submittedAt.push(performance.now());
-    // tinyh264 decodes one NAL unit per message and its input buffer is 1 MB,
-    // so a tile goes over as its NAL units, each in its own copy.
-    for (const nal of splitNalUnits(tile.data)) {
-      const copy = nal.slice().buffer;
-      this.worker.postMessage({ type: "decode", renderStateId: this.id, data: copy, offset: 0, length: nal.length }, [copy]);
-    }
-  }
-
-  close(): void {
-    this.worker.postMessage({ type: "release", renderStateId: this.id });
-    this.onClose();
+    this.reset();
   }
 }

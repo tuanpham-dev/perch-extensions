@@ -77,6 +77,49 @@
   gap: 6px;
 }
 
+.rd-panel-engine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rd-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.rd-panel-code {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  user-select: all;
+  word-break: break-all;
+}
+
+.rd-panel-download {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rd-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-progressBar-background, rgba(255, 255, 255, 0.15));
+  overflow: hidden;
+}
+
+.rd-progress-bar {
+  height: 100%;
+  background: var(--vscode-button-background, #0e639c);
+  transition: width 0.3s;
+}
+
 .rd-input {
   flex: 1;
   min-width: 0;
@@ -126,6 +169,11 @@
   outline: none;
   touch-action: none;
   image-rendering: auto;
+}
+
+/* The host draws the pointer into the picture: one pointer, theirs. */
+.rd-view-cursor-remote .rd-view-canvas {
+  cursor: none;
 }
 
 .rd-view-overlay {
@@ -192,14 +240,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.rd-view-stats-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
-  cursor: pointer;
-}
-
 .rd-view-fullscreen {
   background: #000;
 }
@@ -244,6 +284,14 @@
   color: var(--vscode-charts-yellow, #e2c08d);
 }
 
+.rd-tool-zoom {
+  width: auto;
+  min-width: 38px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .rd-view-follow {
   position: absolute;
   left: 50%;
@@ -270,8 +318,35 @@
    in the host's menu-row rhythm. */
 
 .rd-popover {
-  min-width: 260px;
+  min-width: 300px;
   overflow-y: auto;
+}
+
+.rd-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.rd-popover-x {
+  color: var(--fg-inactive);
+}
+
+.rd-select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  background: var(--vscode-dropdown-background, #313131);
+  color: var(--vscode-dropdown-foreground, #ccc);
+  font: inherit;
+}
+
+.rd-input-size {
+  width: 64px;
+  flex: 0 0 auto;
 }
 
 .rd-popover-section {
@@ -434,4 +509,21 @@
   background: var(--vscode-button-background, #0e639c);
   border-color: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
+}
+
+.rd-popover-zoom {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.rd-popover-zoom .rd-btn {
+  min-width: 44px;
+  justify-content: center;
+}
+
+.rd-view-pad-cursor {
+  position: absolute;
+  pointer-events: none;
+  z-index: 3;
 }

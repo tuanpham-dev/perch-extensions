@@ -1,4 +1,5 @@
-// What activate() receives from the host, kept for the components.
+// What activate() receives from the host, kept for the components, and the
+// calls to this extension's own server side (server.js).
 
 export interface ActiveContext {
   sessionName: string | null;
@@ -6,18 +7,50 @@ export interface ActiveContext {
   cwd: string | null;
 }
 
+export interface DownloadStatus {
+  state: "idle" | "running" | "done" | "error";
+  /** 0 to 100 while running; the whole download when done. */
+  percent: number;
+  error: string | null;
+  /** The release version being (or just) fetched. */
+  version: string | null;
+}
+
 export interface RdStatus {
+  /** A usable qr-host was found: at least the required version. */
   installed: boolean;
   serverPath: string;
   serverReason: "missing" | "outdated" | null;
+  /** The found binary's version, usable or not. */
+  engineVersion: string | null;
+  requiredVersion: string;
+  /** Where the binary came from. */
+  engineSource: "setting" | "downloaded" | "path" | "cargo" | null;
+  /** A remoteDesktop.serverPath that is not qr-host (a leftover
+   * quicdesk-server path), skipped in favour of the other candidates. */
+  settingIgnored: string | null;
   mode: "managed" | "existing";
   display: string;
   desktopCommand: string;
+  renderer: "auto" | "gpu" | "software";
   running: boolean;
   port: number | null;
   viewers: number;
   width: number;
   height: number;
+  scale: number;
+  codec: string | null;
+  encoder: string | null;
+  /** How the managed display renders: on the GPU, or in software when the
+   * host cannot open the render node (the hint in the panel says why). */
+  hostRenderer: "gpu" | "software" | null;
+  source: string | null;
+  cursorInPicture: boolean;
+  /** Host packages managed mode needs that are not installed. */
+  missing: string[];
+  /** The managed display's environment, for Launch. */
+  displayEnv: { DISPLAY?: string; WAYLAND_DISPLAY?: string } | null;
+  download: DownloadStatus;
 }
 
 export interface HostBindings {
@@ -37,6 +70,10 @@ export function setHost(bindings: HostBindings | null): void {
 
 export function getHost(): HostBindings {
   if (!host) throw new Error("Remote Desktop extension is not active");
+  return host;
+}
+
+export function getHostOrNull(): HostBindings | null {
   return host;
 }
 
@@ -64,6 +101,13 @@ export async function fetchStatus(): Promise<RdStatus> {
   return body as RdStatus;
 }
 
+export async function fetchDownloadStatus(): Promise<DownloadStatus> {
+  const res = await fetchWithTimeout("/download/status");
+  const body = (await res.json().catch(() => null)) as DownloadStatus | { error?: string } | null;
+  if (!res.ok) throw new Error((body as { error?: string } | null)?.error ?? `${res.status} ${res.statusText}`);
+  return body as DownloadStatus;
+}
+
 export async function postJson<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
   const res = await fetchWithTimeout(path, {
     method: "POST",
@@ -75,104 +119,17 @@ export async function postJson<T = Record<string, unknown>>(path: string, body?:
   return (parsed ?? {}) as T;
 }
 
-// Perch settings sync across a person's devices, so the synced value is a
-// default; this browser may override it for itself (a phone at 3x, a
-// laptop that wants 1x while the 4K desktop drives at 2x).
-const DEVICE_RATIO_KEY = "remoteDesktop.pixelRatio.device";
-/** Auto never asks for more than this: a 3x phone gets a 2x desktop. */
-export const AUTO_RATIO_CAP = 2;
-export type RatioChoice = "auto" | "1" | "1.5" | "2";
-
-export function deviceRatioChoice(): RatioChoice | null {
-  try {
-    const v = localStorage.getItem(DEVICE_RATIO_KEY);
-    return v === "auto" || v === "1" || v === "1.5" || v === "2" ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-export function setDeviceRatioChoice(choice: RatioChoice | null): void {
-  try {
-    if (choice === null) localStorage.removeItem(DEVICE_RATIO_KEY);
-    else localStorage.setItem(DEVICE_RATIO_KEY, choice);
-  } catch {
-    // Storage blocked: the choice lasts for this page only.
-  }
-}
-
-export function syncedRatioChoice(): RatioChoice {
-  const raw = host?.getSetting("remoteDesktop.pixelRatio");
-  const v = typeof raw === "number" ? String(raw) : raw;
-  return v === "1" || v === "1.5" || v === "2" ? v : "auto";
-}
-
-/** What auto resolves to on this device. */
-export function detectedPixelRatio(): number {
-  const dpr = window.devicePixelRatio || 1;
-  return Math.min(AUTO_RATIO_CAP, Math.max(1, Math.round(dpr * 4) / 4));
-}
-
-// Fit to tab, per device: scale the picture to fill the tab's width or
-// height (aspect ratio kept), up as well as down. Off, a follower's picture
-// is only ever scaled down. Kept in this browser only.
-const DEVICE_FIT_KEY = "remoteDesktop.fitToTab.device";
-
-export function deviceFitToTab(): boolean {
-  try {
-    return localStorage.getItem(DEVICE_FIT_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function setDeviceFitToTab(on: boolean): void {
-  try {
-    if (on) localStorage.setItem(DEVICE_FIT_KEY, "1");
-    else localStorage.removeItem(DEVICE_FIT_KEY);
-  } catch {
-    // Storage blocked: the choice lasts for this page only.
-  }
-}
-
-/** The ratio in force: the device override, else the synced setting. */
-export function effectivePixelRatio(): number {
-  const choice = deviceRatioChoice() ?? syncedRatioChoice();
-  if (choice === "auto") return detectedPixelRatio();
-  return Number(choice);
-}
-
-// Where this device keeps the floating fullscreen controls: fractions of
-// the free space across and down (0 is the left or top edge, 1 the right
-// or bottom), so the spot survives a rotation or another screen size.
-const FS_CONTROLS_POS_KEY = "remoteDesktop.fsControlsPos";
-
-export interface ControlsPos {
-  x: number;
-  y: number;
-}
-
-const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
-
-export function fsControlsPos(): ControlsPos {
-  try {
-    const raw = JSON.parse(localStorage.getItem(FS_CONTROLS_POS_KEY) ?? "null") as unknown;
-    if (raw && typeof raw === "object") {
-      const { x, y } = raw as Record<string, unknown>;
-      if (typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y)) {
-        return { x: clamp01(x), y: clamp01(y) };
-      }
-    }
-  } catch {
-    // Storage blocked or a bad value: the default spot.
-  }
-  return { x: 1, y: 0 };
-}
-
-export function setFsControlsPos(pos: ControlsPos): void {
-  try {
-    localStorage.setItem(FS_CONTROLS_POS_KEY, JSON.stringify({ x: clamp01(pos.x), y: clamp01(pos.y) }));
-  } catch {
-    // Storage blocked: the spot lasts for this page only.
-  }
-}
+// The per-device choices moved to settings.ts; re-exported so existing
+// imports keep working.
+export {
+  AUTO_RATIO_CAP,
+  detectedPixelRatio,
+  deviceRatioChoice,
+  effectivePixelRatio,
+  fsControlsPos,
+  setDeviceRatioChoice,
+  setFsControlsPos,
+  syncedRatioChoice,
+  type ControlsPos,
+  type RatioChoice,
+} from "./settings";

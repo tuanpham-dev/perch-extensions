@@ -1,7 +1,7 @@
 // The phone keyboard: a hidden text field the Keyboard button focuses (a
 // phone opens its keyboard only for a focused field), whose committed text
-// goes out as `text` messages the server types character by character, and
-// a strip of the keys a phone keyboard lacks, with sticky modifiers.
+// goes out as `Text` input events the host types character by character,
+// and a strip of the keys a phone keyboard lacks, with sticky modifiers.
 //
 // The field always holds one sentinel space before the caret, so a
 // Backspace has something to delete (keyboards send none into an empty
@@ -12,7 +12,8 @@
 // viewport while a phone keyboard is up, so this module only reports the
 // open state and never styles the document.
 import { evdevForCode } from "./keymap";
-import { chunkText, type ClientMsg } from "./wire";
+import type { InputEvent } from "./qr/proto";
+import { chunkText } from "./wire";
 
 const SENTINEL = " ";
 // The visual viewport is this much shorter than the window while a phone
@@ -57,7 +58,7 @@ export interface PhoneKeyboard {
 
 export interface PhoneKeyboardOptions {
   field: HTMLTextAreaElement;
-  send(msg: ClientMsg): void;
+  send(e: InputEvent): void;
   /** The field gained or lost focus. */
   onOpenChange(open: boolean): void;
   /** The armed sticky modifiers changed. */
@@ -90,16 +91,16 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
   // keyboard), then release them: a sticky modifier lasts one key.
   const withModifiers = (extra: number[], action: () => void) => {
     const mods = [...new Set([...armed, ...extra])];
-    for (const code of mods) send({ t: "key", code, down: true });
+    for (const code of mods) send({ t: "Key", code, down: true });
     action();
-    for (const code of mods.reverse()) send({ t: "key", code, down: false });
+    for (const code of mods.reverse()) send({ t: "Key", code, down: false });
     if (armed.size) setArmed(() => armed.clear());
   };
 
   const tapKey = (code: number, extra: number[] = []) =>
     withModifiers(extra, () => {
-      send({ t: "key", code, down: true });
-      send({ t: "key", code, down: false });
+      send({ t: "Key", code, down: true });
+      send({ t: "Key", code, down: false });
     });
 
   const sendText = (text: string) => {
@@ -107,10 +108,10 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
     if (armed.size) {
       // The modifiers go with the first character only.
       const [first, ...rest] = Array.from(text);
-      withModifiers([], () => send({ t: "text", text: first }));
+      withModifiers([], () => send({ t: "Text", text: first }));
       text = rest.join("");
     }
-    for (const chunk of chunkText(text)) send({ t: "text", text: chunk });
+    for (const chunk of chunkText(text)) send({ t: "Text", text: chunk });
   };
 
   // What the field gained or lost since the last reset.
@@ -156,7 +157,7 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
     const typed = value.startsWith(SENTINEL) ? value.slice(SENTINEL.length) : value;
     const first = Array.from(typed)[0];
     if (!first) return;
-    withModifiers([], () => send({ t: "text", text: first }));
+    withModifiers([], () => send({ t: "Text", text: first }));
     chordFromComposition = first;
     reset();
   };

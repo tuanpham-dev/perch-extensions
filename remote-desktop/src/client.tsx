@@ -1,8 +1,8 @@
-// Remote Desktop: a Linux X11 desktop streamed into a tab through
-// quicdesk-server (see server.js for how the session is started and why the
-// stream port has to live in a terminal session). The sidebar panel owns
-// start/stop/launch; the viewer tab (never file-matched) connects to
-// whatever port is live and does everything else client-side.
+// Remote Desktop: a Linux desktop streamed into a tab through QuickRemote's
+// qr-host (see server.js for how the session is started and why the stream
+// port has to live in a terminal session). The sidebar panel owns
+// download/start/stop/launch; the viewer tab (never file-matched) connects
+// to whatever port is live and does everything else client-side.
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
 import { setHost } from "./host";

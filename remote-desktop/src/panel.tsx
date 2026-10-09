@@ -1,13 +1,19 @@
-// Sidebar panel: start, stop, open the display, launch a command, and show
-// what the server side reports. Polls /status every 2 s.
+// Sidebar panel: find or download the engine, start, stop, open the
+// display, launch a command, and show what the server side reports. Polls
+// /status every 2 s, and /download/status every 500 ms while a download
+// runs.
 import { useCallback, useEffect, useState } from "react";
 import Icon from "./Icon";
-import { fetchStatus, postJson, getHost, type RdStatus } from "./host";
+import { fetchDownloadStatus, fetchStatus, getHost, postJson, type DownloadStatus, type RdStatus } from "./host";
 
 const STATUS_POLL_MS = 2000;
+const DOWNLOAD_POLL_MS = 500;
+
+const APT_LINE = "sudo apt install -y sway xwayland pipewire wireplumber xfce4 dbus-x11 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire";
 
 export function RemoteDesktopPanel() {
   const [status, setStatus] = useState<RdStatus | null>(null);
+  const [download, setDownload] = useState<DownloadStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [command, setCommand] = useState("");
@@ -16,6 +22,7 @@ export function RemoteDesktopPanel() {
     fetchStatus()
       .then((s) => {
         setStatus(s);
+        setDownload(s.download);
         setError(null);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -26,6 +33,24 @@ export function RemoteDesktopPanel() {
     const id = window.setInterval(poll, STATUS_POLL_MS);
     return () => window.clearInterval(id);
   }, [poll]);
+
+  // A running download is followed closely; when it ends the next status
+  // poll picks up the binary.
+  const downloading = download?.state === "running";
+  useEffect(() => {
+    if (!downloading) return;
+    const id = window.setInterval(() => {
+      fetchDownloadStatus()
+        .then((d) => {
+          setDownload(d);
+          if (d.state !== "running") poll();
+        })
+        .catch(() => {
+          // The status poll carries on.
+        });
+    }, DOWNLOAD_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [downloading, poll]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -45,6 +70,10 @@ export function RemoteDesktopPanel() {
       await postJson("/stop");
       poll();
     });
+  const startDownload = () =>
+    act(async () => {
+      setDownload(await postJson<DownloadStatus>("/download"));
+    });
   const openDisplay = () => getHost().openViewerTab("remoteDesktopView", "remote-desktop://display", { title: "Remote Desktop" });
   const launch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,25 +89,68 @@ export function RemoteDesktopPanel() {
     return <div className="rd-panel rd-panel-status">{error ?? "Loading…"}</div>;
   }
 
-  const modeLabel = status.mode === "existing" ? `Existing display ${status.display}` : `Managed display ${status.display}, ${status.desktopCommand}`;
+  const modeLabel =
+    status.mode === "existing"
+      ? `Existing display${status.display ? ` ${status.display}` : " (detected)"}`
+      : `Managed display · ${status.desktopCommand}`;
+  const sourceLabel = { setting: "from Settings", downloaded: "downloaded", path: "on PATH", cargo: "in ~/.cargo/bin" }[status.engineSource ?? "path"];
+  const outdated = status.serverReason === "outdated";
+  const canStart = status.installed && !status.running;
 
   return (
     <div className="rd-panel">
-      {!status.installed && (
+      <div className="rd-panel-engine">
+        <span className="rd-panel-label">Engine</span>
+        {status.engineVersion ? (
+          <span>
+            qr-host {status.engineVersion} <span className="rd-panel-muted">({sourceLabel})</span>
+          </span>
+        ) : (
+          <span className="rd-panel-muted">qr-host not found</span>
+        )}
+      </div>
+      {status.settingIgnored && (
         <div className="rd-panel-status">
-          {status.serverReason === "outdated" ? (
+          Settings point at <code>{status.settingIgnored}</code>, which is not qr-host (a QuicDesk server from an earlier version); it is
+          ignored. Clear <code>remoteDesktop.serverPath</code> to silence this note.
+        </div>
+      )}
+      {!status.installed && !downloading && (
+        <div className="rd-panel-status">
+          {outdated ? (
             <>
-              The server at <code>{status.serverPath}</code> is too old for this extension. Rebuild it from the QuicDesk repository.
+              The engine at <code>{status.serverPath}</code> is {status.engineVersion}; this extension needs {status.requiredVersion} or newer.
             </>
           ) : (
             <>
-              quicdesk-server was not found. Install it with <code>cargo install --path crates/server</code> from the QuicDesk
-              repository (see this extension's README), or set its path in Settings.
+              Install the host packages (below), then download the engine. Or build it yourself and set its path in Settings.
             </>
           )}
         </div>
       )}
-      {status.installed && !status.running && (
+      {(!status.installed || outdated) && !status.running && (
+        <div className="rd-panel-row">
+          <button className="rd-btn rd-btn-primary" disabled={busy || downloading} onClick={() => void startDownload()}>
+            <Icon name="cloud-download" /> {outdated ? `Update to ${status.requiredVersion}` : "Download qr-host"}
+          </button>
+        </div>
+      )}
+      {downloading && (
+        <div className="rd-panel-download">
+          <div className="rd-panel-muted">Downloading qr-host {download?.version ?? ""}… {download?.percent ?? 0}%</div>
+          <div className="rd-progress" role="progressbar" aria-valuenow={download?.percent ?? 0} aria-valuemin={0} aria-valuemax={100}>
+            <div className="rd-progress-bar" style={{ width: `${download?.percent ?? 0}%` }} />
+          </div>
+        </div>
+      )}
+      {download?.state === "error" && download.error && <div className="rd-panel-error">Download failed: {download.error}</div>}
+      {status.missing.length > 0 && status.mode === "managed" && (
+        <div className="rd-panel-warning">
+          Managed mode needs {status.missing.join(", ")} on this host:
+          <code className="rd-panel-code">{APT_LINE}</code>
+        </div>
+      )}
+      {canStart && (
         <>
           <button className="rd-btn rd-btn-primary" disabled={busy} onClick={() => void start()}>
             <Icon name="play" /> Start Remote Desktop
@@ -91,11 +163,19 @@ export function RemoteDesktopPanel() {
           <div className="rd-panel-row">
             <span className="rd-status-dot rd-status-on" />
             <span>
-              Running on {status.display} ({status.mode === "existing" ? "existing display" : "managed"})
+              Running ({status.mode === "existing" ? "existing display" : "managed"})
               {status.viewers > 0 ? `, ${status.viewers} viewer${status.viewers === 1 ? "" : "s"}` : ""}
-              {status.width > 0 ? `, ${status.width}x${status.height}` : ""}
             </span>
           </div>
+          {status.width > 0 && (
+            <div className="rd-panel-muted">
+              {status.width}x{status.height}
+              {status.scale && status.scale !== 1 ? ` @ ${status.scale}x` : ""}
+              {status.encoder ? ` · ${status.encoder}` : ""}
+              {status.codec ? ` · ${status.codec}` : ""}
+              {status.hostRenderer === "software" ? " · software rendering" : ""}
+            </div>
+          )}
           <div className="rd-panel-row">
             <button className="rd-btn rd-btn-primary" disabled={busy} onClick={openDisplay}>
               <Icon name="link-external" /> Open Display

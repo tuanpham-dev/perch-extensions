@@ -1,87 +1,97 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FRAME_HEADER_LEN, MAX_TEXT_CHARS, chunkText, clipClipboardText, parseFrame, parseFrameHeader, splitNalUnits } from "./wire.ts";
+import {
+  Channel,
+  FRAME_META_LEN,
+  MAX_TEXT_CHARS,
+  chunkText,
+  clipClipboardText,
+  codecString,
+  decodeFileChunk,
+  decodeSeatMessage,
+  encodeFileChunk,
+  encodeSeatMessage,
+  parseVideo,
+  wrap,
+} from "./wire.ts";
 
-function header(fields: { frameId: number; keyframe: boolean; width: number; height: number; timestampUs: number }): ArrayBuffer {
-  const buf = new ArrayBuffer(FRAME_HEADER_LEN + 3);
-  const dv = new DataView(buf);
-  dv.setBigUint64(0, BigInt(fields.frameId), true);
-  dv.setUint32(8, fields.keyframe ? 1 : 0, true);
-  dv.setUint32(12, fields.width, true);
-  dv.setUint32(16, fields.height, true);
-  dv.setBigUint64(20, BigInt(fields.timestampUs), true);
+function video(fields: { stream: number; codec: number; flags: number; width: number; height: number; au: number[] }): Uint8Array {
+  const buf = new Uint8Array(1 + FRAME_META_LEN + fields.au.length);
+  const dv = new DataView(buf.buffer);
+  buf[0] = fields.stream;
+  buf[1] = fields.codec;
+  buf[2] = fields.flags;
+  dv.setUint16(3, fields.width, true);
+  dv.setUint16(5, fields.height, true);
+  dv.setUint32(7, fields.au.length, true);
+  dv.setBigUint64(11, 1000n, true);
+  dv.setBigUint64(19, 1100n, true);
+  dv.setBigUint64(27, 1200n, true);
+  dv.setBigUint64(35, 1300n, true);
+  buf.set(fields.au, 1 + FRAME_META_LEN);
   return buf;
 }
 
-test("parseFrameHeader reads the little-endian layout", () => {
-  const fields = { frameId: 0x0102030405, keyframe: true, width: 1920, height: 1080, timestampUs: 123456789 };
-  assert.deepEqual(parseFrameHeader(header(fields)), fields);
-  assert.equal(new Uint8Array(header(fields))[0], 0x05, "low byte first");
-});
-
-test("parseFrameHeader rejects short buffers", () => {
-  assert.equal(parseFrameHeader(new ArrayBuffer(27)), null);
-});
-
-test("splitNalUnits keeps start codes and handles both lengths", () => {
-  const bytes = new Uint8Array([0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 0, 1, 0x65, 4, 5, 6]);
-  const nals = splitNalUnits(bytes);
+test("parseVideo reads the stream byte, FrameMeta and the access unit", () => {
+  const f = parseVideo(video({ stream: 0, codec: 1, flags: 1, width: 1920, height: 1080, au: [0, 0, 1, 0x67, 9] }));
+  assert.ok(f);
+  assert.equal(f.stream, 0);
+  assert.equal(f.keyframe, true);
   assert.deepEqual(
-    nals.map((n) => Array.from(n)),
-    [
-      [0, 0, 0, 1, 0x67, 1, 2],
-      [0, 0, 1, 0x68, 3],
-      [0, 0, 0, 1, 0x65, 4, 5, 6],
-    ],
+    { ...f.meta },
+    { codec: 1, flags: 1, width: 1920, height: 1080, len: 5, captureUs: 1000n, encodeStartUs: 1100n, encodeEndUs: 1200n, sendUs: 1300n },
   );
+  assert.deepEqual(Array.from(f.au), [0, 0, 1, 0x67, 9]);
 });
 
-test("splitNalUnits returns the whole payload when no start code exists", () => {
-  const nals = splitNalUnits(new Uint8Array([9, 9, 9]));
-  assert.equal(nals.length, 1);
-  assert.equal(splitNalUnits(new Uint8Array([])).length, 0);
+test("parseVideo rejects short or inconsistent payloads", () => {
+  assert.equal(parseVideo(new Uint8Array(FRAME_META_LEN)), null);
+  const buf = video({ stream: 0, codec: 1, flags: 0, width: 8, height: 8, au: [1, 2, 3] });
+  assert.equal(parseVideo(buf.subarray(0, buf.length - 1)), null, "the access unit must be as long as `len` says");
 });
 
-test("clipClipboardText caps at 1 MB on a character boundary", () => {
+test("seat messages round-trip", () => {
+  const seat = { t: "Seat" as const, driver: false, scalePct: 200, driverRatioPct: 150, viewers: 3, cursorInPicture: true };
+  assert.deepEqual(decodeSeatMessage(encodeSeatMessage(seat)), seat);
+  const claim = { t: "Claim" as const, viewerId: "perch-7f3a" };
+  const bytes = encodeSeatMessage(claim);
+  assert.equal(bytes[0], 2);
+  assert.deepEqual(decodeSeatMessage(bytes), claim);
+  assert.throws(() => decodeSeatMessage(new Uint8Array([9])));
+});
+
+test("file chunks round-trip and wrap puts the channel first", () => {
+  const chunk = { id: 7, last: true, data: new Uint8Array([1, 2, 3]) };
+  const bytes = encodeFileChunk(chunk);
+  assert.deepEqual(Array.from(bytes), [7, 0, 0, 0, 1, 1, 2, 3]);
+  const back = decodeFileChunk(bytes);
+  assert.equal(back.id, 7);
+  assert.equal(back.last, true);
+  assert.deepEqual(Array.from(back.data), [1, 2, 3]);
+  const wrapped = wrap(Channel.FILE, bytes);
+  assert.equal(wrapped[0], 4);
+  assert.equal(wrapped.length, bytes.length + 1);
+});
+
+test("codecString reads the H.264 SPS profile, level and constraints", () => {
+  const au = new Uint8Array([0, 0, 0, 1, 0x67, 0x64, 0x00, 0x33, 0xac]);
+  assert.equal(codecString(1, au), "avc1.640033");
+  assert.equal(codecString(1, new Uint8Array([0, 0, 1, 0x65, 1, 2, 3, 4])), "avc1.640033", "no SPS: the default");
+  assert.equal(codecString(2, au), "hev1.1.6.L153.B0");
+  assert.equal(codecString(3, au), "av01.0.08M.08");
+});
+
+test("clipClipboardText caps at 16 MB on a character boundary", () => {
   const short = clipClipboardText("héllo");
   assert.deepEqual(short, { text: "héllo", truncated: false });
-  const long = "é".repeat(600_000); // 1.2 MB of UTF-8
+  const long = "é".repeat(9_000_000); // 18 MB of UTF-8
   const clipped = clipClipboardText(long);
   assert.equal(clipped.truncated, true);
-  assert.ok(new TextEncoder().encode(clipped.text).length <= 1024 * 1024);
+  assert.ok(new TextEncoder().encode(clipped.text).length <= 16 * 1024 * 1024);
   assert.ok(!clipped.text.includes("�"), "no broken sequence at the cut");
 });
 
-test("parseFrame reads the tile table and payloads", () => {
-  const payloads = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
-  const rects = [
-    { x: 0, y: 0, w: 3008, h: 1696, key: 1 },
-    { x: 3008, y: 1696, w: 2992, h: 1680, key: 0 },
-  ];
-  const buf = new ArrayBuffer(32 + 16 * 2 + 5);
-  const dv = new DataView(buf);
-  dv.setBigUint64(0, 9n, true);
-  dv.setUint32(12, 6000, true);
-  dv.setUint32(16, 3376, true);
-  dv.setUint16(28, 2, true);
-  rects.forEach((r, i) => {
-    const d = 32 + 16 * i;
-    dv.setUint16(d, r.x, true); dv.setUint16(d + 2, r.y, true); dv.setUint16(d + 4, r.w, true); dv.setUint16(d + 6, r.h, true);
-    dv.setUint32(d + 8, r.key, true); dv.setUint32(d + 12, payloads[i].length, true);
-  });
-  new Uint8Array(buf).set(payloads[0], 64);
-  new Uint8Array(buf).set(payloads[1], 67);
-  const f = parseFrame(buf);
-  assert.ok(f);
-  assert.equal(f.header.width, 6000);
-  assert.equal(f.tiles.length, 2);
-  assert.deepEqual(f.tiles[1].rect, { x: 3008, y: 1696, w: 2992, h: 1680 });
-  assert.equal(f.tiles[0].keyframe, true);
-  assert.deepEqual(Array.from(f.tiles[1].data), [4, 5]);
-  assert.equal(parseFrame(buf.slice(0, buf.byteLength - 1)), null, "truncated payload rejected");
-});
-
-test("text splits at the per-message cap, keeping emoji whole", () => {
+test("text splits at the per-event cap, keeping emoji whole", () => {
   assert.deepEqual(chunkText(""), []);
   assert.deepEqual(chunkText("abc", 2), ["ab", "c"]);
   assert.deepEqual(chunkText("a😀b😀", 2), ["a😀", "b😀"]);

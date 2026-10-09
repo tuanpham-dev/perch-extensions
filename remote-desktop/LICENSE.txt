@@ -22,14 +22,12 @@ SOFTWARE.
 
 ----------------------------------------------------------------------
 
-The software H.264 fallback decoder bundled in dist/workers/h264.js is
-tinyh264 (https://github.com/udevbe/tinyh264), a fork of h264bsd
-(https://github.com/oneam/h264bsd), which wraps the Android Open Source
-Project's H.264 baseline decoder.
+This extension streams a desktop through QuickRemote
+(https://github.com/tuanpham-dev/quick-remote), whose host binary `qr-host`
+is downloaded from that project's releases (or built by you); it is not
+part of this package. The viewer vendors QuickRemote's TypeScript wire
+protocol (src/qr/proto.ts) and its conformance vectors, and ports its view
+transform and audio playout.
 
-tinyh264 and h264bsd: MIT License, Copyright (c) 2013 Sam Leitch and the
-tinyh264 contributors.
-
-The underlying h264bsd C sources are licensed under the Apache License,
-Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0), Copyright (C) 2007
-The Android Open Source Project.
+QuickRemote: MIT License or Apache License, Version 2.0, at your option.
+Copyright (c) 2026 Tuan Pham.
