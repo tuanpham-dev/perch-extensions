@@ -9,7 +9,7 @@ import { fetchDownloadStatus, fetchStatus, getHost, postJson, type DownloadStatu
 const STATUS_POLL_MS = 2000;
 const DOWNLOAD_POLL_MS = 500;
 
-const APT_LINE = "sudo apt install -y sway xwayland pipewire wireplumber xfce4 dbus-x11 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire";
+const APT_LINE = "sudo apt install -y sway xwayland xdg-desktop-portal-wlr pipewire wireplumber xfce4 dbus-x11 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire";
 
 export function RemoteDesktopPanel() {
   const [status, setStatus] = useState<RdStatus | null>(null);
