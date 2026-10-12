@@ -16,10 +16,10 @@ cd quick-remote
 cargo install --path crates/qr-host
 ```
 
-The host needs these packages. Managed mode needs sway, Xwayland, PipeWire, WirePlumber and a desktop; the GStreamer plugins carry the encoders:
+The host needs these packages. Managed mode needs sway, Xwayland, xdg-desktop-portal-wlr (the host captures the display through it), PipeWire, WirePlumber and a desktop; the GStreamer plugins carry the encoders:
 
 ```sh
-sudo apt install -y sway xwayland pipewire wireplumber xfce4 dbus-x11 \
+sudo apt install -y sway xwayland xdg-desktop-portal-wlr pipewire wireplumber xfce4 dbus-x11 \
   gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire
 ```
 

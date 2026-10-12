@@ -2,7 +2,7 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "displayName": "Remote Desktop",
   "description": "A Linux desktop streamed into a tab as low-latency video (AV1, H.265 or H.264 from the GPU where the host has one) with full keyboard, mouse, clipboard, cursor and audio; a managed virtual desktop follows the tab's size and scale, or attach to an existing X11 or Wayland desktop. Powered by QuickRemote; its host downloads from the project's releases with one click.",
   "icon": "./icon.svg",

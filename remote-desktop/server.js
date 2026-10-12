@@ -320,7 +320,7 @@ async function downloadEngine(log) {
 // Host packages managed mode needs and this machine lacks.
 async function missingPackages(settings) {
   if (settings.mode !== "managed") return [];
-  const want = ["sway", "Xwayland", "pipewire", "wireplumber"];
+  const want = ["sway", "Xwayland", "/usr/libexec/xdg-desktop-portal-wlr", "pipewire", "wireplumber"];
   const desktop = String(settings.desktopCommand).trim().split(/\s+/)[0];
   if (desktop) want.push(desktop);
   const dirs = (process.env.PATH ?? "").split(":").filter(Boolean);
