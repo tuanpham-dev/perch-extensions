@@ -60,6 +60,7 @@ The desktop scale follows the driver's pixel ratio: on a managed display the hos
 | `remoteDesktop.mode` | `managed` | `managed` starts a virtual display and a desktop; `existing` attaches to the running one. |
 | `remoteDesktop.display` | empty | Existing mode: an X display to force (`:0`); empty detects the running desktop. |
 | `remoteDesktop.desktopCommand` | `xfce4-session` | Managed: the desktop session command. |
+| `remoteDesktop.useGlobalConfig` | `false` | Managed: run the desktop with your own `~/.config` instead of a fresh config directory each Start, so your XFCE theme, panel and window manager settings apply and changes persist (qr-host 0.2.1+, `--desktop-user-config`). |
 | `remoteDesktop.keyboardLayout` | `us` | Managed: XKB layout for the virtual display. |
 | `remoteDesktop.renderer` | `auto` | Managed: `gpu`, `software` or `auto` (GPU when a render node is usable). |
 | `remoteDesktop.port` | `14600` | Preferred loopback port; the next free one is used if taken. |
@@ -69,7 +70,7 @@ The desktop scale follows the driver's pixel ratio: on a managed display the hos
 | `remoteDesktop.dpi` | `96` | Managed: font DPI reported to apps. |
 | `remoteDesktop.serverPath` | empty | Path to your own `qr-host`; empty means the downloaded binary, then PATH, then `~/.cargo/bin`. |
 
-Changes to mode, display, desktop command, layout, renderer, fps, bitrate and DPI apply on the next Start. A tab larger than the encoder takes (4096 pixels wide on most hardware encoders) gets the largest size that fits, with the scale lowered so the desktop keeps its logical size; the stats panel shows the host's note.
+Changes to mode, display, desktop command, global config, layout, renderer, fps, bitrate and DPI apply on the next Start. A tab larger than the encoder takes (4096 pixels wide on most hardware encoders) gets the largest size that fits, with the scale lowered so the desktop keeps its logical size; the stats panel shows the host's note.
 
 ## The viewer tab
 

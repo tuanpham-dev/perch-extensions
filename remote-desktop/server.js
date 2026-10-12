@@ -34,6 +34,9 @@ const INITIAL_SIZE = "1920x1080";
 // The oldest qr-host this extension's viewer speaks to (the WebSocket
 // gateway, seats and cursor shapes arrived in 0.2.0).
 const REQUIRED_VERSION = "0.2.0";
+// The first qr-host that can run the managed desktop on the user's own
+// config directory (--desktop-user-config).
+const USER_CONFIG_VERSION = "0.2.1";
 // Where releases come from; PERCH_REMOTE_DESKTOP_RELEASE_API points the
 // download at another server (a test, a mirror).
 const RELEASE_API =
@@ -52,6 +55,7 @@ const DEFAULTS = {
   mode: "managed",
   display: "",
   desktopCommand: "xfce4-session",
+  useGlobalConfig: false,
   keyboardLayout: "us",
   renderer: "auto",
   port: 14600,
@@ -152,6 +156,7 @@ function readSettings(raw) {
     mode,
     display: String(get("display", DEFAULTS.display)).trim(),
     desktopCommand: String(get("desktopCommand", DEFAULTS.desktopCommand)),
+    useGlobalConfig: get("useGlobalConfig", DEFAULTS.useGlobalConfig) === true,
     keyboardLayout: String(get("keyboardLayout", DEFAULTS.keyboardLayout)),
     renderer,
     port: Number(get("port", DEFAULTS.port)) || DEFAULTS.port,
@@ -474,6 +479,13 @@ export function activate({ router, log, getSettings, host }) {
         });
         return;
       }
+      const userConfig = settings.mode === "managed" && settings.useGlobalConfig;
+      if (userConfig && !versionAtLeast(parseVersion(binary.version) ?? [0, 0, 0], parseVersion(USER_CONFIG_VERSION))) {
+        res.status(400).json({
+          error: `Use global config needs qr-host ${USER_CONFIG_VERSION} or newer; ${binary.path} is ${binary.version}. Update it from the Remote Desktop panel, or turn the setting off.`,
+        });
+        return;
+      }
       if ((await getRunningInfo()).running) {
         res.status(409).json({ error: "Remote Desktop is already running." });
         return;
@@ -503,6 +515,9 @@ export function activate({ router, log, getSettings, host }) {
           "--dpi", String(settings.dpi),
         );
         if (settings.renderer === "software") args.push("--vd-software");
+        // The desktop's settings (theme, panel, window manager) from
+        // ~/.config instead of a fresh directory per Start.
+        if (userConfig) args.push("--desktop-user-config");
       } else {
         args.push("--source", settings.display ? `x11:${settings.display}` : "auto");
       }

@@ -2,7 +2,7 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "displayName": "Remote Desktop",
   "description": "A Linux desktop streamed into a tab as low-latency video (AV1, H.265 or H.264 from the GPU where the host has one) with full keyboard, mouse, clipboard, cursor and audio; a managed virtual desktop follows the tab's size and scale, or attach to an existing X11 or Wayland desktop. Powered by QuickRemote; its host downloads from the project's releases with one click.",
   "icon": "./icon.svg",
@@ -30,6 +30,11 @@
           "type": "string",
           "default": "xfce4-session",
           "description": "Managed mode only: the command that starts the desktop environment (e.g. xfce4-session, startlxde, mate-session), run on a rootful Xwayland inside the virtual display. Must be installed on the host."
+        },
+        "remoteDesktop.useGlobalConfig": {
+          "type": "boolean",
+          "default": false,
+          "description": "Managed mode only: run the desktop with your own config directory (~/.config) instead of a fresh one each Start, so your theme, panel and window manager settings apply and changes made on the virtual desktop are kept. If the same desktop also runs on this machine's screen at the same time, both sessions share those files. Needs qr-host 0.2.1 or newer. Takes effect on the next Start."
         },
         "remoteDesktop.keyboardLayout": {
           "type": "string",
