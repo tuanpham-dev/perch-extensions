@@ -66,11 +66,12 @@ The desktop scale follows the driver's pixel ratio: on a managed display the hos
 | `remoteDesktop.port` | `14600` | Preferred loopback port; the next free one is used if taken. |
 | `remoteDesktop.fps` | `60` | Frame rate cap. |
 | `remoteDesktop.bitrateKbps` | `40000` | Upper bitrate limit; the stream adapts below it, and the viewer's quality preset caps it further. |
+| `remoteDesktop.codec` | `auto` | `auto` (H.264, which every browser decodes), `h264`, `h265` or `av1`. All viewers share one stream, so each viewing browser must decode the codec chosen; one that can't shows "No common codec" (qr-host 0.2.1+ for anything but `auto`). |
 | `remoteDesktop.pixelRatio` | `auto` | Default remote pixels per CSS pixel for all your devices: `auto` (each device's own ratio, capped at 2), `1`, `1.5` or `2`. Any browser can override it for itself from the viewer's view settings (stored in that browser only). While a tab drives, the desktop's scale follows its ratio. Higher ratios cost 2 to 4 times the CPU and bandwidth. |
 | `remoteDesktop.dpi` | `96` | Managed: font DPI reported to apps. |
 | `remoteDesktop.serverPath` | empty | Path to your own `qr-host`; empty means the downloaded binary, then PATH, then `~/.cargo/bin`. |
 
-Changes to mode, display, desktop command, global config, layout, renderer, fps, bitrate and DPI apply on the next Start. A tab larger than the encoder takes (4096 pixels wide on most hardware encoders) gets the largest size that fits, with the scale lowered so the desktop keeps its logical size; the stats panel shows the host's note.
+Changes to mode, display, desktop command, global config, layout, renderer, fps, bitrate, codec and DPI apply on the next Start. A tab larger than the encoder takes (4096 pixels wide on most hardware encoders) gets the largest size that fits, with the scale lowered so the desktop keeps its logical size; the stats panel shows the host's note.
 
 ## The viewer tab
 

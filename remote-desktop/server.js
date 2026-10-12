@@ -35,8 +35,11 @@ const INITIAL_SIZE = "1920x1080";
 // gateway, seats and cursor shapes arrived in 0.2.0).
 const REQUIRED_VERSION = "0.2.0";
 // The first qr-host that can run the managed desktop on the user's own
-// config directory (--desktop-user-config).
+// config directory (--desktop-user-config), and that streams a codec named
+// with --codec to WebSocket viewers (older ones keep them on H.264).
 const USER_CONFIG_VERSION = "0.2.1";
+const CODEC_VERSION = "0.2.1";
+const CODECS = ["auto", "h264", "h265", "av1"];
 // Where releases come from; PERCH_REMOTE_DESKTOP_RELEASE_API points the
 // download at another server (a test, a mirror).
 const RELEASE_API =
@@ -62,6 +65,7 @@ const DEFAULTS = {
   fps: 60,
   bitrateKbps: 40000,
   dpi: 96,
+  codec: "auto",
   serverPath: "",
 };
 
@@ -163,6 +167,7 @@ function readSettings(raw) {
     fps: Number(get("fps", DEFAULTS.fps)) || DEFAULTS.fps,
     bitrateKbps: Number(get("bitrateKbps", DEFAULTS.bitrateKbps)) || DEFAULTS.bitrateKbps,
     dpi: Number(get("dpi", DEFAULTS.dpi)) || DEFAULTS.dpi,
+    codec: CODECS.includes(get("codec", DEFAULTS.codec)) ? get("codec", DEFAULTS.codec) : DEFAULTS.codec,
     serverPath: String(raw["remoteDesktop.serverPath"] ?? "").trim(),
   };
 }
@@ -486,6 +491,12 @@ export function activate({ router, log, getSettings, host }) {
         });
         return;
       }
+      if (settings.codec !== "auto" && !versionAtLeast(parseVersion(binary.version) ?? [0, 0, 0], parseVersion(CODEC_VERSION))) {
+        res.status(400).json({
+          error: `Codec ${settings.codec} needs qr-host ${CODEC_VERSION} or newer; ${binary.path} is ${binary.version}. Update it from the Remote Desktop panel, or set Codec to auto.`,
+        });
+        return;
+      }
       if ((await getRunningInfo()).running) {
         res.status(409).json({ error: "Remote Desktop is already running." });
         return;
@@ -503,6 +514,9 @@ export function activate({ router, log, getSettings, host }) {
         "--max-kbps", String(settings.bitrateKbps),
         "--config-dir", CONFIG_DIR,
       ];
+      // Every viewer shares one stream: a codec other than auto (H.264)
+      // must be one each viewing browser decodes.
+      if (settings.codec !== "auto") args.push("--codec", settings.codec);
       if (settings.mode === "managed") {
         // The host owns the virtual display and the desktop: it starts
         // them, resizes the display to the tab, keeps the desktop's scale
