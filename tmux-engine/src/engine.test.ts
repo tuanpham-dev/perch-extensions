@@ -189,6 +189,30 @@ test("an attached viewer gets history, then live output, and its typing reaches 
   handle.close();
 });
 
+test("a tail attach replays the last lines until loadFullHistory", { skip: !hasTmux }, async () => {
+  const { windowId } = await engine.createSession({ name: "tail", cwd: dir });
+  await engine.sendText(`@${windowId}`, "seq -f 'row-%04g' 1 1500\r");
+  await waitFor("the rows to print", () => tmux("capture-pane", "-p", "-t", paneIdOf(windowId)).includes("row-1500"));
+
+  const chunks = [];
+  const replays = [];
+  const handle = await engine.attach(`@${windowId}`, { pinned: true, cols: 80, rows: 24, tail: true }, {
+    output: (b) => chunks.push(b.toString()),
+    replayed: (partial) => replays.push(partial),
+    windowSwitched: () => {},
+    resized: () => {},
+    closed: () => {},
+  });
+  assert.deepEqual(replays, [true], "the tail replay is partial");
+  assert.ok(chunks[0].includes("row-1500") && !chunks[0].includes("row-0100"), "only recent history");
+
+  handle.loadFullHistory();
+  await waitFor("the full replay", () => replays.length === 2);
+  assert.equal(replays[1], false, "the full replay is complete");
+  assert.ok(chunks.join("").includes("row-0100"), "older history arrives");
+  handle.close();
+});
+
 test("a session viewer follows the session's current window", { skip: !hasTmux }, async () => {
   const { windowId } = await engine.createSession({ name: "follow", cwd: dir });
   const other = await engine.createWindow("follow", { cwd: dir, background: true });

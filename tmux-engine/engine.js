@@ -28,6 +28,9 @@ const SEP = "\x1f";
 // tmux prints the separator back as the text \037 (older versions: as itself).
 const SPLIT = /\\037|\x1f/;
 const HISTORY_LINES = 10_000;
+// History lines a tail-first viewer (attach `tail`) gets until it asks for
+// the rest with loadFullHistory.
+const TAIL_LINES = 500;
 const EXTRA_PANE_BASE = 10_000;
 const DETACH_GRACE_MS = 5_000;
 const POLL_MS = 1_500;
@@ -619,16 +622,19 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
   // Sends one viewer its pane's history and screen, then lets live output
   // through. The state and both captures are one command line, so they
   // describe the same instant; output before their replies is in them, and
-  // output after is held until the replay has been sent.
-  async function replay(viewer) {
+  // output after is held until the replay has been sent. A tail-first viewer
+  // gets its last TAIL_LINES of history unless `full`.
+  async function replay(viewer, full = false) {
     const { control, paneId } = viewer;
+    const lines = viewer.tail && !full ? TAIL_LINES : HISTORY_LINES;
+    let partial = false;
     viewer.replaying = true;
     viewer.held = null;
     try {
       const [stateLines, historyLines, screenLines] = await control.commands(
         [
           `display-message -p -t ${paneId} ${quoteArg(STATE_FORMAT)}`,
-          `capture-pane -p -e -J -t ${paneId} -S -${HISTORY_LINES} -E -1`,
+          `capture-pane -p -e -J -t ${paneId} -S -${lines} -E -1`,
           `capture-pane -p -e -J -t ${paneId}`,
         ],
         () => {
@@ -637,6 +643,7 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
       );
       if (viewer.closed) return;
       const state = parseState(stateLines[0] ?? "");
+      partial = lines === TAIL_LINES && state.historySize > TAIL_LINES;
       viewer.windowId = state.windowId;
       viewer.handlers.output(replayPayload(state, state.historySize > 0 ? historyLines.join("\n") : "", screenLines.join("\n")));
       viewer.size = { cols: state.cols, rows: state.rows };
@@ -646,7 +653,7 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
       viewer.held = null;
       viewer.replaying = false;
       if (!viewer.closed) {
-        viewer.handlers.replayed();
+        viewer.handlers.replayed(partial);
         for (const bytes of held) viewer.handlers.output(bytes);
       }
     }
@@ -780,6 +787,7 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
       control,
       paneId: found.paneId,
       pinned: opts.pinned,
+      tail: opts.tail === true,
       handlers,
       replaying: true,
       closed: false,
@@ -823,6 +831,11 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
       activate: () => {
         markSeen(viewer.paneId);
         touch(viewer);
+      },
+      // Its reset clears the tail it replaces; live output meanwhile is held
+      // and follows it, as on attach.
+      loadFullHistory: () => {
+        if (!viewer.closed) void replay(viewer, true).catch(() => {});
       },
       close: () => viewer.close(),
     };
