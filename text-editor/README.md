@@ -99,6 +99,16 @@ their token names. An R or Pascal file looks like code rather than a wall of gre
 without the per-scope precision the grammars above give. Anything with no tokenizer at all
 opens and saves as plain text.
 
+### Unsaved changes survive a reload
+
+While a file has unsaved edits, they are backed up to the Perch server. Reloading the page, a
+browser crash or an update of this extension doesn't lose them. Reopen the file, here or on
+another device signed in to the same server, and the edits are back, with a notice offering
+**Discard**. If the file changed on disk in the meantime, the notice says so, because saving
+would overwrite that change. Saving, discarding, or closing the tab past its unsaved-changes
+confirm deletes the backup. Needs a Perch version with the drafts store; on an older one,
+edits live as long as the tab, as before.
+
 ### Known differences from VS Code
 
 - **Angle-bracket type assertions in `.ts`.** VS Code splits TypeScript into two languages,

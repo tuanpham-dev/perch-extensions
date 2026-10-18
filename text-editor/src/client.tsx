@@ -21,7 +21,7 @@ import Icon from "./Icon";
 import { downloadUrl, fetchFileText, saveFileText } from "./fileApi";
 import { loadMonaco, refreshTheme, unloadMonaco, type ThemeApi } from "./monacoLoader";
 import type { StandaloneEditor } from "./monacoNs";
-import { acquireFile, disposeAllFiles, isDirty, markSaved, type FileEntry } from "./models";
+import { acquireFile, discardChanges, dismissRestored, disposeAllFiles, isDirty, markSaved, type FileEntry } from "./models";
 import type { TokenColorRule } from "./shikiTheme";
 import {
   registerDiffRequest,
@@ -43,6 +43,7 @@ import {
   vimEnabled,
 } from "./settings";
 import { useVimMode } from "./vim";
+import { setDraftsApi, type DraftsApi } from "./unsavedBackup";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_FONT_SIZE = 13;
@@ -124,6 +125,9 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dirty, setDirtyState] = useState(false);
+  // Non-null while the file's unsaved edits were restored from a backup (see
+  // models.ts) and the user hasn't kept or discarded them yet.
+  const [restored, setRestored] = useState<FileEntry["restored"]>(null);
   // Bumped when a new editor instance is created, so useVimMode re-attaches —
   // a ref's .current changing is invisible to React's dependency check.
   const [editorEpoch, setEditorEpoch] = useState(0);
@@ -218,6 +222,7 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
           const nowDirty = isDirty(acquired.entry);
           setDirtyState(nowDirty);
           setDirtyRef.current?.(nowDirty);
+          setRestored(acquired.entry.restored);
         };
         acquired.entry.listeners.add(sync);
         sync();
@@ -237,6 +242,7 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
 
     return () => {
       cancelled = true;
+      setRestored(null);
       teardownEditor?.();
       editorRef.current = null;
       entryRef.current = null;
@@ -293,6 +299,28 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
     <div className={`text-editor-host${active ? "" : " hidden"}`}>
       {error && <div className="text-editor-status text-editor-error">{error}</div>}
       {!error && loading && <div className="text-editor-status">Loading editor…</div>}
+      {!error && restored && (
+        <div className="text-editor-restored">
+          <span className="text-editor-restored-text">
+            {restored.diskChanged
+              ? "Restored unsaved changes. The file has changed on disk since - saving will overwrite that."
+              : "Restored unsaved changes from your last session."}
+          </span>
+          <button
+            className="text-editor-text-button"
+            onClick={() => entryRef.current && discardChanges(entryRef.current)}
+          >
+            Discard
+          </button>
+          <button
+            className="icon-button"
+            title="Keep my changes"
+            onClick={() => entryRef.current && dismissRestored(entryRef.current)}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+      )}
       {!error && <div ref={containerRef} className="text-editor-monaco" />}
       {!error && vimOn && <div ref={setVimStatusNode} className="text-editor-vim-status" />}
       {active &&
@@ -345,6 +373,9 @@ interface ExtensionContext {
     openMerge?(req: MergeRequest): Promise<void>;
   }): void;
   assetUrl(relPath: string): string;
+  // Absent on hosts older than the drafts store: unsaved edits then live
+  // only as long as the tab.
+  drafts?: DraftsApi;
   settings: {
     get(key: string): unknown;
     onDidChange(cb: () => void): () => void;
@@ -378,6 +409,7 @@ let unsubscribeTheme: (() => void) | null = null;
 export function activate(ctx: ExtensionContext): void {
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   setSettingsApi(ctx.settings);
+  setDraftsApi(ctx.drafts ?? null);
   // Viewers are registered by class, so they reach the host through host.ts
   // rather than a prop — see that module.
   setHost({
@@ -454,6 +486,7 @@ export function deactivate(): void {
   delete (self as unknown as { MonacoEnvironment?: unknown }).MonacoEnvironment;
   clearHost();
   clearSettingsApi();
+  setDraftsApi(null);
 }
 
 export type { TokenColorRule };

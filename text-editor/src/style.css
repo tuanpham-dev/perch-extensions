@@ -43,6 +43,41 @@
   margin-right: 6px;
 }
 
+/* "Restored unsaved changes" notice above the editor (models.ts restores a
+   localStorage backup of edits a reload or crash interrupted). Same shape as
+   csv-preview's reload banner. */
+.text-editor-restored {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--panel-bg, var(--bg, transparent));
+  border-bottom: 1px solid var(--border, #333);
+  font-size: 12px;
+}
+
+.text-editor-restored-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg, #ddd);
+}
+
+.text-editor-text-button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.text-editor-text-button:hover {
+  background: var(--list-hover-bg, rgba(128, 128, 128, 0.2));
+}
+
 /* Editor colors come from the Monaco theme built in monacoTheme.ts out of the
    active host theme's own colors/tokenColors — not from this stylesheet. */
 

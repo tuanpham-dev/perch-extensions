@@ -13,6 +13,8 @@ A dedicated editor tab for `.prompt.md` files, with AI refinement and AI-suggest
 
 The tab reloads the file when you switch back to it (unless you have unsaved changes), so edits made in your editor or by an agent show up without reopening.
 
+Unsaved text, including a new draft that has no file yet, is backed up to the Perch server. A page reload or a crash doesn't lose it, and reopening the tab here or on another device brings it back, with a **Discard** option. Saving or closing the tab deletes the backup.
+
 ## Settings
 
 | Setting | Default | What it does |

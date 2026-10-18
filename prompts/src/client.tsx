@@ -19,6 +19,7 @@ import "./style.css";
 import Icon from "./Icon";
 import { injectStylesheet } from "./injectStylesheet";
 import { fetchFileText, fileExists, makeDir, NotFoundError, saveFileText } from "./fileApi";
+import { createDraftClient, hashText, type DraftClient, type DraftsApi } from "./drafts";
 
 const PROMPT_SUFFIX = ".prompt.md";
 const DRAFT_BASENAME = `Untitled${PROMPT_SUFFIX}`;
@@ -44,6 +45,26 @@ let refreshFiles: (() => void) | null = null;
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 let removeContextListener: (() => void) | null = null;
+// Unsaved prompt text, backed up server-side (ctx.drafts) while dirty and
+// restored when the tab next loads. Null on a host without drafts.
+let drafts: DraftClient | null = null;
+// Set by deactivate(), which the host calls before unmounting the viewers:
+// that unmount is an update or a disable, so the backup must survive it.
+let deactivating = false;
+
+interface PromptDraft {
+  text: string;
+  // hashText() of the on-disk text the edits were made against ("" for the
+  // Untitled draft, which has no file).
+  base: string;
+}
+
+function asPromptDraft(value: unknown): PromptDraft | null {
+  const d = value as Partial<PromptDraft> | null;
+  return d && typeof d.text === "string" && typeof d.base === "string" ? { text: d.text, base: d.base } : null;
+}
+
+const DRAFT_DELAY_MS = 500;
 
 const NO_CONTEXT: ActiveContext = { sessionName: null, windowIndex: null, cwd: null };
 let activeContext: ActiveContext = NO_CONTEXT;
@@ -255,30 +276,111 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
-  const load = useCallback(async () => {
+  // The on-disk text last loaded or saved: what a backup's `base` fingerprints
+  // and what Discard goes back to.
+  const diskTextRef = useRef("");
+  // Whether a backup this view wrote or restored may be on the server. Only
+  // then does going clean or closing delete it — a clean tab of the same
+  // prompt on another device must not wipe edits still pending over there.
+  const hasDraftRef = useRef(false);
+  // Off until the first load settles, so the backup effect can't act (and
+  // delete a backup) before it has been read.
+  const [draftsReady, setDraftsReady] = useState(false);
+  const [restored, setRestored] = useState<{ diskChanged: boolean } | null>(null);
+
+  // `restore` is only for the tab's first load: a later reload-on-focus runs
+  // while clean, and must not pull in a backup over what the user is looking at.
+  const load = useCallback(async (restore = false) => {
     setLoading(true);
+    const pendingDraft = restore && drafts ? drafts.read(filePath) : Promise.resolve(null);
+    let text: string | null = null;
     try {
-      const text = await fetchFileText(filePath);
-      setContent(text);
+      text = await fetchFileText(filePath);
       setError(null);
     } catch (err) {
       if (err instanceof NotFoundError) {
         // The draft path is never written, and a prompt can also be opened
         // before it exists — both mean "start empty", not an error.
-        setContent("");
+        text = "";
         setError(null);
       } else {
         setError(errorText(err));
       }
-    } finally {
-      setLoading(false);
+    }
+    const draft = asPromptDraft(await pendingDraft);
+    if (text !== null) {
+      diskTextRef.current = text;
+      if (draft && draft.text !== text) {
+        setContent(draft.text);
+        setDirtyState(true);
+        hasDraftRef.current = true;
+        setRestored({ diskChanged: draft.base !== hashText(text) });
+      } else {
+        setContent(text);
+        setDirtyState(false);
+        // Matching the disk text: a save whose delete never landed.
+        if (draft) drafts?.clear(filePath);
+      }
+      setDraftsReady(true);
+    } else {
       setDirtyState(false);
     }
+    setLoading(false);
   }, [filePath]);
 
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load]);
+
+  // Backs the text up on a short debounce while dirty, and drops the backup
+  // once clean. The latest pending flush is kept in a ref so pagehide and
+  // unmount can run it early.
+  const flushDraftRef = useRef<((opts?: { keepalive?: boolean }) => void) | null>(null);
+  useEffect(() => {
+    const client = drafts;
+    if (!draftsReady || !client) return;
+    const flush = (opts?: { keepalive?: boolean }) => {
+      flushDraftRef.current = null;
+      if (dirty) {
+        client.write(filePath, { text: content, base: hashText(diskTextRef.current) } satisfies PromptDraft, opts);
+        hasDraftRef.current = true;
+      } else if (hasDraftRef.current) {
+        client.clear(filePath, opts);
+        hasDraftRef.current = false;
+      }
+    };
+    flushDraftRef.current = flush;
+    const timer = setTimeout(flush, DRAFT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [draftsReady, dirty, content, filePath]);
+
+  useEffect(() => {
+    // A reload inside the debounce window would otherwise lose the last edit.
+    const onPageHide = () => flushDraftRef.current?.({ keepalive: true });
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      if (deactivating) {
+        // An update or a disable: keep the edits for the next activation.
+        flushDraftRef.current?.();
+      } else if (hasDraftRef.current) {
+        // The host keeps open tabs mounted, so this is a close — past its
+        // unsaved-changes confirm, or a draft tab retired after its save.
+        drafts?.clear(filePath);
+        hasDraftRef.current = false;
+      }
+    };
+  }, [filePath]);
+
+  useEffect(() => {
+    if (!dirty) setRestored(null);
+  }, [dirty]);
+
+  const discardRestored = () => {
+    setContent(diskTextRef.current);
+    setDirtyState(false);
+    setRestored(null);
+  };
 
   useEffect(() => {
     setDirty?.(dirty);
@@ -380,6 +482,7 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
         await saveDraft();
       } else {
         await writeTo(filePath);
+        diskTextRef.current = contentRef.current;
         setDirtyState(false);
         setSavedAt(new Date().toLocaleTimeString());
       }
@@ -429,6 +532,21 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
         {savedAt && !dirty && <span className="prompts-badge saved">saved {savedAt}</span>}
       </div>
       {error && <div className="prompts-error prompts-error-bar">{error}</div>}
+      {restored && (
+        <div className="prompts-restored-bar">
+          <span className="prompts-restored-text">
+            {restored.diskChanged
+              ? "Restored unsaved changes. The file has changed on disk since - saving will overwrite that."
+              : "Restored unsaved changes from your last session."}
+          </span>
+          <button className="prompts-text-button" onClick={discardRestored}>
+            Discard
+          </button>
+          <button className="icon-button" title="Keep my changes" onClick={() => setRestored(null)}>
+            <Icon name="close" />
+          </button>
+        </div>
+      )}
       <textarea
         className="prompts-textarea"
         value={content}
@@ -485,9 +603,14 @@ interface ExtensionContext {
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   settings: SettingsApi;
+  // Absent on hosts older than the drafts store: an unsaved prompt then
+  // lives only as long as its tab.
+  drafts?: DraftsApi;
 }
 
 export function activate(ctx: ExtensionContext): void {
+  drafts = ctx.drafts ? createDraftClient(ctx.drafts) : null;
+  deactivating = false;
   serverFetch = ctx.serverFetch;
   openViewerTab = ctx.app.openViewerTab.bind(ctx.app);
   closeViewerTab = ctx.app.closeViewerTab.bind(ctx.app);
@@ -546,6 +669,7 @@ export function activate(ctx: ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  deactivating = true;
   removeStylesheet?.();
   removeStylesheet = null;
   removeContextListener?.();

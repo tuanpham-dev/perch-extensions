@@ -73,6 +73,37 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* "Restored unsaved changes" notice: a backup of edits a reload or crash
+   interrupted was put back (see the drafts block in client.tsx). */
+.prompts-restored-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.prompts-restored-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.prompts-text-button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.prompts-text-button:hover {
+  background: var(--list-hover-bg, rgba(128, 128, 128, 0.2));
+}
+
 /* ---- Save-as dialog ---- */
 
 .prompts-backdrop {
