@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addToTally, contextWindowFor, costOf, createTally, currentModelLabel, modelFromCommandOutput, modelLabel } from "./usage.ts";
+import { addToTally, applySessionUsage, contextWindowFor, costOf, createTally, currentModelLabel, modelFromCommandOutput, modelLabel } from "./usage.ts";
 
 const usage = { input_tokens: 2, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 100_000, output_tokens: 500 };
 
@@ -59,4 +59,17 @@ test("a /model switch shows until the new model answers", () => {
   assert.equal(currentModelLabel(tally), "Sonnet 5");
   addToTally(tally, [{ type: "assistant", message: { id: "b", model: "claude-sonnet-5", usage } }]);
   assert.equal(currentModelLabel(tally), "sonnet-5");
+});
+
+test("whole-session sums cost the same as their messages one by one", () => {
+  const byMessage = createTally();
+  const m = (id: string, model: string) => ({ type: "assistant", message: { id, model, usage } });
+  addToTally(byMessage, [m("a", "claude-opus-5"), m("b", "claude-opus-5"), m("c", "claude-sonnet-5"), m("d", "gpt-9")]);
+  const fromSums = createTally();
+  fromSums.costKnown = false;
+  const sums = (n: number) => ({ input: 2 * n, cacheWrite: 1_000 * n, cacheRead: 100_000 * n, output: 500 * n, messages: n });
+  applySessionUsage(fromSums, { "claude-opus-5": sums(2), "claude-sonnet-5": sums(1), "gpt-9": sums(1) });
+  assert.ok(Math.abs(fromSums.cost - byMessage.cost) < 1e-12);
+  assert.equal(fromSums.unpriced, byMessage.unpriced);
+  assert.equal(fromSums.costKnown, true);
 });

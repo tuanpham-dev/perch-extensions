@@ -100,8 +100,14 @@ export function createChatModel(): ChatModel {
   return { items: [], tools: {} };
 }
 
+// Item keys come from the transcript line an item was built from, so a model
+// rebuilt with earlier messages in front (a tab paging back) gives the same
+// rows the same keys, and they keep their state. A line without a uuid falls
+// back to a counter.
 let keyCounter = 0;
-const nextKey = () => `k${++keyCounter}`;
+let keyLine: string | null = null;
+let keyIndex = 0;
+const nextKey = () => (keyLine ? `${keyLine}.${keyIndex++}` : `k${++keyCounter}`);
 
 function targetList(model: ChatModel, parent: string | null | undefined): ChatItem[] {
   if (parent && model.tools[parent]) return model.tools[parent].children;
@@ -230,6 +236,8 @@ function pushBlocks(model: ChatModel, role: "user" | "assistant", content: unkno
 
 export function applyMessages(model: ChatModel, messages: TranscriptMessage[]): void {
   for (const m of messages) {
+    keyLine = m.uuid || null;
+    keyIndex = 0;
     if (m.type === "compact_boundary") {
       model.items.push({
         kind: "compact",
@@ -258,6 +266,7 @@ export function applyMessages(model: ChatModel, messages: TranscriptMessage[]): 
     if (m.isMeta && m.type === "user") continue;
     pushBlocks(model, m.type, m.message.content, m.parent_tool_use_id, m.toolUseResult, m.queued);
   }
+  keyLine = null;
 }
 
 // Base64 image blocks in a tool result, as data URIs.

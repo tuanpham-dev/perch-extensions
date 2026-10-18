@@ -100,6 +100,16 @@
   font-size: var(--cv-font-size);
 }
 
+/* Top of a conversation still paging back to its start. */
+.cv-earlier {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  color: var(--cv-dim);
+  font-size: calc(var(--cv-font-size) * 0.9);
+  text-align: center;
+}
+
 /* ---- buttons ---- */
 .claude-viewer .btn {
   background: var(--hover);

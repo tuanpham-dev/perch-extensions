@@ -4,7 +4,11 @@
 // "queued_command" attachment and never as a "user" entry of its own.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { taskNotificationOf, toTranscriptMessages } from "../transcript.mjs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { chunkStartIndex, readTranscriptBefore, readTranscriptTail, taskNotificationOf, toTranscriptMessages } from "../transcript.mjs";
+import { addLine } from "../usageTotals.mjs";
 
 const queuedAttachment = (over: Record<string, unknown> = {}) => ({
   type: "attachment",
@@ -172,4 +176,60 @@ test("a report reads as the agent wrote it, not XML-escaped", () => {
   );
   const n = taskNotificationOf(notificationUser(escaped));
   assert.ok(n?.result?.startsWith("Line 257: `export async function reportAgentHook(): Promise<ReportOutcome> {` & more"));
+});
+
+// ---- Chunked reading ----
+
+const use = (id: string, uuid: string) => ({ type: "assistant", uuid, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: {} }] } });
+const result = (id: string, uuid: string) => ({ type: "user", uuid, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] } });
+const said = (text: string, uuid: string) => ({ type: "user", uuid, message: { role: "user", content: text } });
+
+test("a chunk never starts between a tool call and its result", () => {
+  const lines = [said("go", "u1"), use("t1", "a1"), result("t1", "r1"), use("t2", "a2"), result("t2", "r2")].map((entry, i) => ({ offset: i, entry }));
+  // From line 0 everything is answered within the chunk; the earliest start wins.
+  assert.equal(chunkStartIndex(lines), 0);
+  // Without the first two lines, t1's result would lose its call.
+  assert.equal(chunkStartIndex(lines.slice(2)), 1);
+  assert.equal(chunkStartIndex(lines.slice(2, 3)), -1);
+});
+
+test("tail and earlier chunks together read the whole transcript once, in order", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "cv-chunks-"));
+  const file = path.join(dir, "11111111-2222-3333-4444-555555555555.jsonl");
+  const entries = [];
+  for (let i = 0; i < 60; i++) {
+    entries.push(said(`prompt ${i} ${"x".repeat(200)}`, `u${i}`), use(`t${i}`, `a${i}`), result(`t${i}`, `r${i}`));
+  }
+  await writeFile(file, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  try {
+    const tail = await readTranscriptTail(file, 2000);
+    assert.ok(tail.before !== null, "a long file opens on a tail");
+    let all = tail.messages;
+    let before = tail.before;
+    let cursor = tail.cursor;
+    while (before !== null) {
+      const r = await readTranscriptBefore(file, before, cursor, 2000);
+      all = [...r.messages, ...all];
+      before = r.before;
+      cursor = r.cursor;
+    }
+    assert.deepEqual(all.map((m) => m.uuid), entries.map((e) => e.uuid));
+    const resultIds = new Set(all.flatMap((m) => (Array.isArray(m.message?.content) ? m.message.content : []).filter((b: { type: string }) => b.type === "tool_result").map((b: { tool_use_id: string }) => b.tool_use_id)));
+    assert.equal(resultIds.size, 60);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("usage totals count each assistant message once per model", () => {
+  const state = { seen: new Set(), byModel: {} as Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number; messages: number }> };
+  const line = (id: string, model: string) =>
+    JSON.stringify({ type: "assistant", message: { id, model, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100 }, content: [] } });
+  addLine(state, line("m1", "claude-opus-5-5"));
+  addLine(state, line("m1", "claude-opus-5-5")); // a second content block of the same message
+  addLine(state, line("m2", "claude-sonnet-5"));
+  addLine(state, line("m3", "<synthetic>"));
+  assert.deepEqual(state.byModel["claude-opus-5-5"], { input: 10, output: 5, cacheWrite: 0, cacheRead: 100, messages: 1 });
+  assert.equal(state.byModel["claude-sonnet-5"]?.messages, 1);
+  assert.equal(Object.keys(state.byModel).length, 2);
 });

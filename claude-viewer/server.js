@@ -18,7 +18,8 @@ import { claudeSessionsByWindow } from "./claudePanes.mjs";
 import { listCommands, searchProjectFiles } from "./commands.mjs";
 import { MAX_PATHS, resolvePaths } from "./paths.mjs";
 import { KEYS, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption, typedText } from "./keys.mjs";
-import { findSessionFile, freshestSessionFile, projectDirFor, readTranscript, sessionIdOfFile } from "./transcript.mjs";
+import { findSessionFile, freshestSessionFile, projectDirFor, readTranscript, readTranscriptBefore, readTranscriptTail, sessionIdOfFile } from "./transcript.mjs";
+import { usageFor } from "./usageTotals.mjs";
 import { claudePrograms, createWatcher } from "./watcher.mjs";
 
 const RATE_LIMIT_STATE_PATH = path.join(os.homedir(), ".claude", "rate-limit-state.json");
@@ -174,25 +175,60 @@ export function activate({ router, log, getSettings, host }) {
     });
   });
 
-  router.get("/transcript", async (req, res) => {
+  // A tab opens with `tail=1`: the conversation's last chunk, and `before`,
+  // where the chunk starts (null when it is the whole file). It pages back
+  // with /transcript/earlier and keeps up with new lines through `cursor`.
+  // `usage` is the whole session's token usage per model, null until its
+  // first scan finishes; `reset` means the file was rewritten and the tab
+  // should start over.
+  const transcriptFile = async (req, res) => {
     const sessionId = str(req.query.sessionId);
     if (!/^[\w-]+$/.test(sessionId)) {
       res.status(400).json({ error: "sessionId is required" });
-      return;
+      return null;
     }
     const file = await findSessionFile(sessionId, expandHome(str(req.query.cwd)) || null);
-    if (!file) {
-      res.status(404).json({ error: "transcript not found" });
+    if (!file) res.status(404).json({ error: "transcript not found" });
+    return file;
+  };
+  const parseCursor = (req) => {
+    try {
+      return req.query.cursor ? JSON.parse(str(req.query.cursor)) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  router.get("/transcript", async (req, res) => {
+    const file = await transcriptFile(req, res);
+    if (!file) return;
+    const cursor = parseCursor(req);
+    if (!cursor && req.query.tail === "1") {
+      const { messages, agents, cursor: next, before } = await readTranscriptTail(file);
+      res.json({ messages, agents, cursor: JSON.stringify(next), before, usage: usageFor(file) });
       return;
     }
-    let cursor = null;
-    try {
-      cursor = req.query.cursor ? JSON.parse(str(req.query.cursor)) : null;
-    } catch {
-      cursor = null;
+    if (cursor && Number.isFinite(cursor.main)) {
+      const size = await fs.stat(file).then((s) => s.size, () => 0);
+      if (size < cursor.main) {
+        res.json({ messages: [], agents: [], cursor: null, reset: true });
+        return;
+      }
     }
     const { messages, agents, cursor: next } = await readTranscript(file, cursor);
-    res.json({ messages, agents, cursor: JSON.stringify(next) });
+    res.json({ messages, agents, cursor: JSON.stringify(next), usage: usageFor(file) });
+  });
+
+  router.get("/transcript/earlier", async (req, res) => {
+    const file = await transcriptFile(req, res);
+    if (!file) return;
+    const before = Number(req.query.before);
+    if (!Number.isInteger(before) || before <= 0) {
+      res.status(400).json({ error: "before is required" });
+      return;
+    }
+    const { messages, agents, cursor, before: next } = await readTranscriptBefore(file, before, parseCursor(req));
+    res.json({ messages, agents, cursor: JSON.stringify(cursor), before: next });
   });
 
   router.get("/screen", async (req, res) => {

@@ -123,7 +123,7 @@ export function UsageStats({ tally, showContext, showMeters }: { tally: UsageTal
   const [shift, setShift] = useState(0);
   const contextWindow = contextWindowFor(tally.model);
   const hasContext = showContext && tally.context !== null;
-  const hasCost = showContext && tally.seen.size > 0;
+  const hasCost = showContext && tally.seen.size > 0 && tally.costKnown;
   const pct = hasContext && contextWindow ? Math.min(100, Math.round((tally.context! / contextWindow) * 100)) : null;
   const limits = usage?.available ? ([["5-hour", usage.fiveHour], ["7-day", usage.sevenDay]] as const) : null;
   const hasLimits = Boolean(limits && (limits[0][1] || limits[1][1]));

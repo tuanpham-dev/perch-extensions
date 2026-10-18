@@ -16,13 +16,13 @@ import { createFileLinks, FileLinksContext } from "./FileLinks";
 import { Composer, type ComposerHandle, type PendingImage, type SlashCommand } from "./Composer";
 import { Lightbox, LightboxContext } from "./Lightbox";
 import { createPending, resolvePending, type PendingMessage } from "./pending";
-import { MessageList } from "./MessageList";
+import { captureAnchor, MessageList, type ScrollAnchor } from "./MessageList";
 import { PromptCard, type PromptCardHandle } from "./PromptCard";
 import { ScreenStrip, ScreenStripHeading, ScreenStripToggle, useScreenStrip } from "./ScreenStrip";
 import { ActivityStatus, closeFooterPopover, MODE_HINT, ModeIcon, UsageStats } from "./Status";
 import { useOverlayInset } from "./useOverlayInset";
 import type { ScreenState, SessionInfo } from "./types";
-import { addToTally, createTally, currentModelLabel, type UsageTally } from "./usage";
+import { addToTally, applySessionUsage, createTally, currentModelLabel, type SessionUsage, type UsageTally } from "./usage";
 
 const SESSION_POLL_MS = 3000;
 // A subagent view shows no pending messages: what you send goes to the main
@@ -134,6 +134,9 @@ function useCommands(windowId: string): SlashCommand[] {
   return commands;
 }
 
+// How close to the top of the list (px) scrolling fetches earlier messages.
+const EARLIER_MARGIN_PX = 600;
+
 export function ChatTab({
   filePath,
   active,
@@ -159,6 +162,21 @@ export function ChatTab({
   const modelRef = useRef<ChatModel>(createChatModel());
   const tallyRef = useRef<UsageTally>(createTally());
   const cursorRef = useRef<string | null>(null);
+  // A tab opens on the conversation's last chunk and pages back as you scroll
+  // up: every message loaded so far, oldest first, so the model can be
+  // rebuilt with earlier ones in front; where the loaded part starts in the
+  // file (null once it reaches the start); and the whole session's token
+  // usage, which the footer's cost comes from.
+  const rawRef = useRef<TranscriptMessage[]>([]);
+  const agentMetaRef = useRef<AgentMeta[] | undefined>(undefined);
+  const usageRef = useRef<SessionUsage | null>(null);
+  const beforeRef = useRef<number | null>(null);
+  const [before, setBefore] = useState<number | null>(null);
+  const [earlier, setEarlier] = useState<"idle" | "loading" | "error">("idle");
+  const loadEarlierRef = useRef<(() => void) | null>(null);
+  // A page back to earlier messages, and the row at the top of the view
+  // then, for MessageList to keep in place.
+  const [prepended, setPrepended] = useState<{ seq: number; anchor: ScrollAnchor | null }>({ seq: 0, anchor: null });
   const [version, setVersion] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -180,34 +198,79 @@ export function ChatTab({
 
   // Transcript: reset on a session change, then tail it.
   useEffect(() => {
-    modelRef.current = createChatModel();
+    const reset = () => {
+      modelRef.current = createChatModel();
+      tallyRef.current = createTally();
+      rawRef.current = [];
+      agentMetaRef.current = undefined;
+      usageRef.current = null;
+      beforeRef.current = null;
+      setBefore(null);
+      setEarlier("idle");
+      cursorRef.current = null;
+      setVersion((v) => v + 1);
+    };
+    reset();
     setPath([]);
-    tallyRef.current = createTally();
     setPending([]);
-    cursorRef.current = null;
     stickToBottom.current = true;
     userScrolled.current = false;
     setScrolledUp(false);
     setLoaded(false);
-    setVersion((v) => v + 1);
     if (!sessionId) return;
     let cancelled = false;
     let inFlight = false;
+    let earlierWanted = false;
+    type Reply = { messages: TranscriptMessage[]; agents?: AgentMeta[]; cursor: string; before?: number | null; usage?: SessionUsage | null; reset?: boolean };
+
+    // The cost covers the whole session once the server's sums arrive; until
+    // then, with only the last chunks loaded, it isn't shown.
+    const settleCost = (tally: UsageTally) => {
+      if (usageRef.current) applySessionUsage(tally, usageRef.current);
+      else tally.costKnown = beforeRef.current === null;
+    };
+    const rebuild = () => {
+      const model = createChatModel();
+      applyMessages(model, rawRef.current);
+      applyAgentMeta(model, agentMetaRef.current);
+      modelRef.current = model;
+      const tally = createTally();
+      addToTally(tally, rawRef.current as Parameters<typeof addToTally>[1]);
+      settleCost(tally);
+      tallyRef.current = tally;
+    };
+
     const poll = async () => {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
         const qs = new URLSearchParams({ sessionId, cwd });
         if (cursorRef.current) qs.set("cursor", cursorRef.current);
-        const data = await getJson<{ messages: TranscriptMessage[]; agents?: AgentMeta[]; cursor: string }>(`/transcript?${qs}`);
+        else qs.set("tail", "1");
+        const data = await getJson<Reply>(`/transcript?${qs}`);
         if (cancelled) return;
+        // The file was rewritten: start over from its new end.
+        if (data.reset) {
+          reset();
+          return;
+        }
+        if (cursorRef.current === null) {
+          beforeRef.current = data.before ?? null;
+          setBefore(beforeRef.current);
+        }
         cursorRef.current = data.cursor;
+        if (data.agents) agentMetaRef.current = data.agents;
+        if (data.usage) usageRef.current = data.usage;
+        const tally = tallyRef.current;
+        const shown = { cost: tally.cost, known: tally.costKnown };
         if (data.messages.length > 0) {
+          rawRef.current.push(...data.messages);
           applyMessages(modelRef.current, data.messages);
           applyAgentMeta(modelRef.current, data.agents);
-          addToTally(tallyRef.current, data.messages as Parameters<typeof addToTally>[1]);
-          setVersion((v) => v + 1);
+          addToTally(tally, data.messages as Parameters<typeof addToTally>[1]);
         }
+        settleCost(tally);
+        if (data.messages.length > 0 || tally.cost !== shown.cost || tally.costKnown !== shown.known) setVersion((v) => v + 1);
         // Also with no new messages: this is what gives up on a message the
         // transcript never claims.
         setPending((prev) => resolvePending(prev, modelRef.current.items, Date.now()));
@@ -216,8 +279,44 @@ export function ChatTab({
         // Retried next tick.
       } finally {
         inFlight = false;
+        if (earlierWanted) void loadEarlier();
       }
     };
+
+    // The chunk before what is loaded, put in front of it. Shares the poll's
+    // in-flight guard: both move the cursor.
+    const loadEarlier = async () => {
+      if (cancelled || beforeRef.current === null) return;
+      if (inFlight) {
+        earlierWanted = true;
+        return;
+      }
+      earlierWanted = false;
+      inFlight = true;
+      setEarlier("loading");
+      try {
+        const qs = new URLSearchParams({ sessionId, cwd, before: String(beforeRef.current) });
+        if (cursorRef.current) qs.set("cursor", cursorRef.current);
+        const data = await getJson<Reply>(`/transcript/earlier?${qs}`);
+        if (cancelled) return;
+        cursorRef.current = data.cursor;
+        beforeRef.current = data.before ?? null;
+        if (data.agents) agentMetaRef.current = data.agents;
+        rawRef.current = [...data.messages, ...rawRef.current];
+        const anchor = captureAnchor(scrollRef.current);
+        rebuild();
+        setPrepended((p) => ({ seq: p.seq + 1, anchor }));
+        setBefore(beforeRef.current);
+        setEarlier("idle");
+        setVersion((v) => v + 1);
+      } catch {
+        setEarlier("error");
+      } finally {
+        inFlight = false;
+      }
+    };
+    loadEarlierRef.current = () => void loadEarlier();
+
     pollRef.current = poll;
     void poll();
     const t = window.setInterval(() => {
@@ -226,6 +325,7 @@ export function ChatTab({
     return () => {
       cancelled = true;
       pollRef.current = null;
+      loadEarlierRef.current = null;
       window.clearInterval(t);
     };
   }, [sessionId, cwd, settings.pollInterval]);
@@ -300,6 +400,7 @@ export function ChatTab({
   const model = modelRef.current;
   const empty = model.items.length === 0;
 
+
   // A subagent that went away (/clear, a new session) takes the view back to
   // the nearest level that still exists.
   const shownPath = livePath(model, path);
@@ -308,6 +409,15 @@ export function ChatTab({
   }, [shownPath.length, path.length]);
   const openCard = shownPath.length > 0 ? model.tools[shownPath[shownPath.length - 1]] : null;
   const shownItems = openCard ? openCard.children : model.items;
+
+  // Near the top of the main conversation, or with too little loaded to
+  // scroll at all: fetch the chunk before it.
+  const maybeLoadEarlier = () => {
+    const el = scrollRef.current;
+    if (!el || before === null || earlier === "loading" || shownPath.length > 0) return;
+    if (el.scrollTop < EARLIER_MARGIN_PX) loadEarlierRef.current?.();
+  };
+  useEffect(maybeLoadEarlier, [version, before]);
 
   // The main conversation's place is kept while a subagent is open, and
   // given back on return; a subagent opens at its newest step.
@@ -490,6 +600,7 @@ export function ChatTab({
           onTouchMove={() => (userScrolled.current = true)}
           onKeyDown={() => (userScrolled.current = true)}
           onScroll={(e) => {
+            maybeLoadEarlier();
             if (!userScrolled.current) return;
             const el = e.currentTarget;
             stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -509,6 +620,11 @@ export function ChatTab({
                       : "Loading the conversation"}
             </div>
           )}
+          {before !== null && !openCard && (
+            <div className="cv-earlier" role="status">
+              {earlier === "error" ? "Couldn't load earlier messages. Scroll up to retry." : "Loading earlier messages"}
+            </div>
+          )}
           <MessageList
             key={shownPath.join("/") || "main"}
             model={model}
@@ -517,6 +633,7 @@ export function ChatTab({
             version={version}
             scrollRef={scrollRef}
             stickToBottom={stickToBottom}
+            prepended={openCard ? null : prepended}
           />
         </div>
         {scrolledUp && (

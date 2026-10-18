@@ -67,10 +67,14 @@ export type UsageTally = {
   // an assistant message from the new model arrives.
   switchedTo: string | null;
   context: number | null;
+  // False while the cost covers only part of the conversation: a tab paging
+  // back holds its last chunks, and the server's whole-session sums (see
+  // applySessionUsage) haven't arrived yet.
+  costKnown: boolean;
 };
 
 export function createTally(): UsageTally {
-  return { seen: new Set(), cost: 0, unpriced: 0, model: null, switchedTo: null, context: null };
+  return { seen: new Set(), cost: 0, unpriced: 0, model: null, switchedTo: null, context: null, costKnown: true };
 }
 
 // A model id as the composer's bottom row shows it: without the vendor prefix or a release
@@ -145,4 +149,29 @@ export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
+}
+
+// Token sums per model over a whole session and its subagents, as the
+// server's /transcript reports them (../usageTotals.mjs).
+export type SessionUsage = Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number; messages: number }>;
+
+// The cost of a whole session from its per-model sums: exact, since cost is
+// linear in tokens. Replaces the tally's own cost, which only covers the
+// messages the tab has loaded.
+export function applySessionUsage(tally: UsageTally, usage: SessionUsage): void {
+  let cost = 0;
+  let unpriced = 0;
+  for (const [model, sums] of Object.entries(usage)) {
+    const c = costOf(model, {
+      input_tokens: sums.input,
+      output_tokens: sums.output,
+      cache_creation_input_tokens: sums.cacheWrite,
+      cache_read_input_tokens: sums.cacheRead,
+    });
+    if (c === null) unpriced += sums.messages;
+    else cost += c;
+  }
+  tally.cost = cost;
+  tally.unpriced = unpriced;
+  tally.costKnown = true;
 }

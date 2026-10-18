@@ -321,37 +321,221 @@ export function toTranscriptMessages(entries) {
   return out;
 }
 
-// New messages for a session since `cursor` ({ main, agents } byte offsets,
-// or null for everything), with each subagent's messages tagged by the tool
-// call that spawned it. A subagent that can't be tied to its tool call yet is
-// left unread (its offset doesn't advance) so it is picked up once it can.
-export async function readTranscript(file, cursor) {
-  const sessionId = sessionIdOfFile(file);
-  const messages = [];
-  const { entries, newOffset } = await tailSince(file, cursor?.main ?? 0);
-  messages.push(...toTranscriptMessages(entries));
-  const correlation = extendCorrelation(sessionId, entries);
+// ---- Reading a transcript a chunk at a time ----
+//
+// A tab opens on the end of a long conversation and pages back on scroll, so
+// the server reads byte ranges of the file. A chunk starts where nothing
+// after it answers a tool call made before it: every tool card in a chunk has
+// its result, however far the chunk reaches back. That is usually within a
+// few lines; a whole turn can be tens of MB, so turns are not the unit.
 
-  const subagentsDir = path.join(path.dirname(file), sessionId, "subagents");
-  let names = [];
-  try {
-    names = (await fs.readdir(subagentsDir)).filter((n) => n.startsWith("agent-") && n.endsWith(".jsonl"));
-  } catch {
-    // No subagents in this session.
+export const CHUNK_BYTES = 1024 * 1024;
+
+function toolIdsOf(entry) {
+  const uses = [];
+  const results = [];
+  const content = entry?.message?.content;
+  if (Array.isArray(content)) {
+    for (const b of content) {
+      if (b?.type === "tool_use" && typeof b.id === "string") uses.push(b.id);
+      else if (b?.type === "tool_result" && typeof b.tool_use_id === "string") results.push(b.tool_use_id);
+    }
   }
+  return { uses, results };
+}
+
+// The complete lines of [start, end), each with the byte offset it starts at.
+// `start` must be a line start; `end` is moved back to just after a newline.
+async function readLines(handle, start, end) {
+  const length = end - start;
+  if (length <= 0) return { lines: [], end: start };
+  const buf = Buffer.alloc(length);
+  await handle.read(buf, 0, length, start);
+  const lastNewline = buf.lastIndexOf(0x0a);
+  if (lastNewline === -1) return { lines: [], end: start };
+  const lines = [];
+  let at = 0;
+  while (at <= lastNewline) {
+    const nl = buf.indexOf(0x0a, at);
+    const text = buf.toString("utf8", at, nl);
+    if (text.trim() !== "") {
+      try {
+        lines.push({ offset: start + at, entry: JSON.parse(text) });
+      } catch {
+        // A corrupt line: skipped, as parseJsonlBuffer does.
+      }
+    }
+    at = nl + 1;
+  }
+  return { lines, end: start + lastNewline + 1 };
+}
+
+// The earliest line of `lines` where a chunk may start: nothing from there on
+// answers a tool call made before it. A compaction summary stays with the
+// boundary line before it. -1 if no line qualifies.
+export function chunkStartIndex(lines) {
+  const unanswered = new Set();
+  let best = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const { uses, results } = toolIdsOf(lines[i].entry);
+    for (const id of results) unanswered.add(id);
+    for (const id of uses) unanswered.delete(id);
+    if (unanswered.size === 0 && lines[i].entry?.isCompactSummary !== true) best = i;
+  }
+  return best;
+}
+
+// The chunk of about `maxBytes` that ends at `end`: its entries, where it
+// starts, and where its last whole line ends (a line still being written is
+// left for the next read). Reaches further back while no start fits.
+async function chunkBefore(handle, end, maxBytes) {
+  let span = maxBytes;
+  for (;;) {
+    const from = Math.max(0, end - span);
+    let start = from;
+    if (from > 0) {
+      // Begin on a whole line.
+      const probe = Buffer.alloc(Math.min(65536, end - from));
+      let found = -1;
+      for (let at = from; at < end && found === -1; at += probe.length) {
+        const { bytesRead } = await handle.read(probe, 0, Math.min(probe.length, end - at), at);
+        const i = probe.subarray(0, bytesRead).indexOf(0x0a);
+        if (i !== -1) found = at + i + 1;
+        if (bytesRead === 0) break;
+      }
+      if (found === -1) {
+        span *= 2;
+        continue;
+      }
+      start = found;
+    }
+    const read = await readLines(handle, start, end);
+    const { lines } = read;
+    if (start === 0) return { entries: lines.map((l) => l.entry), start: 0, end: read.end };
+    const i = chunkStartIndex(lines);
+    if (i !== -1) return { entries: lines.slice(i).map((l) => l.entry), start: lines[i].offset, end: read.end };
+    span *= 2;
+  }
+}
+
+async function subagentNames(file) {
+  const sessionId = sessionIdOfFile(file);
+  const dir = path.join(path.dirname(file), sessionId, "subagents");
+  try {
+    return { dir, names: (await fs.readdir(dir)).filter((n) => n.startsWith("agent-") && n.endsWith(".jsonl")) };
+  } catch {
+    return { dir, names: [] }; // No subagents in this session.
+  }
+}
+
+// Every linked subagent's meta, and the messages of the ones `want` picks,
+// read on from their cursor offsets. `want(name, parent, known)` answers
+// "read" or "skip"; a subagent read once is kept up with from then on.
+async function readSubagents(file, cursor, want) {
+  const correlation = correlationBySession.get(sessionIdOfFile(file)) ?? new Map();
+  const { dir, names } = await subagentNames(file);
   const agents = { ...(cursor?.agents ?? {}) };
+  const skip = new Set(cursor?.skip ?? []);
+  const messages = [];
   // Every linked subagent's type and description, on every call: the tab
   // may have started from a cursor and never seen an agent's first read.
   const agentMeta = [];
   for (const name of names) {
     const agentId = name.slice("agent-".length, -".jsonl".length);
-    const meta = await readAgentMeta(path.join(subagentsDir, `agent-${agentId}.meta.json`));
+    const meta = await readAgentMeta(path.join(dir, `agent-${agentId}.meta.json`));
     const parent = meta.toolUseId ?? correlation.get(agentId);
+    // A subagent that can't be tied to its tool call yet is left unread (its
+    // offset doesn't advance) so it is picked up once it can.
     if (!parent) continue;
     agentMeta.push({ toolUseId: parent, agentId, agentType: meta.agentType, description: meta.description });
-    const tail = await tailSince(path.join(subagentsDir, name), agents[name] ?? 0);
+    if (want(name, parent, name in agents) === "skip") {
+      if (!(name in agents)) skip.add(name);
+      continue;
+    }
+    skip.delete(name);
+    const tail = await tailSince(path.join(dir, name), agents[name] ?? 0);
     agents[name] = tail.newOffset;
     for (const m of toTranscriptMessages(tail.entries)) messages.push({ ...m, parent_tool_use_id: parent });
   }
-  return { messages, agents: agentMeta, cursor: { main: newOffset, agents } };
+  return { messages, agentMeta, agents, skip: [...skip] };
+}
+
+// New messages for a session since `cursor` ({ main, agents, skip }: byte
+// offsets, and the subagents left for an earlier chunk), or null for
+// everything, with each subagent's messages tagged by the tool call that
+// spawned it. A subagent first seen here is read in full; one in `skip`
+// belongs to a chunk not loaded yet.
+export async function readTranscript(file, cursor) {
+  const sessionId = sessionIdOfFile(file);
+  const messages = [];
+  const { entries, newOffset } = await tailSince(file, cursor?.main ?? 0);
+  messages.push(...toTranscriptMessages(entries));
+  extendCorrelation(sessionId, entries);
+  const skipped = new Set(cursor?.skip ?? []);
+  const sub = await readSubagents(file, cursor, (name) => (skipped.has(name) ? "skip" : "read"));
+  messages.push(...sub.messages);
+  return { messages, agents: sub.agentMeta, cursor: { main: newOffset, agents: sub.agents, skip: sub.skip } };
+}
+
+// Subagents to read alongside a chunk: those spawned by a call in it.
+function spawnedIn(entries) {
+  const ids = new Set();
+  for (const e of entries) for (const id of toolIdsOf(e).uses) ids.add(id);
+  return ids;
+}
+
+// The conversation's last chunk, to open a tab on: like readTranscript from
+// nothing, but only from `before` on (null when that is the whole file).
+export async function readTranscriptTail(file, maxBytes = CHUNK_BYTES) {
+  const sessionId = sessionIdOfFile(file);
+  let handle;
+  try {
+    handle = await fs.open(file, "r");
+  } catch {
+    return { messages: [], agents: [], cursor: { main: 0, agents: {}, skip: [] }, before: null };
+  }
+  let chunk;
+  try {
+    chunk = await chunkBefore(handle, (await handle.stat()).size, maxBytes);
+  } finally {
+    await handle.close();
+  }
+  extendCorrelation(sessionId, chunk.entries);
+  const spawned = spawnedIn(chunk.entries);
+  const sub = await readSubagents(file, null, (_name, parent) => (spawned.has(parent) ? "read" : "skip"));
+  return {
+    messages: [...toTranscriptMessages(chunk.entries), ...sub.messages],
+    agents: sub.agentMeta,
+    cursor: { main: chunk.end, agents: sub.agents, skip: sub.skip },
+    before: chunk.start > 0 ? chunk.start : null,
+  };
+}
+
+// The chunk that ends at `before`, plus the subagents its calls spawned.
+// `cursor` comes back with those subagents moved out of `skip`.
+export async function readTranscriptBefore(file, before, cursor, maxBytes = CHUNK_BYTES) {
+  const sessionId = sessionIdOfFile(file);
+  const handle = await fs.open(file, "r");
+  let chunk;
+  try {
+    chunk = await chunkBefore(handle, Math.min(before, (await handle.stat()).size), maxBytes);
+  } finally {
+    await handle.close();
+  }
+  extendCorrelation(sessionId, chunk.entries);
+  const spawned = spawnedIn(chunk.entries);
+  const skipped = new Set(cursor?.skip ?? []);
+  const sub = await readSubagents(file, { agents: {}, skip: cursor?.skip ?? [] }, (name, parent) =>
+    skipped.has(name) && spawned.has(parent) ? "read" : "skip",
+  );
+  // Only the subagents read here move; the rest of the cursor stays as sent.
+  const agents = { ...(cursor?.agents ?? {}) };
+  for (const [name, offset] of Object.entries(sub.agents)) agents[name] = offset;
+  const skip = (cursor?.skip ?? []).filter((name) => !(name in sub.agents));
+  return {
+    messages: [...toTranscriptMessages(chunk.entries), ...sub.messages],
+    agents: sub.agentMeta,
+    cursor: { main: cursor?.main ?? 0, agents, skip },
+    before: chunk.start > 0 ? chunk.start : null,
+  };
 }
