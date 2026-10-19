@@ -325,6 +325,8 @@ interface ExtensionContext {
     id: string;
     extensions: string[];
     mode?: "default" | "preview";
+    // A host without global viewers ignores it.
+    global?: boolean;
     component: React.ComponentType<GuiViewProps>;
   }): void;
   app: {
@@ -355,6 +357,10 @@ export function activate(ctx: ExtensionContext): void {
     id: "guiView",
     extensions: [],
     mode: "default",
+    // One xpra display shared by every project: the tab stays in the tab bar
+    // across projects instead of joining the chip of the project that was
+    // active when it opened.
+    global: true,
     component: GuiView,
   });
 

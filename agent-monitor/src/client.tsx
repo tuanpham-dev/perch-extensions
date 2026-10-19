@@ -112,7 +112,9 @@ interface ExtensionContext {
     ) => { badge: string; tooltip?: string; className?: string } | undefined;
   }): { refresh(): void };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  registerFileViewer(viewer: { id: string; extensions: string[]; component: ComponentType<any> }): void;
+  // `global` (ignored by a host without global viewers): the tab never joins
+  // a project's chip.
+  registerFileViewer(viewer: { id: string; extensions: string[]; global?: boolean; component: ComponentType<any> }): void;
   registerCommand(command: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
   // Optional: an older host has no bottom-panel views.
   registerPanelView?(view: {
@@ -198,8 +200,10 @@ export function activate(ctx: ExtensionContext): void {
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
 
   // extensions: [] - the board is never matched to a file; it is reached only
-  // through openViewerTab.
-  ctx.registerFileViewer({ id: BOARD_VIEWER, extensions: [], component: BoardView });
+  // through openViewerTab. Global: the board scopes itself (current repo,
+  // selected repos or all), so its tab stays put across projects rather than
+  // joining the chip of the project it was opened from.
+  ctx.registerFileViewer({ id: BOARD_VIEWER, extensions: [], global: true, component: BoardView });
   ctx.registerCommand({
     id: "openBoard",
     label: "Agent Board: Open",
