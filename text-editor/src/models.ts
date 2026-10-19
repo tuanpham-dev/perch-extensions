@@ -21,6 +21,7 @@
 // the tab was closed, past the host's unsaved-changes confirm.
 import type { MonacoNs, TextModel } from "./monacoNs";
 import { clearBackup, hashText, readBackup, writeBackup } from "./unsavedBackup";
+import { GitTracker } from "./gitTracker";
 
 export interface FileEntry {
   readonly filePath: string;
@@ -46,6 +47,8 @@ export interface FileEntry {
    * file on another device must not wipe edits still pending over there.
    */
   hasBackup: boolean;
+  /** The gutter's base and change marks for this file, once the model exists. */
+  git: GitTracker | null;
 }
 
 const BACKUP_DELAY_MS = 400;
@@ -151,6 +154,9 @@ export function markSaved(entry: FileEntry, text: string): void {
   entry.restored = null;
   flushBackup(entry);
   notify(entry);
+  // A save can change what the provider holds as the base (a hook that
+  // commits, say), and it's when a stale base is most visible.
+  void entry.git?.refresh();
 }
 
 /** Hides the restored-edits notice, keeping the edits. */
@@ -191,6 +197,7 @@ export function acquireFile(
       restored: null,
       backupTimer: null,
       hasBackup: false,
+      git: null,
       // Assigned immediately below; the async body needs `created` in scope.
       ready: undefined as unknown as Promise<TextModel>,
     };
@@ -216,6 +223,7 @@ export function acquireFile(
       }
       created.model = model;
       created.savedText = text;
+      created.git = new GitTracker(filePath, model);
       if (restore) {
         created.restored = { diskChanged: restore.base !== hashText(text) };
         created.hasBackup = true;
@@ -256,6 +264,8 @@ export function acquireFile(
     }
     acquired.disposed = true;
     acquired.listeners.clear();
+    acquired.git?.dispose();
+    acquired.git = null;
     acquired.model?.dispose();
     acquired.model = null;
     if (entries.get(filePath) === acquired) entries.delete(filePath);
@@ -272,6 +282,8 @@ export function disposeAllFiles(): void {
     flushBackup(entry);
     entry.disposed = true;
     entry.listeners.clear();
+    entry.git?.dispose();
+    entry.git = null;
     entry.model?.dispose();
     entry.model = null;
   }

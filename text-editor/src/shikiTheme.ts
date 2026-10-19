@@ -37,6 +37,7 @@
 // mask per span; those two numbers become the Monaco token name, and the Monaco
 // theme carries one rule per (color, style) combination. Nothing is inferred, so
 // nothing can be lost.
+import { setGitColors } from "./gitColors";
 import { EncodedTokenMetadata, INITIAL, type IGrammar, type StateStack } from "@shikijs/vscode-textmate";
 import type { HighlighterCore } from "@shikijs/core";
 import type { MonacoNs, TokenizerState } from "./monacoNs";
@@ -328,9 +329,11 @@ export async function applyHostTheme(
   }
 
   const colorsWithMerge = { ...MERGE_COLOR_DEFAULTS, ...safeColors };
+  const light = isLightBackground(safeColors["editor.background"]);
+  setGitColors(safeColors, light);
 
   monaco.editor.defineTheme(name, {
-    base: isLightBackground(safeColors["editor.background"]) ? "vs" : "vs-dark",
+    base: light ? "vs" : "vs-dark",
     // Every token name here is generated, so there is nothing for a base theme
     // to usefully contribute — and inheriting would let its rules win for spans
     // this theme deliberately leaves at the default foreground.

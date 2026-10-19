@@ -150,6 +150,27 @@ When it can't be edited, the tab says why.
 Commit diffs stay in the Source Control panel's own view: a commit is a multi-file patch, and
 Monaco's diff editor shows one file.
 
+## Change marks in the gutter
+
+A file open in the editor marks every line that differs from the last commit, the way VS
+Code does: a bar beside added lines, a striped bar beside changed ones, and a triangle where
+lines were deleted, with matching marks on the scrollbar and in the minimap. The marks follow
+your typing, saved or not, and catch up within a few seconds with a commit, checkout or
+staging done in a terminal. Colors are the theme's `editorGutter.*`,
+`editorOverviewRuler.*` and `minimapGutter.*` colors, with VS Code's defaults for a theme
+that leaves them out.
+
+Clicking a mark opens a peek below the change: an inline diff of the lines the last commit
+had against the lines there now, and buttons to stage just that change (as it appears in the
+editor, saved or not), revert it (one undoable edit, not saved), or move to the previous or
+next change. Alt+F5 and Shift+Alt+F5 move between changes from the keyboard, and Escape
+closes the peek. A change whose lines are already staged differently is refused with a
+message rather than guessed at.
+
+The marks need a host with the quick-diff extension point and a source-control extension
+that provides it (the bundled Git extension does). New, untracked, binary and over-2MB files
+show none. Turn them off with `textEditor.gitGutter`.
+
 ## Merge conflicts
 
 A conflicted file opens as itself — markers and all — with each block tinted and four actions
@@ -293,6 +314,7 @@ extension's. What it does own is how the editor looks:
 |---|---|---|
 | `textEditor.minimap` | `auto` | Whether to draw the minimap, the code overview down the right edge. **Auto** shows it on desktop and hides it on phones and tablets, where it only eats width; **Always show** and **Always hide** override that. Applies to open tabs immediately. Diffs and merge conflicts never show one. |
 | `textEditor.lineNumbers` | `auto` | How lines are numbered. **Auto** follows the vim setting — relative when it is on, absolute when it is off; **Absolute**, **Relative** and **Hidden** pin it. Relative counts distance from the cursor, whose own line still shows its absolute number. Applies to open tabs immediately, and to the merge view; a diff numbers both sides absolutely regardless. |
+| `textEditor.gitGutter` | `true` | Mark lines changed since the last commit in the gutter, on the scrollbar and in the minimap, with a click-to-peek to stage or revert a change. See [Change marks in the gutter](#change-marks-in-the-gutter). Applies to open tabs immediately. |
 | `textEditor.vim` | `false` | Vim keybindings in the editor, the merge view, and a diff's editable side. See [Vim mode](#vim-mode). Applies to open tabs immediately. |
 | `textEditor.vimEditorKeys` | *(empty)* | Ctrl chords that skip vim and keep their editor meaning, e.g. `c v x a`. See [Ctrl chords: vim or editor](#ctrl-chords-vim-or-editor). Applies to open tabs immediately. |
 | `textEditor.vimKeys` | *(empty)* | Ctrl chords that stay with vim without being asked, e.g. `d u`. Same section. |

@@ -7,6 +7,17 @@
 // both sides can depend on.
 import type { ThemeApi } from "./monacoLoader";
 
+export interface QuickDiffBase {
+  original: string;
+  staged: string | null;
+  stage?: (content: string) => Promise<void>;
+}
+
+export interface QuickDiffApi {
+  getBase(path: string): Promise<QuickDiffBase | null>;
+  watch(path: string, onChange: () => void): () => void;
+}
+
 export let hostAssetUrl: ((relPath: string) => string) | null = null;
 export let hostThemeApi: ThemeApi | null = null;
 export let hostOpenDiff: ((req: import("./requests").DiffRequest) => Promise<boolean>) | null = null;
@@ -16,6 +27,9 @@ export let hostOpenDiff: ((req: import("./requests").DiffRequest) => Promise<boo
 // Closes one of this extension's own viewer tabs — what `:q` needs. It has no
 // unsaved-changes confirm of its own, so the caller owns that check.
 export let hostCloseViewerTab: ((viewerId: string, path: string) => void) | null = null;
+// Change marks' bases (core's quick-diff point). Absent on hosts that
+// predate it, and the editor then draws no marks.
+export let hostQuickDiff: QuickDiffApi | null = null;
 export let hostCanPreview: ((path: string) => boolean) | null = null;
 export let hostOpenPreview: ((path: string) => void) | null = null;
 
@@ -26,6 +40,7 @@ export function setHost(host: {
   canPreview?: (path: string) => boolean;
   openPreview?: (path: string) => void;
   closeViewerTab?: (viewerId: string, path: string) => void;
+  quickDiff?: QuickDiffApi;
 }): void {
   hostAssetUrl = host.assetUrl;
   hostThemeApi = host.themeApi;
@@ -33,6 +48,7 @@ export function setHost(host: {
   hostCloseViewerTab = host.closeViewerTab ?? null;
   hostCanPreview = host.canPreview ?? null;
   hostOpenPreview = host.openPreview ?? null;
+  hostQuickDiff = host.quickDiff ?? null;
 }
 
 export function clearHost(): void {
@@ -42,4 +58,5 @@ export function clearHost(): void {
   hostCloseViewerTab = null;
   hostCanPreview = null;
   hostOpenPreview = null;
+  hostQuickDiff = null;
 }

@@ -43,6 +43,8 @@ import {
   vimEnabled,
 } from "./settings";
 import { useVimMode } from "./vim";
+import { attachGitGutter, focusedGitGutter } from "./gitGutter";
+import type { QuickDiffApi } from "./host";
 import { setDraftsApi, type DraftsApi } from "./unsavedBackup";
 
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -227,8 +229,11 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
         acquired.entry.listeners.add(sync);
         sync();
 
+        const gutter = acquired.entry.git ? attachGitGutter(monaco, editor, acquired.entry) : null;
+
         teardownEditor = () => {
           acquired.entry.listeners.delete(sync);
+          gutter?.dispose();
           editor.dispose();
         };
         setLoading(false);
@@ -254,8 +259,12 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
     editorRef.current?.updateOptions({ fontSize: fontSize ?? DEFAULT_FONT_SIZE });
   }, [fontSize]);
 
+  // Coming back to a tab is when a commit made elsewhere is most likely to
+  // have moved the change marks' base.
   useEffect(() => {
-    if (active) editorRef.current?.layout();
+    if (!active) return;
+    editorRef.current?.layout();
+    void entryRef.current?.git?.refresh();
   }, [active]);
 
   // Settings → Text Editor applies to open tabs immediately, the same way a
@@ -373,6 +382,9 @@ interface ExtensionContext {
     openMerge?(req: MergeRequest): Promise<void>;
   }): void;
   assetUrl(relPath: string): string;
+  // Absent on hosts older than the quick-diff point: no change marks then.
+  quickDiff?: QuickDiffApi;
+  registerCommand?(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
   // Absent on hosts older than the drafts store: unsaved edits then live
   // only as long as the tab.
   drafts?: DraftsApi;
@@ -419,6 +431,22 @@ export function activate(ctx: ExtensionContext): void {
     canPreview: ctx.app.canPreview,
     openPreview: ctx.app.openPreview,
     closeViewerTab: ctx.app.closeViewerTab,
+    quickDiff: ctx.quickDiff,
+  });
+
+  // VS Code's own bindings for moving between changes. They act on the file
+  // editor that last had focus.
+  ctx.registerCommand?.({
+    id: "nextChange",
+    label: "Text Editor: Go to Next Change",
+    defaultBinding: "alt+F5",
+    run: () => focusedGitGutter()?.next(),
+  });
+  ctx.registerCommand?.({
+    id: "previousChange",
+    label: "Text Editor: Go to Previous Change",
+    defaultBinding: "shift+alt+F5",
+    run: () => focusedGitGutter()?.previous(),
   });
 
   // Monaco spawns its language-service workers itself; this is the only hook it

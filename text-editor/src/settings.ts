@@ -38,6 +38,11 @@ export function onSettingsChange(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
+/** Whether file editors mark lines changed since the last commit. */
+export function gitGutterEnabled(): boolean {
+  return api?.get("textEditor.gitGutter") !== false;
+}
+
 /** Whether the editor should run vim keybindings. */
 export function vimEnabled(): boolean {
   return api?.get("textEditor.vim") === true;

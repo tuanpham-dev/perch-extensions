@@ -178,3 +178,178 @@
   margin-left: auto;
   border-color: transparent;
 }
+
+/* Change marks against the last commit (gitGutter.ts), drawn the way VS
+   Code's dirtydiffDecorator.css draws them: 3px bars set 5px into the
+   line-decorations strip, changed lines with VS Code's default diagonal
+   pattern (scm.diffDecorationsGutterPattern), and a 4px triangle on the
+   boundary where lines were deleted. Colors are the theme's editorGutter.*
+   tokens (gitColors.ts sets the variables); the peek uses the theme's
+   peekView* tokens, which Monaco exposes as --vscode-* variables. */
+.monaco-editor .te-git {
+  cursor: pointer;
+}
+
+.monaco-editor .te-git::before,
+.monaco-editor .te-git::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+}
+
+.monaco-editor .te-git-added::before,
+.monaco-editor .te-git-modified::before {
+  top: 0;
+  height: 100%;
+  width: 3px;
+}
+
+.monaco-editor .te-git-added::before {
+  background: var(--te-git-added, #487e02);
+}
+
+.monaco-editor .te-git-modified::before {
+  background-image: linear-gradient(
+    -45deg,
+    var(--te-git-modified, #1b81a8) 25%,
+    transparent 25%,
+    transparent 50%,
+    var(--te-git-modified, #1b81a8) 50%,
+    var(--te-git-modified, #1b81a8) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-repeat: repeat-y;
+  background-size: 3px 3px;
+}
+
+.monaco-editor .te-git-deleted::after,
+.monaco-editor .te-git-deleted-top::after {
+  box-sizing: border-box;
+  width: 4px;
+  height: 0;
+  z-index: 9;
+  border-left: 4px solid var(--te-git-deleted, #f14c4c);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  pointer-events: none;
+}
+
+.monaco-editor .te-git-deleted::after {
+  bottom: -4px;
+}
+
+.monaco-editor .te-git-deleted-top::after {
+  top: -4px;
+}
+
+.te-git-peek-host {
+  position: absolute;
+  left: 0;
+}
+
+/* The frame and arrow take the change's own gutter color, as VS Code's
+   quick-diff peek does. */
+.te-git-peek {
+  --te-git-frame: var(--te-git-modified, #1b81a8);
+  position: relative;
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--te-git-frame);
+  border-bottom: 1px solid var(--te-git-frame);
+  background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.te-git-peek-added {
+  --te-git-frame: var(--te-git-added, #487e02);
+}
+
+.te-git-peek-deleted {
+  --te-git-frame: var(--te-git-deleted, #f14c4c);
+}
+
+.te-git-peek-arrow {
+  position: absolute;
+  top: -7px;
+  width: 0;
+  height: 0;
+  margin-left: -2px;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 6px solid var(--te-git-frame);
+}
+
+.te-git-peek-head {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  flex: none;
+  padding: 0 2px 0 8px;
+  font-size: 13px;
+  background: var(--vscode-peekViewTitle-background, #252526);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.te-git-peek-title {
+  color: var(--vscode-peekViewTitleLabel-foreground, #ffffff);
+}
+
+.te-git-peek-description {
+  margin-left: 0.5em;
+  font-size: 0.9em;
+  color: var(--vscode-peekViewTitleDescription-foreground, #ccccccb3);
+}
+
+.te-git-peek-error {
+  min-width: 0;
+  margin-left: 1em;
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--vscode-errorForeground, #f48771);
+}
+
+.te-git-peek-buttons {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding-left: 8px;
+  flex: none;
+}
+
+.te-git-peek-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--vscode-icon-foreground, var(--vscode-editor-foreground, #c5c5c5));
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.te-git-peek-button:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.te-git-peek-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+
+.te-git-peek-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.te-git-peek-body {
+  flex: 1;
+  min-height: 0;
+}

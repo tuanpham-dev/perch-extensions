@@ -2,7 +2,7 @@
   "name": "text-editor",
   "private": true,
   "publisher": "perch",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "displayName": "Text Editor",
   "description": "A Monaco-based editor tab (the VS Code editor) with syntax highlighting that follows the active theme, IntelliSense for TypeScript/JavaScript/JSON/CSS/HTML, and save-back to disk, for quick edits without a round-trip through nvim.",
   "icon": "./icon.svg",
@@ -40,6 +40,11 @@
           ],
           "default": "auto",
           "description": "Whether the editor draws the minimap - the code overview down the right edge. Auto shows it on desktop and hides it on phones and tablets, where it only eats width. Diffs and merge conflicts never show one."
+        },
+        "textEditor.gitGutter": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mark lines changed since the last commit in the gutter, the way VS Code does: a green bar for added lines, blue for changed ones, and a red triangle where lines were deleted. Click a mark to see the old lines, revert the change, or stage just that change. Needs the Git extension, and applies to open tabs immediately."
         },
         "textEditor.lineNumbers": {
           "type": "string",
