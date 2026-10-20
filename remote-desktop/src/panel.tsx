@@ -3,6 +3,7 @@
 // /status every 2 s, and /download/status every 500 ms while a download
 // runs.
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Icon from "./Icon";
 import { fetchDownloadStatus, fetchStatus, getHost, postJson, type DownloadStatus, type RdStatus } from "./host";
 
@@ -11,7 +12,7 @@ const DOWNLOAD_POLL_MS = 500;
 
 const APT_LINE = "sudo apt install -y sway xwayland xdg-desktop-portal-wlr pipewire wireplumber xfce4 dbus-x11 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire";
 
-export function RemoteDesktopPanel() {
+export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivElement | null }) {
   const [status, setStatus] = useState<RdStatus | null>(null);
   const [download, setDownload] = useState<DownloadStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,8 +86,27 @@ export function RemoteDesktopPanel() {
     });
   };
 
+  // In the panel header, next to the title — reachable while the status
+  // is still loading or failing, which is when the engine path may need
+  // fixing.
+  const openSettings = getHost().openSettings;
+  const header =
+    actionsTarget && openSettings
+      ? createPortal(
+          <button type="button" className="icon-button" title="Remote Desktop Settings" onClick={openSettings}>
+            <Icon name="settings-gear" />
+          </button>,
+          actionsTarget,
+        )
+      : null;
+
   if (!status) {
-    return <div className="rd-panel rd-panel-status">{error ?? "Loading…"}</div>;
+    return (
+      <div className="rd-panel rd-panel-status">
+        {header}
+        {error ?? "Loading…"}
+      </div>
+    );
   }
 
   const modeLabel =
@@ -99,6 +119,7 @@ export function RemoteDesktopPanel() {
 
   return (
     <div className="rd-panel">
+      {header}
       <div className="rd-panel-engine">
         <span className="rd-panel-label">Engine</span>
         {status.engineVersion ? (

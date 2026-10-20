@@ -55,6 +55,8 @@ The desktop scale follows the driver's pixel ratio: on a managed display the hos
 
 ## Settings
 
+The gear in the Remote Desktop panel's header opens these in Settings (Perch 0.8.0 or newer).
+
 | Setting | Default | Description |
 |---|---|---|
 | `remoteDesktop.mode` | `managed` | `managed` starts a virtual display and a desktop; `existing` attaches to the running one. |

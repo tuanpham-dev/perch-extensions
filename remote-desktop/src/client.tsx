@@ -16,7 +16,7 @@ interface ExtensionContext {
     title: string;
     icon?: string;
     location: "tab" | "explorer" | "run" | "commands";
-    component: React.ComponentType;
+    component: React.ComponentType<{ actionsTarget?: HTMLDivElement | null }>;
   }): void;
   registerFileViewer(viewer: {
     id: string;
@@ -24,6 +24,8 @@ interface ExtensionContext {
     mode?: "default" | "preview";
     // A host without global viewers ignores it.
     global?: boolean;
+    // The tab bar's icon for this viewer's tabs. Older hosts ignore it.
+    icon?: string;
     component: React.ComponentType<ViewerProps>;
   }): void;
   app: {
@@ -33,6 +35,8 @@ interface ExtensionContext {
   settings?: {
     get(key: string): unknown;
     onDidChange(cb: () => void): () => void;
+    // Opens Settings at this extension's section. Older hosts lack it.
+    open?(): void;
   };
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
@@ -48,6 +52,7 @@ export function activate(ctx: ExtensionContext): void {
     assetUrl: ctx.assetUrl,
     getSetting: (key) => ctx.settings?.get(key),
     onSettingsChange: (cb) => ctx.settings?.onDidChange(cb) ?? (() => {}),
+    openSettings: ctx.settings?.open ? () => ctx.settings?.open?.() : undefined,
   });
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
 
@@ -67,6 +72,9 @@ export function activate(ctx: ExtensionContext): void {
     // in the tab bar across projects instead of joining the chip of the
     // project that was active when it opened.
     global: true,
+    // Same icon as the sidebar tab: the path names no file, so the tab
+    // would otherwise get the generic file icon.
+    icon: "vm",
     component: RemoteDesktopView,
   });
 

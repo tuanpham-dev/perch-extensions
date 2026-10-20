@@ -1061,7 +1061,7 @@ export function activate(ctx: ExtensionContext): void {
 
   ctx.registerSidebarPanel({
     id: PANEL_ID,
-    title: "AGENT TASKS",
+    title: "Agent Tasks",
     location: "tab",
     icon: "checklist",
     component: AgentTasksPanel,

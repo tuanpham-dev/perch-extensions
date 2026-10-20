@@ -60,6 +60,9 @@ export interface HostBindings {
   assetUrl(relPath: string): string;
   getSetting(key: string): unknown;
   onSettingsChange(cb: () => void): () => void;
+  /** Opens Settings at this extension's section; absent on hosts without
+   * ctx.settings.open, where the panel shows no gear. */
+  openSettings?: () => void;
 }
 
 let host: HostBindings | null = null;

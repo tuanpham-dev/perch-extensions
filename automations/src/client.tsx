@@ -498,7 +498,7 @@ export function activate(ctx: ExtensionContext): void {
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerSidebarPanel({
     id: "list",
-    title: "AUTOMATIONS",
+    title: "Automations",
     location: "run",
     icon: "watch",
     component: AutomationsPanel,
