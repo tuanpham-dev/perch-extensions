@@ -9,7 +9,20 @@ import { Connection, type ConnState, type ConnectionStats } from "./connection";
 import { createDecoder, hasWebCodecs, probeDecoders, type Decoder } from "./decoder";
 import { Renderer } from "./render";
 import { attachInput } from "./input";
-import { EXTRA_KEYS, attachPhoneKeyboard, isStickyKey, isTouchDevice, type PhoneKeyboard } from "./keyboard";
+import { attachPhoneKeyboard, isTouchDevice, type PhoneKeyboard } from "./keyboard";
+import {
+  ACTION_LABEL,
+  DEFAULT_KEYS,
+  STRIP_KEYS,
+  TAP_ACTIONS,
+  loadGestures,
+  normalizeGestures,
+  saveGestures,
+  stripKeys,
+  type Action,
+  type GestureSettings,
+  type StripKey,
+} from "./gestures";
 import { createClipboardBridge } from "./clipboard";
 import { createFileTransfer, type FileTransfer } from "./files";
 import { AudioPipe } from "./audio";
@@ -135,6 +148,18 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const [touch, setTouch] = useState(isTouchDevice());
   const [kbOpen, setKbOpen] = useState(false);
   const [armedKeys, setArmedKeys] = useState<ReadonlySet<number>>(new Set());
+  const [lockedKeys, setLockedKeys] = useState<ReadonlySet<number>>(new Set());
+  // Gestures, trackpad speed, scrolling, the Back button and the strip's
+  // keys, kept per device.
+  const [gestures, setGestures] = useState<GestureSettings>(loadGestures());
+  const gesturesRef = useRef(gestures);
+  gesturesRef.current = gestures;
+  const applyGestures = useCallback((next: Partial<GestureSettings>) => {
+    const merged = normalizeGestures({ ...gesturesRef.current, ...next });
+    gesturesRef.current = merged;
+    saveGestures(merged);
+    setGestures(merged);
+  }, []);
   // How much of the host the phone keyboard covers: nothing in a tab,
   // where Perch already sizes the app to the space above it, but the whole
   // keyboard in fullscreen, where the element keeps the screen's size.
@@ -604,6 +629,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           keepFocus: () => kbRef.current?.isOpen() ?? false,
           toggleKeyboard: () => kbRef.current?.toggle(),
           touchMode: () => viewSettingsRef.current.touchMode,
+          gestures: () => gesturesRef.current,
           onPointerMoved: (x, y) => {
             if (viewSettingsRef.current.touchMode === "trackpad") setPadPos({ x, y });
           },
@@ -655,7 +681,10 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           requestDisplay();
         }
       },
-      onArmedChange: setArmedKeys,
+      onArmedChange: (armed, locked) => {
+        setArmedKeys(armed);
+        setLockedKeys(locked);
+      },
     });
     kbRef.current = kb;
     return () => {
@@ -1028,17 +1057,18 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           onPointerDown={(e) => e.preventDefault()}
           onMouseDown={(e) => e.preventDefault()}
         >
-          {EXTRA_KEYS.map((k) => (
-            <button
-              key={k.code}
-              type="button"
-              className="rd-key"
-              aria-label={k.title}
-              aria-pressed={isStickyKey(k.code) ? armedKeys.has(k.code) : undefined}
-              onClick={() => kbRef.current?.tapStripKey(k.code)}
-            >
-              {k.label}
-            </button>
+          {chunk(stripKeys(gestures), gestures.keyRows).map((row, i) => (
+            <div key={i} className="rd-keys-row">
+              {row.map((k) => (
+                <StripButton
+                  key={k.id}
+                  k={k}
+                  armed={armedKeys.has(k.code)}
+                  locked={lockedKeys.has(k.code)}
+                  kb={() => kbRef.current}
+                />
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -1140,6 +1170,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
               ))}
             </div>
           )}
+          <GestureSections g={gestures} touch={touch} apply={applyGestures} />
           <div className="rd-popover-section">
             <div className="rd-popover-title">View</div>
             {(
@@ -1221,5 +1252,179 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         </div>
       )}
     </div>
+  );
+}
+
+/** The strip's keys in `rows` rows of about equal length. */
+function chunk(keys: StripKey[], rows: number): StripKey[][] {
+  const per = Math.max(1, Math.ceil(keys.length / Math.max(1, Math.min(rows, keys.length))));
+  const out: StripKey[][] = [];
+  for (let i = 0; i < keys.length; i += per) out.push(keys.slice(i, i + per));
+  return out;
+}
+
+/**
+ * One key on the strip. A modifier arms on a tap (for the next key) and
+ * locks on a long press until tapped again; any other key goes down on
+ * press and up on release, so the desktop repeats it while held.
+ */
+function StripButton({ k, armed, locked, kb }: { k: StripKey; armed: boolean; locked: boolean; kb: () => PhoneKeyboard | null }) {
+  const timer = useRef<number | null>(null);
+  const long = useRef(false);
+  const down = useRef(false);
+  const clear = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const release = () => {
+    clear();
+    if (down.current) {
+      down.current = false;
+      kb()?.pressStripKey(k.code, false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`rd-key${locked ? " rd-key-locked" : ""}`}
+      aria-label={k.title ?? k.label}
+      aria-pressed={k.modifier ? armed : undefined}
+      onPointerDown={() => {
+        long.current = false;
+        if (k.modifier) {
+          timer.current = window.setTimeout(() => {
+            timer.current = null;
+            long.current = true;
+            kb()?.lockStripKey(k.code);
+          }, 500);
+        } else {
+          down.current = true;
+          kb()?.pressStripKey(k.code, true);
+        }
+      }}
+      onPointerUp={release}
+      onPointerCancel={release}
+      onPointerLeave={release}
+      onClick={(e) => {
+        if (k.modifier) {
+          if (!long.current) kb()?.tapStripKey(k.code);
+        } else if (e.detail === 0) kb()?.tapStripKey(k.code); // Enter or Space on a focused key
+      }}
+    >
+      {k.label}
+    </button>
+  );
+}
+
+/** Gestures, trackpad, scrolling and the keys strip, in the View popover. */
+function GestureSections({ g, touch, apply }: { g: GestureSettings; touch: boolean; apply: (next: Partial<GestureSettings>) => void }) {
+  const select = (label: string, value: Action, options: Action[], on: (a: Action) => void) => (
+    <label className="rd-popover-option rd-popover-select">
+      <span>{label}</span>
+      <select className="rd-select" value={value} onChange={(e) => on(e.target.value as Action)}>
+        {options.map((a) => (
+          <option key={a} value={a}>
+            {ACTION_LABEL[a]}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+  const range = (label: string, value: number, on: (v: number) => void) => (
+    <label className="rd-popover-option rd-popover-select">
+      <span>{label}</span>
+      <input type="range" min={0.5} max={2} step={0.1} value={value} onChange={(e) => on(Number(e.target.value))} />
+      <span className="rd-popover-hint">{value.toFixed(1)}x</span>
+    </label>
+  );
+  const move = (i: number, d: number) => {
+    const keys = [...g.keys];
+    keys.splice(i + d, 0, keys.splice(i, 1)[0]);
+    apply({ keys });
+  };
+  return (
+    <>
+      {touch && (
+        <details className="rd-popover-section">
+          <summary className="rd-popover-title">Gestures</summary>
+          {select("Double tap", g.doubleTap, TAP_ACTIONS, (a) => apply({ doubleTap: a }))}
+          {select("Long press", g.longPress, [...TAP_ACTIONS, "drag"], (a) => apply({ longPress: a }))}
+          {select("Two-finger tap", g.twoTap, TAP_ACTIONS, (a) => apply({ twoTap: a }))}
+          {select("Three-finger tap", g.threeTap, TAP_ACTIONS, (a) => apply({ threeTap: a }))}
+          {select("Four-finger tap", g.fourTap, TAP_ACTIONS, (a) => apply({ fourTap: a }))}
+          {select("Tap, then touch and move", g.tapDrag, ["drag", "none"], (a) => apply({ tapDrag: a }))}
+          <label className="rd-popover-option">
+            <input type="checkbox" checked={g.acceleration} onChange={(e) => apply({ acceleration: e.target.checked })} />
+            <span>Pointer acceleration</span>
+            <span className="rd-popover-hint">trackpad: slow moves are precise, fast moves go far</span>
+          </label>
+          {range("Pointer speed", g.speed, (v) => apply({ speed: v }))}
+          {range("Sensitivity", g.sensitivity, (v) => apply({ sensitivity: v }))}
+        </details>
+      )}
+      <details className="rd-popover-section">
+        <summary className="rd-popover-title">Scrolling and mouse</summary>
+        <label className="rd-popover-option">
+          <input type="checkbox" checked={g.invertScroll} onChange={(e) => apply({ invertScroll: e.target.checked })} />
+          <span>Invert vertical scrolling</span>
+        </label>
+        <label className="rd-popover-option rd-popover-select">
+          <span>Mouse Back button</span>
+          <select className="rd-select" value={g.back} onChange={(e) => apply({ back: e.target.value as GestureSettings["back"] })}>
+            <option value="back">Back</option>
+            <option value="right">Right click</option>
+            <option value="middle">Middle click</option>
+          </select>
+        </label>
+      </details>
+      {touch && (
+        <details className="rd-popover-section">
+          <summary className="rd-popover-title">Keys strip</summary>
+          <label className="rd-popover-option rd-popover-select">
+            <span>Rows</span>
+            <select className="rd-select" value={g.keyRows} onChange={(e) => apply({ keyRows: Number(e.target.value) })}>
+              {[1, 2, 3].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+          <ol className="rd-keys-editor">
+            {g.keys.map((id, i) => {
+              const k = STRIP_KEYS.find((x) => x.id === id);
+              if (!k) return null;
+              return (
+                <li key={id}>
+                  <span>{k.title ?? k.label}</span>
+                  <button type="button" className="rd-btn" aria-label={`Move ${k.label} up`} disabled={i === 0} onClick={() => move(i, -1)}>
+                    ↑
+                  </button>
+                  <button type="button" className="rd-btn" aria-label={`Move ${k.label} down`} disabled={i === g.keys.length - 1} onClick={() => move(i, 1)}>
+                    ↓
+                  </button>
+                  <button type="button" className="rd-btn" aria-label={`Remove ${k.label}`} disabled={g.keys.length <= 1} onClick={() => apply({ keys: g.keys.filter((x) => x !== id) })}>
+                    ×
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+          <div className="rd-popover-row">
+            <select className="rd-select" value="" aria-label="Add a key" onChange={(e) => e.target.value && apply({ keys: [...g.keys, e.target.value] })}>
+              <option value="">Add a key…</option>
+              {STRIP_KEYS.filter((k) => !g.keys.includes(k.id)).map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.title ?? k.label}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="rd-btn" onClick={() => apply({ keys: DEFAULT_KEYS, keyRows: 1 })}>
+              Reset
+            </button>
+          </div>
+        </details>
+      )}
+    </>
   );
 }

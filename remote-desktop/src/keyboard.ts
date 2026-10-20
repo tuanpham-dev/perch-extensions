@@ -11,6 +11,7 @@
 // layout is Perch's here: the app already sizes itself to the visual
 // viewport while a phone keyboard is up, so this module only reports the
 // open state and never styles the document.
+import { MODIFIER_CODES } from "./gestures";
 import { evdevForCode } from "./keymap";
 import type { InputEvent } from "./qr/proto";
 import { chunkText } from "./wire";
@@ -21,26 +22,9 @@ const SENTINEL = " ";
 const KEYBOARD_MIN_PX = 100;
 
 const EVDEV = { backspace: 14 };
-// Sticky modifiers on the strip, by evdev code.
-const STICKY = new Set([29, 56, 125]);
-
-/** The strip's keys, in order: evdev code and label. */
-export const EXTRA_KEYS: { code: number; label: string; title?: string }[] = [
-  { code: 1, label: "Esc" },
-  { code: 15, label: "Tab" },
-  { code: 29, label: "Ctrl" },
-  { code: 56, label: "Alt" },
-  { code: 125, label: "Super" },
-  { code: 105, label: "←", title: "Left" },
-  { code: 103, label: "↑", title: "Up" },
-  { code: 108, label: "↓", title: "Down" },
-  { code: 106, label: "→", title: "Right" },
-  { code: 102, label: "Home" },
-  { code: 107, label: "End" },
-  { code: 104, label: "PgUp" },
-  { code: 109, label: "PgDn" },
-];
-
+// Sticky modifiers on the strip, by evdev code (the strip's keys and their
+// order are in gestures.ts, chosen per device).
+const STICKY = MODIFIER_CODES;
 export const isStickyKey = (code: number) => STICKY.has(code);
 
 export const isTouchDevice = () => window.matchMedia("(pointer: coarse)").matches;
@@ -50,9 +34,14 @@ export interface PhoneKeyboard {
   isOpen(): boolean;
   /** Open the phone keyboard, or close it when it is open. */
   toggle(): void;
-  /** A strip key was tapped: a sticky modifier arms or disarms, anything
-   * else is sent with the armed modifiers. */
+  /** A strip key was tapped: a sticky modifier arms or disarms (or
+   * unlocks), anything else is sent with the armed modifiers. */
   tapStripKey(code: number): void;
+  /** A sticky modifier held: it stays on for every key until tapped again. */
+  lockStripKey(code: number): void;
+  /** A non-modifier strip key went down or up, with the armed modifiers
+   * held around it, so the desktop repeats a key held down. */
+  pressStripKey(code: number, down: boolean): void;
   detach(): void;
 }
 
@@ -61,13 +50,14 @@ export interface PhoneKeyboardOptions {
   send(e: InputEvent): void;
   /** The field gained or lost focus. */
   onOpenChange(open: boolean): void;
-  /** The armed sticky modifiers changed. */
-  onArmedChange(armed: ReadonlySet<number>): void;
+  /** The armed sticky modifiers changed (`locked` stay on after a key). */
+  onArmedChange(armed: ReadonlySet<number>, locked: ReadonlySet<number>): void;
 }
 
 export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
   const { field, send } = opts;
   const armed = new Set<number>();
+  const locked = new Set<number>();
   let composing = false;
   let sawKeyboard = false;
   // A chord typed while the phone keyboard was composing a word: the
@@ -84,7 +74,7 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
 
   const setArmed = (update: () => void) => {
     update();
-    opts.onArmedChange(new Set(armed));
+    opts.onArmedChange(new Set(armed), new Set(locked));
   };
 
   // Run `action` inside the armed modifiers (and any held on a hardware
@@ -94,8 +84,14 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
     for (const code of mods) send({ t: "Key", code, down: true });
     action();
     for (const code of mods.reverse()) send({ t: "Key", code, down: false });
-    if (armed.size) setArmed(() => armed.clear());
+    releaseArmed();
   };
+  // A sticky modifier lasts one key; a locked one stays.
+  const releaseArmed = () => {
+    if ([...armed].some((c) => !locked.has(c))) setArmed(() => { for (const c of [...armed]) if (!locked.has(c)) armed.delete(c); });
+  };
+  // A strip key held down: the modifiers held with it, released after it.
+  let heldMods: number[] = [];
 
   const tapKey = (code: number, extra: number[] = []) =>
     withModifiers(extra, () => {
@@ -186,7 +182,7 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
   const onBlur = () => {
     composing = false;
     chordFromComposition = null;
-    if (armed.size) setArmed(() => armed.clear());
+    if (armed.size) setArmed(() => { armed.clear(); locked.clear(); });
     opts.onOpenChange(false);
   };
 
@@ -217,8 +213,29 @@ export function attachPhoneKeyboard(opts: PhoneKeyboardOptions): PhoneKeyboard {
       else field.focus({ preventScroll: true });
     },
     tapStripKey(code: number) {
-      if (STICKY.has(code)) setArmed(() => (armed.has(code) ? armed.delete(code) : armed.add(code)));
-      else tapKey(code);
+      if (STICKY.has(code)) {
+        setArmed(() => {
+          if (armed.has(code)) {
+            armed.delete(code);
+            locked.delete(code);
+          } else armed.add(code);
+        });
+      } else tapKey(code);
+    },
+    lockStripKey(code: number) {
+      if (STICKY.has(code)) setArmed(() => { armed.add(code); locked.add(code); });
+    },
+    pressStripKey(code: number, down: boolean) {
+      if (down) {
+        heldMods = [...armed];
+        for (const m of heldMods) send({ t: "Key", code: m, down: true });
+        send({ t: "Key", code, down: true });
+      } else {
+        send({ t: "Key", code, down: false });
+        for (const m of heldMods.reverse()) send({ t: "Key", code: m, down: false });
+        heldMods = [];
+        releaseArmed();
+      }
     },
     detach() {
       field.removeEventListener("keydown", onKeyDown);

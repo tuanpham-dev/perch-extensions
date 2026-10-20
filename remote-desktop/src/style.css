@@ -430,6 +430,7 @@
   right: 0;
   bottom: 0;
   display: flex;
+  flex-direction: column;
   gap: 4px;
   padding: 4px 6px;
   overflow-x: auto;
@@ -526,4 +527,47 @@
   position: absolute;
   pointer-events: none;
   z-index: 3;
+}
+
+/* The strip's rows, and a locked modifier. */
+.rd-keys-row {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.rd-key-locked,
+.rd-key-locked[aria-pressed="true"] {
+  background: var(--vscode-button-background, #0e639c);
+  border-color: var(--vscode-focusBorder, #007fd4);
+  color: var(--vscode-button-foreground, #fff);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+/* Gestures and keys in the View popover. */
+details.rd-popover-section > summary {
+  cursor: pointer;
+  list-style: revert;
+}
+.rd-popover-select {
+  justify-content: space-between;
+}
+.rd-popover-select input[type="range"] {
+  width: 8em;
+}
+.rd-keys-editor {
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.rd-keys-editor li {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.rd-keys-editor li span {
+  flex: 1;
 }

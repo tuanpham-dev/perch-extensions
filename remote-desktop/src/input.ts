@@ -4,6 +4,7 @@
 // reaches the host before the keystroke does. Ctrl+wheel and a pinch zoom
 // the view; two fingers pan a zoomed picture (or scroll otherwise); a
 // mouse near the stage's edge pans a zoomed picture.
+import { type Action, GESTURE_DEFAULTS, type GestureSettings, actionButton, backButton, gain } from "./gestures";
 import { evdevForCode } from "./keymap";
 import { ClipKind, type InputEvent } from "./qr/proto";
 import { clipClipboardText } from "./wire";
@@ -23,6 +24,8 @@ export interface InputTarget {
   touchMode?(): "direct" | "trackpad";
   /** The pointer moved to this remote pixel (for drawing it in trackpad mode). */
   onPointerMoved?(x: number, y: number): void;
+  /** What each gesture does, trackpad speed, scrolling, the mouse's Back button. */
+  gestures?(): GestureSettings;
 }
 
 // Wheel: 1/120-notch units, positive up and right, as the protocol wants.
@@ -49,6 +52,8 @@ const DOUBLE_TAP_PX = 40;
 const TRACKPAD_GAIN = 1.5;
 // Scroll from a two-finger drag: CSS pixels per notch.
 const TOUCH_SCROLL_PX = 40;
+// Auto-pan keeps the trackpad pointer this far (CSS px) inside the stage.
+const PAD_EDGE_PX = 24;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -74,6 +79,10 @@ interface Finger {
   y: number;
   x0: number;
   y0: number;
+  /** The previous position and when the last one came, for trackpad speed. */
+  px: number;
+  py: number;
+  t: number;
 }
 
 export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () => void {
@@ -107,6 +116,15 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
   let pad: { x: number; y: number } | null = null;
   let padDragArmed = false;
   const trackpad = () => target.touchMode?.() === "trackpad";
+  const gestures = () => target.gestures?.() ?? GESTURE_DEFAULTS;
+  // A single tap waiting to see whether a second one follows (double tap set).
+  let pendingTap: number | null = null;
+  const cancelPendingTap = () => {
+    if (pendingTap !== null) {
+      window.clearTimeout(pendingTap);
+      pendingTap = null;
+    }
+  };
   const padPosition = () => {
     if (!pad) pad = { x: Math.floor(view.picture.width / 2), y: Math.floor(view.picture.height / 2) };
     pad.x = Math.max(0, Math.min(Math.max(0, view.picture.width - 1), pad.x));
@@ -122,6 +140,16 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
     const pos = { x: Math.floor(q.x), y: Math.floor(q.y) };
     pendingMove = pos;
     if (moveFrame === null) moveFrame = requestAnimationFrame(flushMove);
+    if (view.pans()) {
+      // Keep the pointer on screen while zoomed in.
+      const box = view.stageBox();
+      const sx = view.x + q.x * view.scale;
+      const sy = view.y + q.y * view.scale;
+      const e = PAD_EDGE_PX;
+      const px = sx < e ? e - sx : sx > box.width - e ? box.width - e - sx : 0;
+      const py = sy < e ? e - sy : sy > box.height - e ? box.height - e - sy : 0;
+      if (px || py) view.panBy(px, py);
+    }
   };
   const padClick = (button: number) => {
     const q = padPosition();
@@ -264,7 +292,7 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
       case 2:
         return 3;
       case 3:
-        return 4;
+        return backButton(gestures());
       case 4:
         return 5;
       default:
@@ -316,6 +344,19 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
     sendButton(button, true);
     sendButton(button, false);
   };
+  // A gesture's action, where the touch was (direct) or where the pointer is (trackpad).
+  const perform = (a: Action, x: number, y: number) => {
+    if (a === "none" || a === "drag") return;
+    if (a === "keyboard") {
+      target.toggleKeyboard?.();
+      return;
+    }
+    const b = actionButton(a);
+    const once = () => (trackpad() ? padClick(b) : click(b, x, y));
+    once();
+    if (a === "double") once();
+  };
+
   // Where a tap lands: on the previous tap's spot when it comes right
   // after it, so two taps make one double click however the finger moved.
   const tapPoint = (f: Finger) => {
@@ -345,13 +386,13 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
       scrollAcc.x = 0;
       scrollAcc.y = 0;
     }
-    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, px: e.clientX, py: e.clientY, t: performance.now() });
     maxFingers = Math.max(maxFingers, fingers.size);
     cancelLong();
     if (fingers.size === 1) {
       const f = fingers.get(e.pointerId)!;
       if (trackpad()) {
-        padDragArmed = lastTap !== null && performance.now() - lastTap.t < DOUBLE_TAP_MS;
+        padDragArmed = gestures().tapDrag === "drag" && lastTap !== null && performance.now() - lastTap.t < DOUBLE_TAP_MS;
       } else {
         queueMove(f.x, f.y);
       }
@@ -359,8 +400,18 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
         longTimer = null;
         if (touchMoved || fingers.size !== 1) return;
         longFired = true;
-        if (trackpad()) padClick(3);
-        else click(3, f.x0, f.y0);
+        cancelPendingTap();
+        const a = gestures().longPress;
+        if (a === "drag") {
+          // Long press, then move: drag from there.
+          if (trackpad()) {
+            const q = padPosition();
+            pendingMove = { x: Math.floor(q.x), y: Math.floor(q.y) };
+          } else queueMove(f.x0, f.y0);
+          flushMove();
+          sendButton(1, true);
+          dragging = true;
+        } else perform(a, f.x0, f.y0);
       }, LONG_PRESS_MS);
     } else if (fingers.size === 2) {
       if (dragging) {
@@ -376,14 +427,19 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
     const f = fingers.get(e.pointerId);
     if (!f) return;
     e.preventDefault();
+    const now = performance.now();
+    const dt = Math.max(1, now - f.t);
+    const px = f.x;
+    const py = f.y;
     f.x = e.clientX;
     f.y = e.clientY;
+    f.t = now;
     if (Math.hypot(f.x - f.x0, f.y - f.y0) > GESTURE_SLOP_PX) touchMoved = true;
-    if (fingers.size === 1 && touchMoved && !longFired && maxFingers === 1 && trackpad()) {
+    const g = gestures();
+    if (fingers.size === 1 && touchMoved && (!longFired || dragging) && maxFingers === 1 && trackpad()) {
       cancelLong();
-      const px = (f as Finger & { px?: number; py?: number }).px ?? f.x0;
-      const py = (f as Finger & { px?: number; py?: number }).py ?? f.y0;
       if (padDragArmed && !dragging) {
+        cancelPendingTap();
         // Tap, then touch again and move: the second touch holds the
         // button down where the pointer is (the tap already clicked).
         const q = padPosition();
@@ -392,10 +448,10 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
         sendButton(1, true);
         dragging = true;
       }
-      padMoveBy(f.x - px, f.y - py);
-      (f as Finger & { px?: number; py?: number }).px = f.x;
-      (f as Finger & { px?: number; py?: number }).py = f.y;
-    } else if (fingers.size === 1 && touchMoved && !longFired && maxFingers === 1) {
+      // Faster fingers move the pointer farther per pixel (acceleration).
+      const k = g.sensitivity * gain(Math.hypot(f.x - px, f.y - py) / dt, g.acceleration, g.speed);
+      padMoveBy((f.x - px) * k, (f.y - py) * k);
+    } else if (fingers.size === 1 && touchMoved && (!longFired || dragging) && maxFingers === 1) {
       cancelLong();
       if (!dragging) {
         // The drag starts where the finger first touched.
@@ -416,8 +472,8 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
       if (view.pans()) {
         view.panBy(dx, dy);
       } else {
-        scrollAcc.x += dx;
-        scrollAcc.y += dy;
+        scrollAcc.x += dx * g.sensitivity;
+        scrollAcc.y += dy * g.sensitivity * (g.invertScroll ? -1 : 1);
         const nx = Math.trunc(scrollAcc.x / TOUCH_SCROLL_PX);
         const ny = Math.trunc(scrollAcc.y / TOUCH_SCROLL_PX);
         if (nx || ny) {
@@ -449,22 +505,36 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
       return;
     }
     if (touchMoved || longFired || performance.now() - touchStarted > TAP_MS) return;
+    const g = gestures();
     if (maxFingers === 1) {
+      const now = performance.now();
+      const second = lastTap !== null && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(f.x0 - lastTap.x, f.y0 - lastTap.y) < DOUBLE_TAP_PX;
+      if (g.doubleTap !== "none") {
+        // Double tap set: the first tap waits to see whether a second follows.
+        if (pendingTap !== null && second) {
+          cancelPendingTap();
+          const at = lastTap!;
+          lastTap = null;
+          perform(g.doubleTap, at.x, at.y);
+          return;
+        }
+        const p = trackpad() ? (lastTap = { t: now, x: f.x0, y: f.y0 }) : tapPoint(f);
+        pendingTap = window.setTimeout(() => {
+          pendingTap = null;
+          perform("left", p.x, p.y);
+        }, DOUBLE_TAP_MS);
+        return;
+      }
+      // Quick tap: the click goes at once.
       if (trackpad()) {
-        lastTap = { t: performance.now(), x: f.x0, y: f.y0 };
+        lastTap = { t: now, x: f.x0, y: f.y0 };
         padClick(1);
       } else {
         const p = tapPoint(f);
         click(1, p.x, p.y);
       }
-    } else if (maxFingers === 2) {
-      if (trackpad()) padClick(3);
-      else click(3, f.x0, f.y0);
-    } else if (maxFingers === 3) {
-      if (trackpad()) padClick(2);
-      else click(2, f.x0, f.y0);
     } else {
-      target.toggleKeyboard?.();
+      perform(maxFingers === 2 ? g.twoTap : maxFingers === 3 ? g.threeTap : g.fourTap, f.x0, f.y0);
     }
   };
 
@@ -520,7 +590,7 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
     const k = e.deltaMode === 1 ? WHEEL_LINE : e.deltaMode === 2 ? WHEEL_PAGE : WHEEL_PIXEL;
     const clamp = (v: number) => Math.max(-WHEEL_MAX, Math.min(WHEEL_MAX, Math.round(v)));
     const dx = clamp(-e.deltaX * k);
-    const dy = clamp(-e.deltaY * k);
+    const dy = clamp(-e.deltaY * k * (gestures().invertScroll ? -1 : 1));
     if (dx === 0 && dy === 0) return;
     target.sendInput({ t: "Wheel", dx, dy });
   };
