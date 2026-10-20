@@ -78,6 +78,35 @@ Opening it again focuses the tab already there.
 Scope, the ticked projects, the grouping and the card order are remembered per browser,
 not synced: they are how you like to look at the board, not settings.
 
+## The Agents Grid
+
+The board shows what every agent is doing; the grid shows their terminals. **Agents
+Grid** is one tab, outside the project chips, that tiles the live terminal of every agent
+the board would show, so you can watch and answer them without switching tabs. Three ways
+in:
+
+- **Grid** in the board's toolbar, beside **Board**.
+- **Agent Grid: Open** in the command palette.
+- Right-click the robot icon in the status bar.
+
+How it behaves:
+
+- **Same agents as the board.** The grid follows the board's scope: *All projects*,
+  *Selected*, or *This project*, which pins the project the board (or the active tab) was
+  showing when you opened the grid, so focusing a cell never re-scopes it. Change the scope
+  on the board and the grid follows.
+- **Live.** An agent you start joins within a few seconds; one that exits leaves, even if
+  its shell stays open. Close or pop out a cell and that agent stays out until it exits and
+  starts again.
+- **Marks in every header.** Each cell's header carries the agent's logo, its
+  `project · window` title and the same spinner, `?` or dot as its PROJECTS row.
+- **Yours to arrange.** Resize, swap, zoom and split it like any grid, and move other
+  terminals in (a dev server next to its agent): the grid never removes a cell you added.
+- With no agent in scope the tab stays open and says so.
+
+It needs a Perch with managed grids (`ctx.registerManagedGrid`); on an older one the
+board has no Grid switch and the command is absent.
+
 ## The AGENTS panel view
 
 On a Perch that has bottom-panel views, the extension adds an **AGENTS** tab

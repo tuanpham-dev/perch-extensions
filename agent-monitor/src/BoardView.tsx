@@ -116,6 +116,9 @@ export default function BoardView({ active, showMenu }: FileViewerHostProps) {
     setState((prev) => {
       const next = { ...prev, ...patch };
       saveBoardState(next);
+      // The Agents grid follows the board's scope: show it the new one now
+      // rather than on the next poll.
+      queueMicrotask(() => host.grid?.refresh());
       return next;
     });
   }, []);
@@ -524,6 +527,22 @@ export default function BoardView({ active, showMenu }: FileViewerHostProps) {
   return (
     <div className="agent-board" ref={boardRef}>
       <div className="agent-board-toolbar">
+        {host.grid && (
+          <div className="agent-board-seg" role="group" aria-label="View">
+            <button type="button" className="agent-board-seg-button" aria-pressed={true}>
+              Board
+            </button>
+            <button
+              type="button"
+              className="agent-board-seg-button"
+              aria-pressed={false}
+              title="Open these agents' terminals side by side in the Agents Grid tab"
+              onClick={() => host.grid?.open(currentRepo)}
+            >
+              Grid
+            </button>
+          </div>
+        )}
         <div className="agent-board-seg" role="group" aria-label="Scope">
           {scopeButton("current", "This Project")}
           {scopeButton("all", "All Projects")}

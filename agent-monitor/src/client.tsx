@@ -16,7 +16,7 @@ import { injectStylesheet } from "./injectStylesheet";
 import BoardView from "./BoardView";
 import AgentsPanelView from "./AgentsPanelView";
 import Icon from "./Icon";
-import { attentionSummary, labelOf, markOf } from "./boardModel";
+import { attentionSummary, gridWindowsFor, labelOf, loadBoardState, markOf, type BoardAgent, type GridWindow } from "./boardModel";
 import { host, type AppApi, type SettingsApi } from "./host";
 
 // ---- Module-level host bridge ----
@@ -116,6 +116,13 @@ interface ExtensionContext {
   // a project's chip.
   registerFileViewer(viewer: { id: string; extensions: string[]; global?: boolean; component: ComponentType<any> }): void;
   registerCommand(command: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
+  // Optional: an older host has no managed grids, and then no Agents grid.
+  registerManagedGrid?(grid: {
+    id: string;
+    title: string;
+    icon?: string;
+    emptyText?: string;
+  }): { open(): void; setWindows(windows: GridWindow[]): void };
   // Optional: an older host has no bottom-panel views.
   registerPanelView?(view: {
     id: string;
@@ -170,7 +177,11 @@ function useAgentRows(): AgentRow[] {
   return rows;
 }
 
-function AgentBoardStatusItem() {
+function AgentBoardStatusItem({
+  context,
+}: {
+  context?: { showMenu(x: number, y: number, items: { label: string; icon?: string; onClick: () => void }[]): void };
+}) {
   const rows = useAgentRows();
   const summary = attentionSummary(rows);
   const waiting = rows.some((r) => r.state === "waiting");
@@ -180,6 +191,18 @@ function AgentBoardStatusItem() {
       title={summary ? `Open the Agents board - ${summary}` : "Open the Agents board"}
       aria-label="Open the Agents board"
       onClick={openBoard}
+      onContextMenu={(e) => {
+        const grid = host.grid;
+        if (!grid || !context) return;
+        // The bar's own right-click menu (which items to show) would
+        // replace this one.
+        e.preventDefault();
+        e.stopPropagation();
+        context.showMenu(e.clientX, e.clientY, [
+          { label: "Open Agent Board", icon: "robot", onClick: openBoard },
+          { label: "Open Agent Grid", icon: "layout", onClick: () => grid.open(null) },
+        ]);
+      }}
     >
       {/* Amber while an agent is blocked on you, the same signal and the
           same hue as the "?" mark on its PROJECTS row - the one state that
@@ -189,8 +212,67 @@ function AgentBoardStatusItem() {
   );
 }
 
-const POLL_MS = 10_000;
+// 5s: the Agents grid adds a started agent and drops an exited one on this
+// beat, and core caches the process scan behind it.
+const POLL_MS = 5_000;
 let pollTimer: number | null = null;
+
+// ---- Agents grid ----
+//
+// A grid tab of every agent's live terminal, through core's managed-grid API
+// (core adds, removes and hides cells; this only says which windows). The
+// board's scope decides which, read from the board's own saved state on
+// every poll, so the board and the grid show the same agents. "This Project"
+// pins the project the grid was opened for: following the active tab would
+// re-scope the grid each time a cell takes focus.
+const GRID_REPO_KEY = "agent-monitor.grid.currentRepo";
+let gridHandle: { open(): void; setWindows(windows: GridWindow[]): void } | null = null;
+let gridCurrentRepo: string | null = readGridRepo();
+
+function readGridRepo(): string | null {
+  try {
+    return window.localStorage.getItem(GRID_REPO_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeGridRepo(repo: string | null): void {
+  gridCurrentRepo = repo;
+  try {
+    if (repo === null) window.localStorage.removeItem(GRID_REPO_KEY);
+    else window.localStorage.setItem(GRID_REPO_KEY, repo);
+  } catch {
+    // Storage blocked: the pin lasts for this page only.
+  }
+}
+
+function syncGrid(): void {
+  if (!gridHandle) return;
+  const state = loadBoardState(host.settings?.get("agentMonitor.board.defaultScope"));
+  const rows = [...agentsByWindowKey.values()] as unknown as BoardAgent[];
+  gridHandle.setWindows(gridWindowsFor(rows, { mode: state.scope, selected: state.selected, currentRepo: gridCurrentRepo }));
+}
+
+async function activeRepo(): Promise<string | null> {
+  const cwd = host.app?.getActiveContext().cwd;
+  if (!cwd || !serverFetch) return null;
+  try {
+    const res = await serverFetch(`/project?cwd=${encodeURIComponent(cwd)}`);
+    if (!res.ok) return null;
+    const info = (await res.json()) as { repo?: string } | null;
+    return info?.repo || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openGrid(currentRepo: string | null): Promise<void> {
+  if (!gridHandle) return;
+  writeGridRepo(currentRepo ?? (await activeRepo()) ?? gridCurrentRepo);
+  syncGrid();
+  gridHandle.open();
+}
 
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
@@ -210,6 +292,18 @@ export function activate(ctx: ExtensionContext): void {
     defaultBinding: "ctrl+shift+alt+KeyA",
     run: openBoard,
   });
+  gridHandle =
+    ctx.registerManagedGrid?.({
+      id: "agents",
+      title: "Agents Grid",
+      icon: "robot",
+      emptyText: "No agents in this scope. Start Claude Code or Codex in a terminal, or widen the scope on the Agents board.",
+    }) ?? null;
+  if (gridHandle) {
+    host.grid = { open: (repo) => void openGrid(repo), refresh: syncGrid };
+    ctx.registerCommand({ id: "openGrid", label: "Agent Grid: Open", run: () => void openGrid(null) });
+  }
+
   // Left group, after Git Graph (1) and Jira (2): the launchers sit together,
   // and core's own readouts keep the right end.
   ctx.registerStatusBarItem?.({
@@ -243,6 +337,7 @@ export function activate(ctx: ExtensionContext): void {
         agentsByWindowKey = new Map(rows.map((r) => [rowKey(r), r]));
         refreshDecorations?.();
         for (const listener of agentListeners) listener();
+        syncGrid();
       })
       .catch(() => {
         // Transient — next poll retries.
@@ -258,6 +353,8 @@ export function deactivate(): void {
   host.serverFetch = null;
   host.app = null;
   host.settings = null;
+  host.grid = null;
+  gridHandle = null;
   refreshDecorations = null;
   agentsByWindowKey = new Map();
   if (pollTimer !== null) {

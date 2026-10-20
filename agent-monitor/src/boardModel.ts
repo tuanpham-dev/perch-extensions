@@ -375,3 +375,37 @@ export function saveBoardState(state: BoardState): void {
 export function looksHookless(rows: readonly BoardAgent[]): boolean {
   return rows.length > 0 && rows.every((row) => !row.prompt && !row.toolName && !row.stateDetail);
 }
+
+// ---- Agents grid ----
+//
+// Which agent windows core's managed grid (ctx.registerManagedGrid, see the
+// README) should hold: the board's own scope decides, so the board and the
+// grid always show the same agents. Core does the rest - appending new
+// windows, removing ones that left, keeping a window the user closed out.
+
+export interface GridWindow {
+  windowId: string;
+  sessionName: string;
+  windowIndex: number;
+  icon?: string;
+  iconUrl?: string;
+}
+
+// In-scope agents ordered by project, then session, then window index: the
+// order core appends new cells in (cells already shown keep their place). A
+// row without a window id cannot be a cell.
+export function gridWindowsFor(rows: readonly BoardAgent[], scope: Scope): GridWindow[] {
+  return rows
+    .filter((row) => row.paneId !== "" && inScope(row, scope))
+    .sort(
+      (a, b) =>
+        a.project.localeCompare(b.project) || a.sessionName.localeCompare(b.sessionName) || a.windowIndex - b.windowIndex,
+    )
+    .map((row) => ({
+      windowId: row.paneId,
+      sessionName: row.sessionName,
+      windowIndex: row.windowIndex,
+      ...(row.icon ? { icon: row.icon } : {}),
+      ...(row.iconUrl ? { iconUrl: row.iconUrl } : {}),
+    }));
+}

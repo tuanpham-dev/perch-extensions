@@ -7,6 +7,7 @@ import {
   columnIdOf,
   columnsFor,
   defaultBoardState,
+  gridWindowsFor,
   inScope,
   labelOf,
   looksHookless,
@@ -284,5 +285,30 @@ describe("attentionSummary", () => {
   it("says nothing about done and idle, which the board is for", () => {
     assert.equal(attentionSummary(rows("done", "idle", "done")), "");
     assert.equal(attentionSummary([]), "");
+  });
+});
+
+describe("gridWindowsFor", () => {
+  const rows = [
+    agent("w3", { project: "zeta", repo: "/works/zeta", sessionName: "zeta", windowIndex: 0, iconUrl: "/z.svg" }),
+    agent("w2", { project: "perch", sessionName: "perch", windowIndex: 2 }),
+    agent("w1", { project: "perch", sessionName: "perch", windowIndex: 1 }),
+    agent("", { project: "perch", sessionName: "perch", windowIndex: 5 }),
+  ];
+
+  it("follows the board's scope", () => {
+    const all = gridWindowsFor(rows, { mode: "all", selected: [], currentRepo: null });
+    assert.deepEqual(all.map((w) => w.windowId), ["w1", "w2", "w3"]);
+    const current = gridWindowsFor(rows, { mode: "current", selected: [], currentRepo: "/works/zeta" });
+    assert.deepEqual(current.map((w) => w.windowId), ["w3"]);
+    const selected = gridWindowsFor(rows, { mode: "selected", selected: ["/works/perch"], currentRepo: null });
+    assert.deepEqual(selected.map((w) => w.windowId), ["w1", "w2"]);
+    assert.deepEqual(gridWindowsFor(rows, { mode: "current", selected: [], currentRepo: null }), []);
+  });
+
+  it("carries the window's place and the agent's mark", () => {
+    const [first, , last] = gridWindowsFor(rows, { mode: "all", selected: [], currentRepo: null });
+    assert.deepEqual(first, { windowId: "w1", sessionName: "perch", windowIndex: 1, icon: "sparkle" });
+    assert.equal(last.iconUrl, "/z.svg");
   });
 });

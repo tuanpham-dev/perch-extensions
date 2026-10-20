@@ -31,11 +31,21 @@ export interface AppApi {
   onDidChangeContext(cb: (next: ActiveContext) => void): () => void;
 }
 
+// The Agents grid (client.tsx): open() shows it, scoped like the board - for
+// "This Project", to `currentRepo`, the project the board was showing (null
+// resolves the active tab's). refresh() re-reads the board's scope after the
+// board changes it. Null on a host without managed grids.
+export interface GridApi {
+  open(currentRepo: string | null): void;
+  refresh(): void;
+}
+
 export const host: {
   serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | null;
   app: AppApi | null;
   settings: SettingsApi | null;
-} = { serverFetch: null, app: null, settings: null };
+  grid: GridApi | null;
+} = { serverFetch: null, app: null, settings: null, grid: null };
 
 // One row of core's GET /api/agent-hooks: which agents exist and whether
 // their hooks are installed - what the AGENTS view's notice is built from.
