@@ -107,3 +107,70 @@ export function resetStatsStore(): void {
   serverFetch = null;
   current = null;
 }
+
+// ---- Per-terminal figures ----
+//
+// A separate feed, polled only while the popover's Terminals table is mounted:
+// it walks every process on the host, so nothing should pay for it while the
+// popover is closed.
+
+export interface TerminalRow {
+  sessionName: string;
+  project: string;
+  windowIndex: number;
+  windowName: string;
+  // null on the first reading, before there's a second sample to rate against.
+  cpuPercent: number | null;
+  rssBytes: number;
+}
+
+export interface TerminalStats {
+  supported: boolean;
+  rows: TerminalRow[];
+}
+
+let terminals: TerminalStats | null = null;
+const terminalListeners = new Set<() => void>();
+let terminalTimer: ReturnType<typeof setInterval> | null = null;
+
+function loadTerminals(): void {
+  const fetchStats = serverFetch;
+  if (!fetchStats || document.hidden) return;
+  fetchStats("/terminals")
+    .then((res) => {
+      if (!res.ok) throw new Error(`terminals ${res.status}`);
+      return res.json() as Promise<TerminalStats>;
+    })
+    .then((next) => {
+      if (serverFetch !== fetchStats) return;
+      terminals = next;
+      for (const listener of terminalListeners) listener();
+    })
+    .catch(() => {});
+}
+
+function subscribeTerminals(onChange: () => void): () => void {
+  terminalListeners.add(onChange);
+  if (terminalListeners.size === 1) {
+    loadTerminals();
+    terminalTimer = setInterval(loadTerminals, POLL_INTERVAL_MS);
+  }
+  return () => {
+    terminalListeners.delete(onChange);
+    if (terminalListeners.size === 0 && terminalTimer !== null) {
+      clearInterval(terminalTimer);
+      terminalTimer = null;
+    }
+  };
+}
+
+export function useTerminalStats(): TerminalStats | null {
+  return useSyncExternalStore(subscribeTerminals, () => terminals);
+}
+
+export function resetTerminalStats(): void {
+  if (terminalTimer !== null) clearInterval(terminalTimer);
+  terminalTimer = null;
+  terminals = null;
+  terminalListeners.clear();
+}

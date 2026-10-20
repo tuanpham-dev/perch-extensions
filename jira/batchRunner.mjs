@@ -158,16 +158,19 @@ export function createBatchRunner({
   issueDetail,
   createWorktree,
   progressIssue,
-  configDir,
+  // This extension's private files folder and its short runtime folder
+  // (host storage's filesDir() and runtimeDir()).
+  filesDir,
+  runtimeDir,
   // Verbs another flow serves on the same control socket (the ticket review
   // runner's). One socket, one listener: a second would need a second path in
   // every agent's environment for nothing.
   extraVerbs = () => ({}),
   log = console.log,
 }) {
-  const binDir = path.join(configDir, "bin");
+  const binDir = path.join(runtimeDir, "bin");
   const cliPath = path.join(binDir, "jira-batch");
-  const socketPath = path.join(configDir, "jira", "batch.sock");
+  const socketPath = path.join(runtimeDir, "batch.sock");
 
   // ---- Host capabilities ----
   //
@@ -829,7 +832,7 @@ export function createBatchRunner({
   // where the agent left them: a worktree removed after review must not empty
   // the panel, and `.backups/` is the user's to tidy.
 
-  const evidenceDir = path.join(configDir, "jira", "evidence");
+  const evidenceDir = path.join(filesDir, "evidence");
   // Extra shots beyond before/after. High enough that no honest report hits
   // it - a viewport each for phone, tablet and desktop, plus a few states -
   // and low enough that one ticket cannot fill the store or turn an inlined

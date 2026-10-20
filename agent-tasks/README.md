@@ -74,7 +74,7 @@ Start worker asks for an agent and where to work:
 The server creates the session and types one line into it:
 
 ```sh
-export TS_AGENT_SOCK=... TS_RUN_ID=... TS_TASK_ID=... TS_DISPATCH_ID=...; export PATH='<config>/perch/bin':"$PATH"; <agent launch command> '<one-line brief>'
+export TS_AGENT_SOCK=... TS_RUN_ID=... TS_TASK_ID=... TS_DISPATCH_ID=...; export PATH='<runtime>/bin':"$PATH"; <agent launch command> '<one-line brief>'
 ```
 
 The launch command is the agent's own, with the global Yolo/Manual choice from
@@ -96,7 +96,7 @@ The brief tells the agent three rules:
 
 ## The `agent-task` CLI
 
-Installed to `<config>/perch/bin/agent-task` whenever the extension activates, and put on
+Installed to `<runtime>/bin/agent-task` (see [Files](#files)) whenever the extension activates, and put on
 the worker's PATH by the launch line. It is a POSIX `sh` script around `curl --unix-socket`.
 
 | Verb | Flags | What it does |
@@ -116,7 +116,7 @@ the worker's PATH by the launch line. It is a POSIX `sh` script around `curl --u
 
 Any flag value can be `-` to read it from stdin. The ids come from `TS_RUN_ID`, `TS_TASK_ID` and
 `TS_DISPATCH_ID` unless a flag gives them. Outside a worker pane, set
-`TS_AGENT_SOCK=~/.config/perch/agent-tasks/control.sock`.
+`TS_AGENT_SOCK` to `<runtime>/control.sock` (by default `~/.local/state/perch/x/perch.agent-tasks/control.sock`).
 
 ## Settings
 
@@ -128,16 +128,23 @@ Any flag value can be `-` to read it from stdin. The ids come from `TS_RUN_ID`, 
 
 ## Files
 
-All under `~/.config/perch/` (or `$XDG_CONFIG_HOME/perch/`):
+Runs, tasks, dispatches, gates and messages (the newest 500 messages per run), and the archived
+runs, are kept in Perch's extension storage: a private database under Perch's config folder
+(`~/.config/perch/extension-data/perch.agent-tasks` by default, or under `PERCH_CONFIG_DIR`).
+Uninstalling Agent Tasks keeps them; **Settings → Extensions → Stored data** deletes them.
+
+The control socket and the CLI live in the extension's runtime folder, `<runtime>`, under
+Perch's state folder: `~/.local/state/perch/x/perch.agent-tasks` by default, or under
+`PERCH_STATE_DIR`. Each Perch profile has its own, and the folder is `0700`.
 
 | Path | |
 | --- | --- |
-| `agent-tasks/store.json` | Runs, tasks, dispatches, gates and messages (the newest 500 messages per run). |
-| `agent-tasks/archive.json` | Archived runs. |
-| `agent-tasks/control.sock` | The control socket. |
-| `bin/agent-task` | The CLI. |
+| `<runtime>/control.sock` | The control socket. |
+| `<runtime>/bin/agent-task` | The CLI. |
 
-The directory is `0700` and every file in it `0600`; writes are temp-then-rename.
+Needs Perch 0.9 or newer. Version 1.1 starts empty: runs saved by earlier versions (in
+`agent-tasks/store.json` and `archive.json` under Perch's config folder) aren't carried over, and
+those files are left as they were.
 
 ## Security
 

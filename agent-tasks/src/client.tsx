@@ -34,13 +34,23 @@ interface SidebarPanelHostProps {
 }
 
 const PANEL_ID = "board";
-const POLL_MS = 3_000;
-const BADGE_POLL_MS = 15_000;
 
 let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | null = null;
 let app: AppApi | null = null;
 let removeStylesheet: (() => void) | null = null;
-let badgeTimer: ReturnType<typeof setInterval> | null = null;
+// The server announces every save on topic "changed" (storage.notify, Perch
+// 0.9+); a "resync" after the change stream reconnects means saves may have
+// been missed. Either way the panel and the badge refetch.
+type StorageNotice = { type: "topic" | "resync" };
+interface StorageApi {
+  subscribeTopic(topic: string, cb: (n: StorageNotice) => void): () => void;
+}
+const changeListeners = new Set<() => void>();
+let offChanges: (() => void) | null = null;
+function onStoreChange(cb: () => void): () => void {
+  changeListeners.add(cb);
+  return () => changeListeners.delete(cb);
+}
 
 // ---- Types (mirror server.js's /state) ----
 
@@ -808,16 +818,31 @@ function AgentTasksPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProps
       .catch((err: Error) => setError(err.message));
   }, []);
 
-  // Poll only while the panel is actually on screen: a hidden tab stays
-  // mounted, and the badge has its own slower poll (see activate).
+  // Refetch on every save, but only while the panel is on screen: a hidden
+  // tab stays mounted, so it notes that it's behind and catches up when it
+  // shows again (it gets a size back, or the page becomes visible).
   useEffect(() => {
-    refresh();
-    const timer = setInterval(() => {
+    let stale = false;
+    const maybeRefresh = () => {
       const el = rootRef.current;
-      if (document.visibilityState !== "visible" || !el || el.offsetParent === null) return;
+      if (document.visibilityState !== "visible" || !el || el.offsetParent === null) {
+        stale = true;
+        return;
+      }
+      stale = false;
       refresh();
-    }, POLL_MS);
-    return () => clearInterval(timer);
+    };
+    const catchUp = () => stale && maybeRefresh();
+    refresh();
+    const off = onStoreChange(maybeRefresh);
+    const ro = new ResizeObserver(catchUp);
+    if (rootRef.current) ro.observe(rootRef.current);
+    document.addEventListener("visibilitychange", catchUp);
+    return () => {
+      off();
+      ro.disconnect();
+      document.removeEventListener("visibilitychange", catchUp);
+    };
   }, [refresh]);
 
   const tasksById = useMemo(() => new Map((state?.tasks ?? []).map((t) => [t.id, t])), [state]);
@@ -1052,9 +1077,18 @@ interface ExtensionContext {
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   app: AppApi;
+  storage?: StorageApi;
+}
+
+function NeedsNewerPerch() {
+  return <div className="at-empty">Agent Tasks needs Perch 0.9 or newer. Update Perch to use it.</div>;
 }
 
 export function activate(ctx: ExtensionContext): void {
+  if (!ctx.storage) {
+    ctx.registerSidebarPanel({ id: PANEL_ID, title: "Agent Tasks", location: "tab", icon: "checklist", component: NeedsNewerPerch as typeof AgentTasksPanel });
+    return;
+  }
   serverFetch = ctx.serverFetch;
   app = ctx.app;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
@@ -1068,18 +1102,22 @@ export function activate(ctx: ExtensionContext): void {
   });
 
   // The badge must stay right while the tab is closed, which is when it
-  // matters most.
-  const pollBadge = () =>
+  // matters most: it refetches on every save too.
+  const refreshBadge = () =>
     apiGet<{ unacked: number }>("/unacked")
       .then((r) => setBadge(r.unacked))
       .catch(() => {});
-  void pollBadge();
-  badgeTimer = setInterval(pollBadge, BADGE_POLL_MS);
+  void refreshBadge();
+  changeListeners.add(refreshBadge);
+  offChanges = ctx.storage.subscribeTopic("changed", () => {
+    for (const cb of [...changeListeners]) cb();
+  });
 }
 
 export function deactivate(): void {
-  if (badgeTimer) clearInterval(badgeTimer);
-  badgeTimer = null;
+  offChanges?.();
+  offChanges = null;
+  changeListeners.clear();
   removeStylesheet?.();
   removeStylesheet = null;
   serverFetch = null;

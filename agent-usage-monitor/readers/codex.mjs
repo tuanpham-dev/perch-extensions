@@ -71,7 +71,10 @@ async function listRollouts() {
   return out;
 }
 
-// One rollout's usage entries (deltas), its newest limits, model and cwd.
+// One rollout's usage entries (deltas), its newest limits, model and cwd, and
+// how full the context was on the latest turn: that turn's input (cached
+// tokens included, as OpenAI counts them) and the model's context window, both
+// from the newest token_count event that carries them.
 // Exported for the tests: the pure half, given the file's text.
 export function parseRollout(text) {
   const entries = [];
@@ -80,6 +83,8 @@ export function parseRollout(text) {
   let model = null;
   let cwd = null;
   let lastAt = null;
+  let contextTokens = null;
+  let contextWindow = null;
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
@@ -97,6 +102,11 @@ export function parseRollout(text) {
     if (payload.rate_limits) limits = payload.rate_limits;
     const info = payload.info;
     if (!info || typeof info !== "object") continue;
+    const last = info.last_token_usage;
+    if (last && typeof last === "object" && typeof last.input_tokens === "number") contextTokens = last.input_tokens;
+    if (typeof info.model_context_window === "number" && info.model_context_window > 0) {
+      contextWindow = info.model_context_window;
+    }
     const total = info.total_token_usage;
     if (!total || typeof total !== "object") continue;
     const timestamp = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : NaN;
@@ -122,7 +132,13 @@ export function parseRollout(text) {
       cacheCreation: share(delta, cumulative, cacheCreation),
     });
   }
-  return { entries, limits, model, cwd, lastAt };
+  return { entries, limits, model, cwd, lastAt, contextTokens, contextWindow };
+}
+
+// What modelFor reports for one parsed rollout, or null with no model.
+function modelInfo(parsed) {
+  if (!parsed.model) return null;
+  return { model: parsed.model, contextTokens: parsed.contextTokens, contextWindow: parsed.contextWindow };
 }
 
 function numberOr(value, fallback) {
@@ -233,7 +249,8 @@ async function rolloutOfProcess(pid) {
   return null;
 }
 
-// The model this window's codex session is using: from the rollout its own
+// The model this window's codex session is using, with its latest context
+// use ({ model, contextTokens, contextWindow }): from the rollout its own
 // process has open, or failing that the most recent rollout in the same
 // folder. Two live sessions in one folder written within AMBIGUOUS_WINDOW_MS
 // can't be told apart that way, and null is better than naming the wrong
@@ -242,7 +259,7 @@ export async function modelFor({ pid, cwd, now = Date.now() }) {
   const open = await rolloutOfProcess(pid);
   if (open) {
     try {
-      return parseRollout(await readFile(open, "utf8")).model ?? null;
+      return modelInfo(parseRollout(await readFile(open, "utf8")));
     } catch {
       return null;
     }
@@ -268,7 +285,7 @@ export async function modelFor({ pid, cwd, now = Date.now() }) {
   if (matches.length > 1 && Math.abs(matches[0].mtime - matches[1].mtime) < AMBIGUOUS_WINDOW_MS) {
     return null;
   }
-  return matches[0].model ?? null;
+  return modelInfo(matches[0]);
 }
 
 // The app hands out ~-shortened paths; the rollouts carry absolute ones.

@@ -129,3 +129,74 @@
   fill-opacity: 0.16;
   stroke: none;
 }
+
+/* The Terminals table: one button row per terminal window, name on the left,
+   CPU and memory in fixed right-aligned columns. */
+.sysstats-terminals {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sysstats-terminals-head,
+.sysstats-terminals-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5em 5.5em;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.sysstats-terminals-head {
+  font-weight: 600;
+  padding: 0 4px 2px;
+}
+
+.sysstats-terminals-head .sysstats-terminals-num {
+  font-weight: normal;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.sysstats-terminals-row {
+  padding: 3px 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sysstats-terminals-row:hover,
+.sysstats-terminals-row:focus-visible {
+  background: var(--list-hover-bg);
+}
+
+.sysstats-terminals-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysstats-terminals-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysstats-terminals-more {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--fg-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sysstats-terminals-note {
+  color: var(--fg-inactive);
+  font-size: 12px;
+}

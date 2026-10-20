@@ -3,7 +3,8 @@
 // beyond a short cache.
 //
 //   GET /usage                      every agent that has readable usage
-//   GET /model?session=&window=       the agent and model in one terminal
+//   GET /model?session=&window=       the agent and model in one terminal,
+//                                     with how full its context is
 //
 // A reader whose agent isn't installed drops out at available(), so a
 // machine with only one agent does only that agent's work. Which window runs
@@ -12,6 +13,7 @@
 // case right and the bundled-daemon case wrong.
 import * as claude from "./readers/claude.mjs";
 import * as codex from "./readers/codex.mjs";
+import { parseOverrides, windowFor } from "./contextWindow.mjs";
 
 const READERS = [claude, codex];
 
@@ -41,8 +43,10 @@ async function availableReaders() {
   return readers;
 }
 
-function blockMsFrom(getSettings) {
-  const hours = Number(getSettings?.()?.["agentUsage.blockHours"]);
+// getSettings() resolves to this extension's settings (a promise: reading it
+// synchronously always fell back to the default).
+async function blockMsFrom(getSettings) {
+  const hours = Number((await getSettings?.())?.["agentUsage.blockHours"]);
   const safe = Number.isFinite(hours) && hours >= 1 && hours <= 24 ? hours : DEFAULT_BLOCK_HOURS;
   return safe * 60 * 60 * 1000;
 }
@@ -90,7 +94,7 @@ export function activate({ router, getSettings, log, host }) {
   router.get("/usage", async (req, res) => {
     try {
       const now = Date.now();
-      const blockMs = blockMsFrom(getSettings);
+      const blockMs = await blockMsFrom(getSettings);
       if (usageCache && usageCache.blockMs === blockMs && now - usageCache.at < USAGE_CACHE_TTL_MS) {
         res.json(usageCache.payload);
         return;
@@ -141,13 +145,30 @@ export function activate({ router, getSettings, log, host }) {
         res.json({});
         return;
       }
-      let model = null;
+      let info = null;
       try {
-        model = await reader.modelFor({ pid: window.agentPid, cwd: window.cwd });
+        info = await reader.modelFor({ pid: window.agentPid, cwd: window.cwd });
       } catch (err) {
         log(`${reader.id} model lookup failed:`, err.message);
       }
-      res.json(model ? { agentId: reader.id, label: reader.label, model } : {});
+      if (!info) {
+        res.json({});
+        return;
+      }
+      // Context fill: the turn's tokens over the window. A reader that knows
+      // the window (Codex records it) wins; otherwise contextWindow.mjs.
+      const contextTokens = typeof info.contextTokens === "number" ? info.contextTokens : null;
+      let contextWindow = typeof info.contextWindow === "number" ? info.contextWindow : null;
+      if (contextTokens !== null && contextWindow === null && reader.id === "claude") {
+        // getSettings() resolves to this extension's settings.
+        contextWindow = windowFor(info.model, parseOverrides((await getSettings?.())?.["agentUsage.contextWindows"]), contextTokens);
+      }
+      res.json({
+        agentId: reader.id,
+        label: reader.label,
+        model: info.model,
+        ...(contextTokens !== null && contextWindow !== null ? { contextTokens, contextWindow } : {}),
+      });
     } catch {
       // A window that closed between render and request is ordinary.
       res.json({});

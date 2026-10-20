@@ -1,0 +1,29 @@
+{
+  "name": "http-client",
+  "private": true,
+  "type": "module",
+  "publisher": "perch",
+  "version": "1.1.0",
+  "displayName": "HTTP Client",
+  "description": "Send HTTP requests from .http files (the VS Code REST Client and JetBrains format, with {{variables}} and environments) and see status, timing, headers and a JSON tree of the response. Requests go out from the Perch server, so localhost is your dev server even from a phone. Copy as curl, paste a curl command, and Open in HTTP Client on any listening port.",
+  "icon": "./icon.svg",
+  "perch": {
+    "minPerch": "0.9.0",
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "HTTP Client",
+      "properties": {
+        "httpClient.timeoutSeconds": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 600,
+          "description": "How long (seconds) a request may take before it's stopped."
+        }
+      }
+    }
+  }
+}

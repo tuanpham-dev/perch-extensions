@@ -2,12 +2,10 @@
 // beside server.js, as in agent-monitor's src/hookStatus.test.ts. Dates are
 // built in local time because schedules are server-local by design.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { test } from "node:test";
 import { describeTrigger, dueAction, nextCron, nextRun, normalizeTrigger, parseCron } from "../schedule.mjs";
 import { createAutomationStore } from "../store.mjs";
+import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 
 const MINUTE = 60_000;
 const local = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0).getTime();
@@ -104,9 +102,10 @@ test("disabled, not yet due and event automations never fire from the scheduler"
 
 // ---- store ----
 
-test("store: concurrent updates both land, at 0600", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "automations-test-"));
-  const store = createAutomationStore(dir);
+test("store: concurrent updates both land, and each save is announced", async () => {
+  const { storage } = createMemoryStorage();
+  let saves = 0;
+  const store = createAutomationStore(storage, { onChange: () => saves++ });
   assert.deepEqual(await store.list(), [], "an empty store lists nothing");
   await Promise.all([
     store.update(async (d: { automations: Record<string, unknown> }) => {
@@ -117,7 +116,10 @@ test("store: concurrent updates both land, at 0600", async () => {
       d.automations.auto_2 = { id: "auto_2", createdAt: 2 };
     }),
   ]);
-  const onDisk = JSON.parse(await readFile(store.file, "utf8"));
-  assert.deepEqual(Object.keys(onDisk.automations).sort(), ["auto_1", "auto_2"]);
-  assert.equal((await stat(store.file)).mode & 0o777, 0o600);
+  const stored = (await storage.collection("state").get("main"))?.value as { automations: Record<string, unknown> };
+  assert.deepEqual(Object.keys(stored.automations).sort(), ["auto_1", "auto_2"]);
+  assert.equal(saves, 2);
+  await store.update(() => {});
+  assert.equal(saves, 2, "an update that changes nothing isn't saved or announced");
+  assert.deepEqual((await createAutomationStore(storage).list()).map((a: { id: string }) => a.id), ["auto_1", "auto_2"], "and survive a reload");
 });

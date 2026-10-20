@@ -92,6 +92,15 @@ interface ModelResponse {
   agentId?: string;
   label?: string;
   model?: string;
+  // Present when the agent reports how much context its latest turn sent.
+  contextTokens?: number;
+  contextWindow?: number;
+}
+
+// The context fill as a whole percentage, or null when it isn't known.
+function contextPercent(info: ModelResponse): number | null {
+  if (typeof info.contextTokens !== "number" || !info.contextWindow) return null;
+  return Math.round((info.contextTokens / info.contextWindow) * 100);
 }
 
 const USAGE_POLL_MS = 30_000;
@@ -471,17 +480,33 @@ function ModelItem({ context }: { context: StatusItemContext }) {
 
   if (!enabled || !info?.model) return null;
 
+  // The percentage stays on the compact bar a phone gets (no full-only):
+  // it's the part that changes. Amber from 80%, red from 95%.
+  const pct = contextPercent(info);
+  const level = pct === null ? "" : pct >= 95 ? " ctx-bad" : pct >= 80 ? " ctx-warn" : "";
+  const where = `${info.label ?? "Agent"} · ${info.model}${ctx.cwd ? `\n${ctx.cwd}` : ""}`;
+  const title =
+    pct === null
+      ? where
+      : `${info.contextTokens!.toLocaleString("en-US")} / ${info.contextWindow!.toLocaleString("en-US")} tokens (${pct}%)\n${where}`;
+
   return (
     <button
       className="status-bar-item usage-model-item"
       data-menu-trigger="true"
       aria-haspopup="dialog"
-      title={`${info.label ?? "Agent"} · ${info.model}${ctx.cwd ? `\n${ctx.cwd}` : ""}`}
+      title={title}
       onClick={(e) =>
         context.openPopover(e.currentTarget.getBoundingClientRect(), <UsageView agentId={info.agentId} />)
       }
     >
       {modelLabel(info.model)}
+      {pct !== null && (
+        <>
+          <span className="usage-status-sep">·</span>
+          <span className={`usage-model-context${level}`}>{pct}%</span>
+        </>
+      )}
     </button>
   );
 }

@@ -59,10 +59,13 @@ const SPEC_MAX = 20_000;
 const BODY_MAX = 20_000;
 
 const HOME = homedir();
-const configDir = path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"), "perch");
-const socketPath = path.join(configDir, "agent-tasks", "control.sock");
-const binDir = path.join(configDir, "bin");
-const cliPath = path.join(binDir, "agent-task");
+// The control socket and the worker CLI live in this extension's runtime
+// folder (storage.runtimeDir(), Perch 0.9+): short enough for a socket path,
+// and per Perch profile. Set by activate(); automations finds the socket
+// through host storage's runtimeDirOf("perch.agent-tasks").
+let socketPath = "";
+let binDir = "";
+let cliPath = "";
 const cliSource = path.join(import.meta.dirname, "cli", "agent-task");
 
 // ---- Errors and wrapping ----
@@ -173,9 +176,9 @@ async function isDirectory(p) {
 let store = null;
 let current = null;
 
-function getStore(getSettings) {
+function getStore(storage, getSettings) {
   if (!store) {
-    store = createStore(configDir, {
+    store = createStore(storage, {
       archiveAfterDays: async () => {
         const settings = await getSettings().catch(() => ({}));
         return settings["agentTasks.archiveAfterDays"];
@@ -208,11 +211,22 @@ export async function deactivate() {
   await teardown(instance);
 }
 
-export function activate({ router, log = console.log, getSettings, host }) {
-  const s = getStore(getSettings);
+export function activate({ router, log = console.log, getSettings, host, storage }) {
+  // A Perch older than 0.9 has no extension storage to keep runs in.
+  if (!storage) {
+    log("Agent Tasks needs Perch 0.9 or newer (no extension storage)");
+    return;
+  }
+  const runtime = storage.runtimeDir();
+  socketPath = path.join(runtime, "control.sock");
+  binDir = path.join(runtime, "bin");
+  cliPath = path.join(binDir, "agent-task");
+  const s = getStore(storage, getSettings);
   const instance = { stopped: false, sweepTimer: null, cleanups: new Set(), control: null, log };
   const previous = current;
   current = instance;
+  // Every save tells open browsers, which refetch instead of polling.
+  instance.cleanups.add(s.onChange(() => storage.notify("changed")));
 
   async function settings() {
     const raw = await getSettings().catch(() => ({}));
@@ -1194,7 +1208,7 @@ export function activate({ router, log = console.log, getSettings, host }) {
   })().catch((err) => log("activation failed:", err?.stack ?? err));
 }
 
-// The CLI a worker runs, copied to <config>/perch/bin/agent-task (the
+// The CLI a worker runs, copied to <runtime folder>/bin/agent-task (the
 // directory the launch line puts on PATH). Temp-then-rename, so a pane that
 // runs it mid-install gets the old copy or the new one, never half of one.
 async function installCli(log) {

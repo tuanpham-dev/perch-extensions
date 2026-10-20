@@ -1,0 +1,642 @@
+/* DATABASES section and the query tabs. */
+.db-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.db-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px 3px 10px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.db-row:hover,
+.db-row:focus-visible {
+  background: var(--list-hover-bg);
+}
+
+.db-group-row {
+  padding-left: 22px;
+}
+
+.db-table-row {
+  padding-left: 52px;
+}
+
+.db-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-engine-tag,
+.db-tag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 10.5px;
+  color: var(--fg-inactive);
+}
+
+.db-writable-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  color: var(--bg);
+  background: var(--warning, #e5c07b);
+}
+
+.db-indent {
+  padding: 3px 12px 3px 30px;
+}
+
+.db-indent2 {
+  padding: 3px 12px 3px 52px;
+}
+
+.db-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 10px 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+}
+
+.db-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--fg-inactive);
+  min-width: 0;
+}
+
+.db-field input,
+.db-field select,
+.db-input,
+.db-mongo-bar input,
+.db-mongo-bar select,
+.db-mongo-fields input {
+  padding: 4px 7px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.db-field-row {
+  display: flex;
+  gap: 8px;
+}
+
+.db-field-row .db-field {
+  flex: 1;
+}
+
+.db-field-row .db-port {
+  flex: 0 0 72px;
+}
+
+.db-switch,
+.db-view-toggle {
+  display: flex;
+  gap: 2px;
+}
+
+.db-switch button,
+.db-view-toggle button {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-inactive);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.db-switch button.active,
+.db-view-toggle button.active {
+  color: var(--fg-bright, var(--fg));
+  background: var(--list-hover-bg);
+}
+
+.db-add-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.db-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.db-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.db-suggest-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.db-button:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.db-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.db-button.primary {
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-fg);
+}
+
+.db-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-accent, var(--fg));
+  font: inherit;
+  cursor: pointer;
+}
+
+.db-icon {
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--fg-inactive);
+  cursor: pointer;
+}
+
+/* ---- Query tab ---- */
+
+.db-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.db-tab.hidden {
+  display: none;
+}
+
+.db-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-conn-name {
+  font-weight: 600;
+  color: var(--fg-bright, var(--fg));
+}
+
+.db-engine {
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.db-spacer {
+  flex: 1;
+}
+
+.db-pill {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: none;
+  color: var(--fg-inactive);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.db-pill.writable {
+  border-color: var(--warning, #e5c07b);
+  color: var(--warning, #e5c07b);
+}
+
+.db-editor {
+  flex: 0 0 auto;
+  height: 160px;
+  min-height: 80px;
+  resize: vertical;
+  margin: 0;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--fg);
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.db-pipeline {
+  height: 120px;
+}
+
+.db-results {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.db-grid-wrap {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.db-grid-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.db-grid {
+  border-collapse: collapse;
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+}
+
+.db-grid th,
+.db-grid td {
+  max-width: 360px;
+  padding: 3px 10px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-bg);
+  font-weight: 600;
+  color: var(--fg-bright, var(--fg));
+}
+
+.db-col-name {
+  display: block;
+}
+
+.db-col-type {
+  display: block;
+  font-weight: normal;
+  font-size: 10.5px;
+  color: var(--fg-inactive);
+}
+
+.db-detail-item .db-col-type {
+  display: inline;
+}
+
+.db-grid tbody tr {
+  cursor: pointer;
+}
+
+.db-grid tbody tr:hover,
+.db-grid tbody tr.selected {
+  background: var(--list-hover-bg);
+}
+
+.db-rownum {
+  color: var(--fg-inactive);
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.db-null {
+  color: var(--fg-inactive);
+  font-style: italic;
+}
+
+.db-detail {
+  flex: 0 0 min(340px, 45%);
+  min-width: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+
+.db-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.db-detail-list {
+  margin: 0;
+  padding: 6px 10px;
+}
+
+.db-detail-item {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-detail-item dt {
+  font-size: 11.5px;
+  color: var(--fg-inactive);
+}
+
+.db-detail-item dd {
+  margin: 2px 0 0;
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.db-detail-item pre {
+  margin: 0;
+}
+
+.db-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-inactive);
+  font-variant-numeric: tabular-nums;
+}
+
+.db-notes {
+  color: var(--fg);
+}
+
+.db-export {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.db-history-wrap {
+  position: relative;
+}
+
+.db-history {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.db-history-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.db-history-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.db-history-text {
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-mongo-bar,
+.db-mongo-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-mongo-bar label,
+.db-mongo-fields label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-inactive);
+}
+
+.db-mongo-fields label {
+  flex: 1 1 200px;
+}
+
+.db-mongo-fields input {
+  flex: 1;
+}
+
+.db-view-toggle {
+  padding: 6px 12px;
+}
+
+.db-docs {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 12px;
+}
+
+.db-doc {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.db-redis {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 2fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.db-redis-keys {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding: 4px 0;
+}
+
+.db-redis-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 10px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.db-redis-key:hover,
+.db-redis-key.selected {
+  background: var(--list-hover-bg);
+}
+
+.db-redis-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.db-redis-value {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 12px;
+  gap: 8px;
+}
+
+.db-redis-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.db-console {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40%;
+  padding: 6px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.db-console-log {
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.db-console-log pre {
+  margin: 0 0 6px;
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.db-console-cmd {
+  color: var(--fg-accent, var(--fg));
+}
+
+.db-mono {
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+}
+
+.db-muted {
+  color: var(--fg-inactive);
+}
+
+.db-error {
+  color: var(--error);
+}
+
+.db-pad {
+  padding: 10px 12px;
+}
+
+@media (max-width: 700px) {
+  .db-redis {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .db-detail {
+    flex-basis: 60%;
+  }
+}

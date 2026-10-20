@@ -13,7 +13,15 @@ import {
   systemStatRows,
   systemStatsSummary,
 } from "./systemStats";
-import { resetStatsStore, setServerFetch, useDetailedSystemStats, useSystemStats } from "./statsStore";
+import {
+  resetStatsStore,
+  resetTerminalStats,
+  setServerFetch,
+  useDetailedSystemStats,
+  useSystemStats,
+  useTerminalStats,
+  type TerminalRow,
+} from "./statsStore";
 
 let removeStylesheet: (() => void) | null = null;
 
@@ -86,7 +94,64 @@ function CpuChart({ samples }: { samples: readonly number[] }) {
 //
 // The CPU history is this component's own state: the host unmounts popover
 // content on close, so every opening starts a new chart.
-function StatsPopover() {
+// Opens a terminal window as a tab (or focuses it); set from activate().
+let openSessionWindow: ((sessionName: string, opts?: { windowIndex?: number }) => void) | null = null;
+
+const TERMINAL_ROWS = 8;
+
+function formatMemory(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+// CPU and memory per terminal window, busiest first. Mounted only inside the
+// popover, so the process walk behind it runs only while the popover is open.
+function TerminalsTable({ onOpen }: { onOpen: () => void }) {
+  const stats = useTerminalStats();
+  const [showAll, setShowAll] = useState(false);
+  if (!stats) return <div className="sysstats-terminals-note">Reading terminals…</div>;
+  if (!stats.supported) {
+    return <div className="sysstats-terminals-note">Per-terminal figures aren't available on this system.</div>;
+  }
+  if (stats.rows.length === 0) return <div className="sysstats-terminals-note">No terminals are open.</div>;
+  const rows = showAll ? stats.rows : stats.rows.slice(0, TERMINAL_ROWS);
+  const open = (row: TerminalRow) => {
+    openSessionWindow?.(row.sessionName, { windowIndex: row.windowIndex });
+    onOpen();
+  };
+  return (
+    <div className="sysstats-terminals">
+      <div className="sysstats-terminals-head">
+        <span>Terminals</span>
+        <span className="sysstats-terminals-num">CPU</span>
+        <span className="sysstats-terminals-num">Mem</span>
+      </div>
+      {rows.map((row) => (
+        <button
+          key={`${row.sessionName}:${row.windowIndex}`}
+          className="sysstats-terminals-row"
+          title={`Open ${row.project} · ${row.windowName}`}
+          onClick={() => open(row)}
+        >
+          <span className="sysstats-terminals-name">
+            {row.project} · {row.windowName}
+          </span>
+          <span className="sysstats-terminals-num">
+            {row.cpuPercent === null ? "-" : `${Math.round(row.cpuPercent)}%`}
+          </span>
+          <span className="sysstats-terminals-num">{formatMemory(row.rssBytes)}</span>
+        </button>
+      ))}
+      {stats.rows.length > TERMINAL_ROWS && (
+        <button className="sysstats-terminals-more" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? "Show fewer" : `Show all (${stats.rows.length})`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StatsPopover({ onClose }: { onClose: () => void }) {
   const stats = useDetailedSystemStats();
   const [cpuHistory, setCpuHistory] = useState<readonly number[]>([]);
   const lastSampleAt = useRef(0);
@@ -142,6 +207,7 @@ function StatsPopover() {
           </div>
         );
       })}
+      <TerminalsTable onOpen={onClose} />
       <div className="sysstats-summary">{systemStatsSummary(stats.detail)}</div>
     </div>
   );
@@ -151,6 +217,7 @@ function StatsPopover() {
 
 interface StatusItemContext {
   openPopover(anchor: DOMRect, content: ReactNode): void;
+  closePopover?(): void;
 }
 
 function MemoryItem({ context }: { context: StatusItemContext }) {
@@ -166,7 +233,7 @@ function MemoryItem({ context }: { context: StatusItemContext }) {
           : "Host statistics unavailable"
       }
       // openPopover toggles: the host keys it on this item's id.
-      onClick={(e) => context.openPopover(e.currentTarget.getBoundingClientRect(), <StatsPopover />)}
+      onClick={(e) => context.openPopover(e.currentTarget.getBoundingClientRect(), <StatsPopover onClose={() => context.closePopover?.()} />)}
     >
       <Codicon name="chip" />
       <span>
@@ -191,10 +258,12 @@ interface ExtensionContext {
   }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
+  app?: { openSessionWindow?(sessionName: string, opts?: { windowIndex?: number }): void };
 }
 
 export function activate(ctx: ExtensionContext): void {
   setServerFetch(ctx.serverFetch);
+  openSessionWindow = ctx.app?.openSessionWindow ?? null;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerStatusBarItem({ id: "memory", title: "Memory", placement: "right", component: MemoryItem });
 }
@@ -203,4 +272,6 @@ export function deactivate(): void {
   removeStylesheet?.();
   removeStylesheet = null;
   resetStatsStore();
+  resetTerminalStats();
+  openSessionWindow = null;
 }

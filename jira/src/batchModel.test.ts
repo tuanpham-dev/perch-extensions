@@ -78,6 +78,7 @@ import {
   addQaNote,
 } from "../batchModel.mjs";
 import { createBatchStore } from "../batchStore.mjs";
+import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 
 const NOW = 1_700_000_000_000;
 
@@ -546,13 +547,13 @@ test("a batch that appears or disappears is an event too", () => {
 
 // ---- the store ----
 
-async function tempStore() {
-  const dir = await mkdtemp(path.join(tmpdir(), "jira-batches-"));
-  return { dir, store: createBatchStore(dir, { now: () => NOW }) };
+function tempStore() {
+  const { storage } = createMemoryStorage();
+  return { storage, store: createBatchStore(storage, { now: () => NOW }) };
 }
 
 test("two updates in flight at once both survive", async () => {
-  const { store } = await tempStore();
+  const { store } = tempStore();
   await store.update((doc) => {
     doc.batches.a = batchOf("CAP-1");
   });
@@ -569,30 +570,23 @@ test("two updates in flight at once both survive", async () => {
   assert.equal(doc.batches.a.criteria, "second");
 });
 
-test("the document is written 0600, so no other user can read a ticket", async () => {
-  const { dir, store } = await tempStore();
+test("the document is stored as one record, and a fresh store reads it back", async () => {
+  const { storage, store } = tempStore();
   await store.update((doc) => {
     doc.batches.a = batchOf("CAP-1");
   });
-  const info = await stat(path.join(dir, "jira", "batches.json"));
-  assert.equal(info.mode & 0o777, 0o600);
+  assert.ok(((await storage.collection("batches").get("main"))?.value as { batches: Record<string, unknown> }).batches.a);
+  assert.ok((await createBatchStore(storage, { now: () => NOW }).get()).batches.a);
 });
 
-test("a corrupt document is kept aside rather than overwritten, and the store still starts", async () => {
-  const { dir, store } = await tempStore();
-  await mkdir(path.join(dir, "jira"), { recursive: true });
-  await writeFile(path.join(dir, "jira", "batches.json"), "{ not json");
-  const doc = await store.get();
-  assert.deepEqual(doc.batches, {});
-  const kept = (await readdir(path.join(dir, "jira"))).filter((name) => name.includes("corrupt"));
-  assert.equal(kept.length, 1);
-  assert.equal(await readFile(path.join(dir, "jira", kept[0]), "utf8"), "{ not json");
+test("an empty storage starts an empty document", async () => {
+  const { store } = tempStore();
+  assert.deepEqual((await store.get()).batches, {});
 });
 
 test("every save reports which batches changed, so the board is told once", async () => {
   const seen: string[] = [];
-  const dir = await mkdtemp(path.join(tmpdir(), "jira-batches-"));
-  const store = createBatchStore(dir, {
+  const store = createBatchStore(createMemoryStorage().storage, {
     now: () => NOW,
     onChange: (before, after) => {
       for (const event of diffEvents(before, after)) seen.push(event.batchId);
@@ -791,11 +785,10 @@ test("a ticket added to a pending cluster stays without a state until it starts"
 // about the real one; reaching past it to Date.now() puts a real timestamp in
 // a document the test believes it pinned.
 test("a repair made while loading uses the store's clock, not the wall clock", async () => {
-  const { dir, store } = await tempStore();
-  await mkdir(path.join(dir, "jira"), { recursive: true });
-  await writeFile(
-    path.join(dir, "jira", "batches.json"),
-    JSON.stringify({
+  const { storage, store } = tempStore();
+  await storage.collection("batches").put(
+    "main",
+    {
       version: 1,
       batches: {
         bat_1: {
@@ -808,7 +801,7 @@ test("a repair made while loading uses the store's clock, not the wall clock", a
           unclustered: [],
         },
       },
-    }),
+    },
   );
   const doc = await store.get();
   const repaired = doc.batches.bat_1.ticketStates["CAP-1"];

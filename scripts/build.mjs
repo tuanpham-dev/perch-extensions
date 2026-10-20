@@ -130,6 +130,43 @@ async function buildOne(name) {
     console.log(`[extensions] built ${name} ${subdir} (${entryPoints.length})`);
   }
 
+  // Server code with npm dependencies: <name>/server/index.mjs is bundled
+  // for Node into dist/server.js, dependencies included, because an
+  // extension is installed by copying its folder - there is no npm install
+  // step to bring node_modules along. The manifest then points
+  // perch.server at ./dist/server.js. An extension whose server.js needs only
+  // Node's builtins keeps a plain server.js and skips this.
+  const serverEntry = path.join(repoRoot, name, "server/index.mjs");
+  if (existsSync(serverEntry)) {
+    await build({
+      entryPoints: [serverEntry],
+      outfile: path.join(repoRoot, name, "dist/server.js"),
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      target: "node23",
+      sourcemap: false,
+      logLevel: "info",
+      // CommonJS dependencies require() Node builtins; esbuild's ESM output
+      // has no require of its own, so give it Node's.
+      banner: { js: 'import { createRequire as __perchCreateRequire } from "node:module"; const require = __perchCreateRequire(import.meta.url);' },
+      // Optional native add-ons drivers probe for and work without.
+      external: [
+        "kerberos",
+        "@mongodb-js/zstd",
+        "@aws-sdk/credential-providers",
+        "gcp-metadata",
+        "snappy",
+        "socks",
+        "aws4",
+        "mongodb-client-encryption",
+        "pg-native",
+        "cloudflare:sockets",
+      ],
+    });
+    console.log(`[extensions] built ${name} server`);
+  }
+
   console.log(`[extensions] built ${name}`);
 }
 

@@ -38,8 +38,11 @@ const NOT_INSTALLED = "Agent Tasks is not installed";
 const ACTION_KINDS = ["headless", "create-task", "start-worker"];
 
 const HOME = homedir();
-const configDir = path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"), "perch");
-const agentTasksSocket = path.join(configDir, "agent-tasks", "control.sock");
+// agent-tasks' control socket, in that extension's runtime folder: the host
+// tells us where (storage.runtimeDirOf, Perch 0.9+), so it is this Perch
+// profile's socket and not another's. Set by activate().
+const AGENT_TASKS_ID = "perch.agent-tasks";
+let agentTasksSocket = "";
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -162,8 +165,18 @@ export function deactivate() {
   current = null;
 }
 
-export function activate({ router, log = console.log, getSettings, host, ai }) {
-  if (!store) store = createAutomationStore(configDir);
+// The store announces every save; the panel refetches on it.
+let announce = () => {};
+
+export function activate({ router, log = console.log, getSettings, host, ai, storage }) {
+  // A Perch older than 0.9 has no extension storage to keep automations in.
+  if (!storage) {
+    log("Automations needs Perch 0.9 or newer (no extension storage)");
+    return;
+  }
+  agentTasksSocket = path.join(storage.runtimeDirOf(AGENT_TASKS_ID), "control.sock");
+  announce = () => storage.notify("changed");
+  if (!store) store = createAutomationStore(storage, { onChange: () => announce() });
   const s = store;
   const instance = {
     stopped: false,

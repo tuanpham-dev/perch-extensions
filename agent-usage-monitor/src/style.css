@@ -219,3 +219,15 @@
 .usage-model-item {
   white-space: nowrap;
 }
+
+.usage-model-context {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-model-context.ctx-warn {
+  color: var(--warning, #e5c07b);
+}
+
+.usage-model-context.ctx-bad {
+  color: var(--error, #d74e42);
+}

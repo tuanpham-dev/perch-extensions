@@ -10,10 +10,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { request } from "node:http";
 import { after, before, test } from "node:test";
+import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 
-// server.js resolves its config dir at import time.
+// The host's extension storage, in memory: runs live in it, and the socket
+// and CLI in its runtime folder.
 const configHome = await mkdtemp(path.join(tmpdir(), "at-hooks-"));
-process.env.XDG_CONFIG_HOME = configHome;
+const { storage } = createMemoryStorage({ root: configHome });
+const sockPath = path.join(storage.runtimeDir(), "control.sock");
 const server = await import("../server.js");
 
 type Handler = (req: unknown, res: unknown) => void;
@@ -78,7 +81,7 @@ const dirtyWorktrees = new Set<string>();
 
 // A worker verb over the control socket, exactly as cli/agent-task sends one.
 function verb(name: string, body: Record<string, unknown>): Promise<{ status: number; body: any }> {
-  const socketPath = path.join(configHome, "perch", "agent-tasks", "control.sock");
+  const socketPath = sockPath;
   return new Promise((resolve, reject) => {
     const req = request(
       { socketPath, method: "POST", path: `/${name}`, headers: { "content-type": "application/json" } },
@@ -148,6 +151,7 @@ before(async () => {
     log: () => {},
     getSettings: async () => ({}),
     host,
+    storage,
   });
   await waitFor(() => hookSubscription !== null);
 });
@@ -161,7 +165,7 @@ test("the extension subscribes to exactly stop and permission", () => {
 });
 
 test("the socket and the store it creates are private to the user", async () => {
-  const sock = path.join(configHome, "perch", "agent-tasks", "control.sock");
+  const sock = sockPath;
   await waitFor(async () => stat(sock).then(() => true, () => false));
   assert.equal((await stat(sock)).mode & 0o777, 0o600);
 });
@@ -172,7 +176,7 @@ test("a worker launch records a %-prefixed pane id and types the launch line wit
   const line = typed.find((t) => t.session === dispatch.sessionName);
   assert.ok(line?.submit, "the launch line is submitted");
   assert.match(line.text, new RegExp(`TS_DISPATCH_ID=${dispatch.id}`));
-  assert.match(line.text, /export PATH='.*\/perch\/bin':"\$PATH"; claude '/);
+  assert.match(line.text, /export PATH='.*\/bin':"\$PATH"; claude '/);
 });
 
 test("the brief is the agent's first prompt on the launch line, not typed in afterwards", async () => {
@@ -365,8 +369,8 @@ function removedTargetFor(dispatch: { worktreePath: string }) {
 }
 
 test("a second activate() tears the first down instead of failing to bind", async () => {
-  server.activate({ router, log: () => {}, getSettings: async () => ({}), host });
-  const sock = path.join(configHome, "perch", "agent-tasks", "control.sock");
+  server.activate({ router, log: () => {}, getSettings: async () => ({}), host, storage });
+  const sock = sockPath;
   await new Promise((resolve) => setTimeout(resolve, 300));
   await waitFor(async () => stat(sock).then(() => true, () => false));
   assert.ok(hookSubscription, "the new activation subscribed again");

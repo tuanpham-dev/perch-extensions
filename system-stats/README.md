@@ -6,6 +6,7 @@ Shows how much memory the host is using in Perch's status bar (`6.1 / 23.4 GB`, 
 - **Memory** and **Swap** (swap only when the host has any)
 - **Disk** usage for `/`, and for your home directory when it is a separate filesystem
 - **Network** throughput, excluding loopback
+- **Terminals** - CPU and memory for each terminal window, counting its shell and everything started from it, busiest first (100% is one full core, as in `top`). Click a row to open that window. Measured only while the popover is open; reads `/proc` on Linux, `ps` on macOS and the CIM process list on Windows
 - Hostname, kernel, uptime and process count
 
 The CPU chart starts recording when the popover opens and is cleared when it closes. The popover asks the server for the full reading (which checks each filesystem) only while it is open. The status bar reading itself is a light poll every 3 seconds, paused while the browser tab is hidden.

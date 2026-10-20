@@ -76,14 +76,6 @@ import { createReviewRunner } from "./reviewRunner.mjs";
 import { PAGE_SHOTS, buildJiraComment, buildPrReviewBody, diffEvents as reviewDiffEvents, prReviewFlag, setPosted } from "./reviewModel.mjs";
 import { discoverSkills, parseSkillPaths } from "./skills.mjs";
 
-// Where the batch store and the worker CLI live. PERCH_CONFIG_DIR moves the
-// whole profile, so a second instance keeps its own batches - the same rule
-// core's own configDir follows.
-const configDir =
-  process.env.PERCH_CONFIG_DIR ||
-  (process.platform === "win32"
-    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "perch")
-    : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "perch"));
 
 // Module-level, because deactivate() has to reach them and it is called with
 // no arguments after the routes are already gone. A disable -> enable cycle
@@ -602,7 +594,14 @@ export function adfToMarkdown(doc) {
   return (doc.type === "doc" ? blocks(doc.content) : blockNode(doc)).replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export function activate({ router, getSettings, secrets, host, ai, log = console.log }) {
+export function activate({ router, getSettings, secrets, host, ai, storage, log = console.log }) {
+  // Batches, reviews and their evidence live in the host's extension storage
+  // (Perch 0.9+). Without it, serve nothing: the panel says which Perch it
+  // needs.
+  if (!storage) {
+    log("Jira needs Perch 0.9 or newer (no extension storage)");
+    return;
+  }
   // Host capabilities an extension needs may simply not exist: this ships from
   // the registry and can be installed on ANY core, including one older than
   // extension secret storage. Reaching for a missing one used to throw inside
@@ -1630,16 +1629,18 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
   // batchRunner. What is left here is the HTTP shape of it.
 
   // `store` above is the secret store; this one holds the batches.
-  const batches = createBatchStore(configDir);
+  const batches = createBatchStore(storage);
+  const filesDir = storage.filesDir();
+  const runtimeDir = storage.runtimeDir();
 
   // Reviews share the batch runner's control socket, so their store and
   // runner exist before it starts serving verbs.
   const STOREFRONT_PASSWORD = "storefrontPassword.";
-  const reviews = createReviewStore(configDir);
+  const reviews = createReviewStore(storage);
   const reviewRunner = createReviewRunner({
     host,
     store: reviews,
-    configDir,
+    filesDir,
     readConfig,
     issueDetail,
     settingsForRepo: projectSettingsFor,
@@ -1663,7 +1664,8 @@ export function activate({ router, getSettings, secrets, host, ai, log = console
     issueDetail,
     createWorktree,
     progressIssue,
-    configDir,
+    filesDir,
+    runtimeDir,
     extraVerbs: () => reviewRunner.verbs(),
     log,
   });

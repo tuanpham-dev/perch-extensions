@@ -41,8 +41,9 @@ Agent Tasks say **Requires the Agent Tasks extension** while its socket cannot b
 
 ## Agent Tasks
 
-Automations talks to Agent Tasks through its control socket
-(`~/.config/perch/agent-tasks/control.sock`), never by importing it:
+Automations talks to Agent Tasks through its control socket, in the runtime folder Perch gives
+Agent Tasks (by default `~/.local/state/perch/x/perch.agent-tasks/control.sock`), never by
+importing it. Perch reports that folder, so each Perch profile reaches its own Agent Tasks:
 
 - scheduled "ask the AI" automations need nothing else;
 - the two task actions record `Agent Tasks is not installed` as their result when the socket is
@@ -63,5 +64,12 @@ liveness sweep - see the Agent Tasks README for the worker contract and the full
 
 ## Files
 
-`~/.config/perch/automations/automations.json` (or under `$XDG_CONFIG_HOME`): every
-automation with its last run, result and next run. Written `0600`, temp-then-rename.
+Every automation, with its last run, result and next run, is kept in Perch's extension storage: a
+private database under Perch's config folder (`~/.config/perch/extension-data/perch.automations`
+by default, or under `PERCH_CONFIG_DIR`). The Automations panel updates as soon as anything
+changes, with no polling. Uninstalling Automations keeps them; **Settings → Extensions → Stored
+data** deletes them.
+
+Needs Perch 0.9 or newer. Version 1.1 starts empty: automations saved by earlier versions (in
+`automations/automations.json` under Perch's config folder) aren't carried over, and that file is
+left as it was.

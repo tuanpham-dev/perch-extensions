@@ -106,6 +106,12 @@ function useThemeVersion(): number {
   return useSyncExternalStore(subscribeTheme, () => themeVersion);
 }
 
+// Whether the active Perch theme is dark, re-rendering when it changes.
+export function useThemeDark(): boolean {
+  useThemeVersion();
+  return activeTheme().dark;
+}
+
 const cache = new Map<string, Token[][] | null>();
 
 export function useTokens(code: string, lang: string | null): Token[][] | null {

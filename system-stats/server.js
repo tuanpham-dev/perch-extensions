@@ -1,9 +1,11 @@
 // system-stats server hook: the host readings behind the status bar's memory
 // item and the popover it opens. Moved out of perch core, which used to
 // serve the same shapes at /api/system-stats; the client reaches this at
-// /api/ext/perch.system-stats/stats through ctx.serverFetch.
+// /api/ext/perch.system-stats/stats through ctx.serverFetch. /terminals breaks
+// CPU and memory down per terminal window (see procSample.mjs).
 import { statfs, readFile } from "node:fs/promises";
 import path from "node:path";
+import { sampleProcesses, windowFigures } from "./procSample.mjs";
 import {
   cpus,
   freemem,
@@ -206,7 +208,63 @@ async function readDisks() {
   return disks;
 }
 
-export function activate({ router }) {
+// The previous process sample, for CPU rates. Taken only when /terminals is
+// asked, which the client does only while the popover is open.
+let lastSample = null; // { at, sample }
+
+function basename(p) {
+  const trimmed = String(p ?? "").replace(/[\\/]+$/, "");
+  return trimmed.slice(Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\")) + 1) || trimmed;
+}
+
+// CPU and memory per terminal window, across every session, highest CPU
+// first. { supported: false } when the process table can't be read.
+async function readTerminals(host) {
+  if (!host?.sessions) return { supported: false, rows: [] };
+  const sample = await sampleProcesses();
+  if (!sample || sample.size === 0) return { supported: false, rows: [] };
+  const at = Date.now();
+  const previous = lastSample;
+  lastSample = { at, sample };
+  const sessions = await host.sessions.list();
+  const rows = [];
+  for (const session of sessions) {
+    // perch-view-* sessions are mirrors of real windows; counting them would
+    // list every viewed window twice.
+    if (session.name.startsWith("perch-view-")) continue;
+    let panes;
+    try {
+      panes = await host.sessions.listPanes(session.name);
+    } catch {
+      continue; // closed between list and listPanes
+    }
+    for (const pane of panes) {
+      if (!Number.isFinite(pane.pid) || pane.pid <= 0) continue;
+      const { cpuPercent, rssBytes } = windowFigures(pane.pid, sample, previous?.sample, at - (previous?.at ?? at));
+      rows.push({
+        sessionName: session.name,
+        project: basename(session.path) || session.name,
+        windowIndex: pane.windowIndex,
+        windowName: pane.title || pane.command,
+        cpuPercent,
+        rssBytes,
+      });
+    }
+  }
+  rows.sort((a, b) => (b.cpuPercent ?? -1) - (a.cpuPercent ?? -1) || b.rssBytes - a.rssBytes);
+  return { supported: true, rows };
+}
+
+export function activate({ router, host }) {
+  // CPU and memory per terminal window, for the popover's Terminals table.
+  router.get("/terminals", async (_req, res) => {
+    try {
+      res.json(await readTerminals(host));
+    } catch {
+      res.json({ supported: false, rows: [] });
+    }
+  });
+
   // Memory pressure for the bar, and with ?detail=1 everything the popover
   // shows beside it (see the readers above for why that is a separate
   // reading).

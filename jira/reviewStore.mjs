@@ -1,9 +1,10 @@
-// The review document, ~/.config/perch/jira/reviews.json: one review per
-// ticket, and the owner/repo -> local path answers the user has given. Same
-// atomic writes, serialized updates and change events as the batch document.
+// The review document, record "main" in collection "reviews" of the host's
+// extension storage: one review per ticket, and the owner/repo -> local path
+// answers the user has given. Same serialized updates and change events as
+// the batch document.
 import { createDocumentStore } from "./batchStore.mjs";
 import { emptyDocument, normalizeDocument } from "./reviewModel.mjs";
 
-export function createReviewStore(configDir, options = {}) {
-  return createDocumentStore({ configDir, file: "reviews.json", normalize: normalizeDocument, empty: emptyDocument, ...options });
+export function createReviewStore(storage, options = {}) {
+  return createDocumentStore({ storage, collection: "reviews", normalize: normalizeDocument, empty: emptyDocument, ...options });
 }

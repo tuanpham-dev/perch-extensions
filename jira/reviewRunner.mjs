@@ -80,7 +80,8 @@ export function originMatches(origin, owner, repo) {
 export function createReviewRunner({
   host,
   store,
-  configDir,
+  // This extension's private files folder (host storage's filesDir()).
+  filesDir,
   readConfig,
   issueDetail,
   settingsForRepo,
@@ -93,7 +94,7 @@ export function createReviewRunner({
   controlSocket,
   log = console.log,
 }) {
-  const evidenceDir = path.join(configDir, "jira", "evidence", "reviews");
+  const evidenceDir = path.join(filesDir, "evidence", "reviews");
   let sweepTimer = null;
 
   function git(args, cwd, timeout = 15_000) {
@@ -342,7 +343,7 @@ export function createReviewRunner({
       workspace = { path: existing.worktreePath, branch: existing.branch };
     }
 
-    const scratch = path.join(configDir, "jira", "review-scratch", key);
+    const scratch = path.join(filesDir, "review-scratch", key);
     const cwdFor = { code: workspace?.path ?? "", qa: workspace?.path ?? repo ?? scratch };
 
     const results = await Promise.all(launching.map((task) => launch(key, task, cwdFor[task], agent)));
@@ -398,7 +399,7 @@ export function createReviewRunner({
         if (err?.status !== 404) throw new ReviewError(500, `could not remove ${review.worktreePath}: ${err.message}`);
       }
     }
-    await rm(path.join(configDir, "jira", "review-scratch", key), { recursive: true, force: true });
+    await rm(path.join(filesDir, "review-scratch", key), { recursive: true, force: true });
     const result = await store.update((doc) => closeReview(doc, key, Date.now()));
     if (!result.ok) throw new ReviewError(409, result.error);
     return { ok: true };

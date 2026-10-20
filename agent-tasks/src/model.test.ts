@@ -3,9 +3,6 @@
 // each case names the situation it protects rather than the mapping it
 // asserts.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile, mkdir, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { test } from "node:test";
 import {
   allowedActions,
@@ -21,6 +18,7 @@ import {
   taskStatus,
 } from "../model.mjs";
 import { createStore } from "../store.mjs";
+import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = 1_700_000_000_000;
@@ -305,13 +303,9 @@ test("a fully terminal run past the threshold archives; an active one does not",
 
 // ---- Store ----
 
-async function tempConfig() {
-  return mkdtemp(path.join(tmpdir(), "agent-tasks-test-"));
-}
-
 test("concurrent updates both land", async () => {
-  const dir = await tempConfig();
-  const store = createStore(dir, { archiveAfterDays: 30 });
+  const { storage } = createMemoryStorage();
+  const store = createStore(storage, { archiveAfterDays: 30 });
   await Promise.all([
     store.update(async (d: Doc) => {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -321,19 +315,18 @@ test("concurrent updates both land", async () => {
       d.runs.run_2 = { id: "run_2", objective: "two", createdAt: Date.now(), updatedAt: Date.now() };
     }),
   ]);
-  const onDisk = JSON.parse(await readFile(store.storePath, "utf8"));
-  assert.deepEqual(Object.keys(onDisk.runs).sort(), ["run_1", "run_2"]);
-  const fresh = createStore(dir, { archiveAfterDays: 30 });
+  const stored = (await storage.collection("state").get("main"))?.value as Doc;
+  assert.deepEqual(Object.keys(stored.runs).sort(), ["run_1", "run_2"]);
+  const fresh = createStore(storage, { archiveAfterDays: 30 });
   assert.deepEqual(Object.keys((await fresh.get()).runs).sort(), ["run_1", "run_2"], "and survive a reload");
 });
 
-test("the store file is written 0600 and a failed update changes nothing", async () => {
-  const dir = await tempConfig();
-  const store = createStore(dir, { archiveAfterDays: 30 });
+test("a failed update changes nothing, and the chain keeps working", async () => {
+  const { storage } = createMemoryStorage();
+  const store = createStore(storage, { archiveAfterDays: 30 });
   await store.update((d: Doc) => {
     d.runs.run_1 = { id: "run_1", objective: "one", createdAt: Date.now(), updatedAt: Date.now() };
   });
-  assert.equal((await stat(store.storePath)).mode & 0o777, 0o600);
   await assert.rejects(
     store.update((d: Doc) => {
       d.runs.run_bad = { id: "run_bad" };
@@ -342,29 +335,22 @@ test("the store file is written 0600 and a failed update changes nothing", async
     /validation failed/,
   );
   assert.equal((await store.get()).runs.run_bad, undefined);
+  assert.equal(((await storage.collection("state").get("main"))?.value as Doc).runs.run_bad, undefined);
   await store.update((d: Doc) => {
     d.runs.run_2 = { id: "run_2", objective: "two", createdAt: Date.now(), updatedAt: Date.now() };
   });
   assert.ok((await store.get()).runs.run_2, "the chain keeps working after a rejection");
-  const leftovers = (await readdir(path.dirname(store.storePath))).filter((f) => f.endsWith(".tmp"));
-  assert.deepEqual(leftovers, [], "no temp files left behind");
 });
 
-test("a corrupt store loads empty and is kept aside", async () => {
-  const dir = await tempConfig();
-  await mkdir(path.join(dir, "agent-tasks"), { recursive: true });
-  await writeFile(path.join(dir, "agent-tasks", "store.json"), "{ not json");
-  const store = createStore(dir, { archiveAfterDays: 30 });
-  const d = await store.get();
-  assert.deepEqual(d.runs, {});
-  const files = await readdir(path.join(dir, "agent-tasks"));
-  assert.ok(files.some((f) => f.startsWith("store.json.corrupt-")));
+test("an empty storage loads an empty document", async () => {
+  const store = createStore(createMemoryStorage().storage, { archiveAfterDays: 30 });
+  assert.deepEqual((await store.get()).runs, {});
 });
 
 test("saving archives an old finished run, and restoring brings it back without re-archiving it", async () => {
-  const dir = await tempConfig();
   let clock = T0;
-  const store = createStore(dir, { archiveAfterDays: () => 30, now: () => clock });
+  const { storage } = createMemoryStorage();
+  const store = createStore(storage, { archiveAfterDays: () => 30, now: () => clock });
   await store.update((d: Doc) => {
     d.runs.run_old = { id: "run_old", objective: "old", createdAt: T0, updatedAt: T0 };
     d.tasks.task_old = { id: "task_old", runId: "run_old", title: "t", deps: [], outcome: "completed", createdAt: T0, updatedAt: T0 };
@@ -379,7 +365,6 @@ test("saving archives an old finished run, and restoring brings it back without 
   assert.ok(live.runs.run_live, "a run with an open task stays");
   const archive = await store.loadArchive();
   assert.ok(archive.runs.run_old?.tasks.task_old);
-  assert.equal((await stat(store.archivePath)).mode & 0o777, 0o600);
 
   const restored = await store.restoreRun("run_old");
   assert.equal(restored?.id, "run_old");

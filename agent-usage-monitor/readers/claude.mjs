@@ -217,7 +217,9 @@ async function sessionForPid(pid) {
 }
 
 // The model the Claude session in this window is using, from the most recent
-// assistant line of its transcript.
+// assistant line of its transcript, with how much context that turn sent:
+// { model, contextTokens, contextWindow: null } (the window isn't recorded in
+// the transcript; the server fills it in from contextWindow.mjs).
 export async function modelFor({ pid }) {
   const session = await sessionForPid(pid);
   if (!session) return null;
@@ -227,9 +229,16 @@ export async function modelFor({ pid }) {
   // the model in use is on its most recent assistant line.
   const text = await readTail(file);
   if (text === null) return null;
-  const entries = parseUsageLines(text);
+  return latestModel(parseUsageLines(text));
+}
+
+// The newest entry with a known model, as modelFor reports it. A turn's
+// context is everything it sent: new input plus cache reads and writes.
+export function latestModel(entries) {
   for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].model !== "unknown") return entries[i].model;
+    const e = entries[i];
+    if (e.model === "unknown") continue;
+    return { model: e.model, contextTokens: e.input + e.cacheRead + e.cacheCreation, contextWindow: null };
   }
   return null;
 }

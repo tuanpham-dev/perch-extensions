@@ -355,8 +355,8 @@ their `PATH`:
 | `jira-review qa --status pass\|fail\|partial\|blocked [--checked\|--wrong\|--note <text>]... [--page <path> [--before-1440\|--after-1440\|--before-390\|--after-390 <image>] [--shot <image>:<caption>]...]...` | File the visual QA |
 | `jira-review status` | Whether the task still waits for a report |
 
-The review document lives at `<config>/jira/reviews.json`, its screenshots
-under `<config>/jira/evidence/reviews/`.
+The review document is kept in Perch's extension storage (see [Where it is kept](#where-it-is-kept)),
+its screenshots under `<data>/files/evidence/reviews/`.
 
 ## Batches
 
@@ -685,13 +685,22 @@ work.
 
 ### Where it is kept
 
+Batches (tickets, clusters, states, feedback) and reviews are kept in Perch's extension
+storage: a private database in `<data>`, which is `~/.config/perch/extension-data/perch.jira` by
+default (or under `PERCH_CONFIG_DIR`). The control socket and the command live in the
+extension's runtime folder, `<runtime>`: `~/.local/state/perch/x/perch.jira` by default (or under
+`PERCH_STATE_DIR`). Each Perch profile has its own of both.
+
 | Path | |
 | --- | --- |
-| `<config>/perch/jira/batches.json` | Every batch: tickets, clusters, states, feedback |
-| `<config>/perch/jira/batch.sock` | The control socket agents report through |
-| `<config>/perch/bin/jira-batch` | The command itself |
+| `<data>/files/evidence/` | QA screenshots copied from agents' reports |
+| `<runtime>/batch.sock` | The control socket agents report through |
+| `<runtime>/bin/jira-batch` | The command itself |
 
-The directory is `0700` and the document `0600`; writes are temp-then-rename. Agents reach
+Both folders are `0700` and every file in them `0600`. Uninstalling Jira keeps the data;
+**Settings → Extensions → Stored data** deletes it. Needs Perch 0.9 or newer; this version starts
+with no batches or reviews, and the `jira/batches.json` and `jira/reviews.json` files earlier
+versions kept under Perch's config folder are left as they were. Agents reach
 the extension over that socket rather than the app's HTTP API, because core deliberately
 keeps the app's auth token out of every pane - so anything the Perch user can run can
 report on a batch, exactly as it could run the agent itself.

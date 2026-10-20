@@ -1,7 +1,7 @@
 #!/bin/sh
 # agent-task - talk to the Agent Tasks extension from a terminal window.
 #
-# Installed by the agent-tasks extension into <config>/perch/bin/ and
+# Installed by the agent-tasks extension into <runtime folder>/bin/ and
 # put on PATH by the line that launches a worker, together with the ids below.
 # Every verb is one POST to the extension's 0600 unix socket; the reply is
 # printed as-is. POSIX sh plus curl (--unix-socket) and awk, nothing else.

@@ -7,6 +7,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { LinkedText, linkChildren } from "./FileLinks";
 import { CodeBlock, langFor } from "./Highlight";
+import { MermaidBlock } from "./MermaidBlock";
 import { formatTokens } from "./usage";
 
 type HastNode = { type: string; value?: string; tagName?: string; properties?: { className?: unknown }; children?: HastNode[] };
@@ -37,6 +38,7 @@ const components = {
     const classes = code?.properties?.className;
     const list = Array.isArray(classes) ? classes.map(String) : typeof classes === "string" ? [classes] : [];
     const lang = list.find((c) => c.startsWith("language-"))?.slice("language-".length);
+    if (lang === "mermaid") return <MermaidBlock source={hastText(code ?? node).replace(/\n$/, "")} />;
     return <CodeBlock code={hastText(code ?? node)} lang={langFor(lang)} />;
   },
   a({ href, children }: { href?: string; children?: React.ReactNode }) {

@@ -1,0 +1,730 @@
+/* The NOTES section: groups of collapsible notes, each a header row that
+   opens into an editor or a rendered preview. */
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0 8px;
+  min-width: 0;
+}
+
+.notes-empty,
+.notes-pad {
+  padding: 4px 12px;
+}
+
+.notes-empty,
+.notes-muted {
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.notes-group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 12px;
+}
+
+.notes-group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-inactive);
+}
+
+.notes-icon-button,
+.notes-item-toolbar button,
+.notes-item-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-inactive);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notes-icon-button:hover,
+.notes-item-toolbar button:hover,
+.notes-item-actions button:hover,
+.notes-item-toolbar button.active {
+  color: var(--fg-bright, var(--fg));
+  background: var(--list-hover-bg);
+}
+
+.notes-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px 3px 12px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notes-item-head:hover,
+.notes-item-head:focus-visible {
+  background: var(--list-hover-bg);
+}
+
+.notes-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-item-label {
+  color: var(--fg-inactive);
+}
+
+.notes-item-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-inactive);
+}
+
+.notes-item-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 12px 4px 30px;
+}
+
+.notes-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 12px 8px 30px;
+}
+
+.notes-item-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.notes-spacer {
+  flex: 1;
+}
+
+.notes-editor {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.notes-editor:focus {
+  outline: 1px solid var(--focus-border, var(--fg-accent));
+  outline-offset: -1px;
+}
+
+.notes-preview {
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.notes-preview > :first-child {
+  margin-top: 0;
+}
+
+.notes-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.notes-preview code {
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 0.92em;
+}
+
+.notes-preview pre {
+  overflow-x: auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--input-bg);
+}
+
+.notes-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
+/* ---- Note colours ----
+   One hue per colour, mixed with the theme's own background so a card reads
+   in light and dark themes alike. */
+.fn-yellow { --fn-hue: #e8c13a; }
+.fn-green { --fn-hue: #4cc27a; }
+.fn-blue { --fn-hue: #4f93e8; }
+.fn-pink { --fn-hue: #e8628f; }
+.fn-purple { --fn-hue: #9a6be8; }
+.fn-grey { --fn-hue: #8b939b; }
+
+/* The library: a colour stripe on each note, and its swatches. */
+.notes-item {
+  border-left: 3px solid color-mix(in srgb, var(--fn-hue, transparent) 80%, var(--bg));
+}
+
+.notes-item-hidden {
+  flex: none;
+  color: var(--fg-inactive);
+}
+
+.notes-swatches {
+  display: flex;
+  gap: 6px;
+}
+
+/* ---- Floating cards ----
+   The layer covers the terminal (or preview) and lets every click through
+   except on the cards and the chip. */
+.fn-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.fn-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  border: 1px solid color-mix(in srgb, var(--fn-hue) 60%, var(--bg));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fn-hue) 16%, var(--panel-bg, var(--bg)));
+  color: var(--fg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+  overflow: hidden;
+}
+
+.fn-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 2px 4px 2px 8px;
+  background: color-mix(in srgb, var(--fn-hue) 45%, var(--panel-bg, var(--bg)));
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.fn-head:active {
+  cursor: grabbing;
+}
+
+.fn-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-bright, var(--fg));
+}
+
+.fn-spacer {
+  flex: 1;
+}
+
+.fn-icon,
+.fn-chip-btn,
+.fn-chip-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.fn-icon:hover,
+.fn-chip-btn:hover,
+.fn-chip-count:hover {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.fn-icon:focus-visible,
+.fn-chip-btn:focus-visible,
+.fn-swatch:focus-visible {
+  outline: 1px solid var(--focus-border, var(--fg-accent));
+}
+
+.fn-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fn-rendered {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 10px 8px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.fn-rendered > :first-child {
+  margin-top: 0;
+}
+
+.fn-rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.fn-rendered ul,
+.fn-rendered ol {
+  padding-left: 18px;
+}
+
+.fn-rendered code {
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 0.92em;
+}
+
+.fn-placeholder {
+  color: var(--fg-inactive);
+}
+
+.fn-editor {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  margin: 0;
+  padding: 6px 10px;
+  border: none;
+  background: color-mix(in srgb, var(--fn-hue) 8%, var(--input-bg, var(--bg)));
+  color: var(--fg);
+  font-family: var(--mono-font, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.fn-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  width: 16px;
+  height: 16px;
+  padding: 2px;
+  color: var(--fg-inactive);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.fn-grip:hover {
+  color: var(--fg);
+}
+
+.fn-error,
+.fn-chip-error {
+  padding: 2px 10px;
+  color: var(--error);
+  font-size: 11.5px;
+}
+
+.fn-popup {
+  position: absolute;
+  z-index: 2;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-bg, var(--bg));
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+
+.fn-card .fn-popup {
+  top: 26px;
+  right: 4px;
+}
+
+.fn-swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.fn-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fn-hue) 70%, var(--bg));
+  cursor: pointer;
+}
+
+.fn-swatch.current {
+  box-shadow: 0 0 0 2px var(--fg-accent, var(--fg));
+}
+
+.fn-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+}
+
+.fn-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fn-menu button:hover {
+  background: var(--list-hover-bg);
+}
+
+.fn-menu button.danger {
+  color: var(--error);
+}
+
+/* The corner chip: top right of a terminal, clear of its scrollbar; bottom
+   right of a preview, clear of the viewer's own toolbar. */
+.fn-chip {
+  position: absolute;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-bg, var(--bg)) 92%, transparent);
+  color: var(--fg);
+  font-size: 11.5px;
+  pointer-events: auto;
+  opacity: 0.75;
+  transition: opacity 0.12s ease;
+}
+
+.fn-chip:hover,
+.fn-chip:focus-within {
+  opacity: 1;
+}
+
+.fn-chip-top {
+  top: 6px;
+}
+
+.fn-chip-bottom {
+  bottom: 10px;
+}
+
+.fn-chip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.fn-add-menu {
+  top: calc(100% + 4px);
+  right: 0;
+}
+
+.fn-chip-bottom .fn-add-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fn-chip {
+    transition: none;
+  }
+}
+
+/* Links in a note read as the theme's links, on any card colour, and don't
+   turn purple once visited. */
+.fn-rendered a,
+.notes-preview a {
+  color: var(--fg-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--fg-accent) 45%, transparent);
+  text-underline-offset: 2px;
+}
+
+.fn-rendered a:visited,
+.notes-preview a:visited {
+  color: var(--fg-accent);
+}
+
+.fn-rendered a:hover,
+.notes-preview a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* On a tinted card the accent alone can be faint: lift it toward the text
+   colour so it keeps its contrast. */
+.fn-rendered a {
+  color: color-mix(in srgb, var(--fg-accent) 75%, var(--fg));
+}
+
+/* The status-bar item's popover: the eye menu's rows, as a list. */
+.notes-popover {
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 4px;
+  font-size: 13px;
+}
+
+.notes-popover-heading {
+  padding: 4px 8px 2px 32px;
+  font-size: 12px;
+  color: var(--fg-inactive);
+}
+
+.notes-popover-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.notes-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notes-popover-row:hover,
+.notes-popover-row:focus-visible {
+  background: var(--list-hover-bg);
+  outline: none;
+}
+
+.notes-popover-gutter {
+  display: inline-flex;
+  justify-content: center;
+  width: 18px;
+  flex: none;
+}
+
+.notes-popover-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-popover-label {
+  flex: 1;
+}
+
+.notes-popover-line {
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+
+.notes-popover-line:hover {
+  background: var(--list-hover-bg);
+}
+
+.notes-popover-line .notes-popover-row:hover {
+  background: none;
+}
+
+.notes-popover-trailing {
+  display: inline-flex;
+  flex: none;
+  margin-right: 4px;
+  padding: 2px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-inactive);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.notes-popover-line:hover .notes-popover-trailing,
+.notes-popover-line:focus-within .notes-popover-trailing {
+  opacity: 1;
+}
+
+.notes-popover-trailing:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+@media (pointer: coarse) {
+  .notes-popover-trailing {
+    opacity: 1;
+  }
+}
+
+/* A file note's header names its file (its path inside the project), cut
+   with an ellipsis when the card is narrow; the full path is its tooltip. */
+.fn-label-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.fn-label-file .codicon {
+  flex: none;
+  font-size: 12px;
+}
+
+.fn-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fn-head .fn-icon {
+  flex: none;
+}
+
+/* The NOTES list: rows like the menus' (check, colour, title, Open). */
+.notes-row {
+  display: flex;
+  align-items: center;
+  margin: 0 4px;
+  border-radius: 4px;
+}
+
+.notes-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.notes-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notes-row-main:focus-visible {
+  outline: 1px solid var(--focus-border, var(--fg-accent));
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+.notes-row-check {
+  display: inline-flex;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+}
+
+.notes-row-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fn-hue, var(--fg-inactive)) 85%, var(--bg));
+}
+
+.notes-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-row-trailing {
+  display: inline-flex;
+  flex: none;
+  margin-right: 4px;
+  padding: 2px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-inactive);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.notes-row:hover .notes-row-trailing,
+.notes-row:focus-within .notes-row-trailing {
+  opacity: 1;
+}
+
+.notes-row-trailing:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+@media (pointer: coarse) {
+  .notes-row-trailing {
+    opacity: 1;
+  }
+}
+
+/* Rows carry their colour as a dot, not the old stripe. */
+.notes-row.notes-item,
+.notes-row {
+  border-left: none;
+}

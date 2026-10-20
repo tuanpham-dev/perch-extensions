@@ -4,6 +4,7 @@
 //
 // Images are COPIED rather than referenced where the agent left them: a
 // worktree removed after review must not empty the panel.
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -52,7 +53,9 @@ export async function readImage(flag, file) {
 export async function writeImage(dir, name, { bytes, ext }) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const target = path.join(dir, `${name}.${ext}`);
-  const tmp = `${target}.${process.pid}.tmp`;
+  // Unique per write: two reports of one ticket landing together must not
+  // rename each other's half-written file.
+  const tmp = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(tmp, bytes, { mode: 0o600 });
   await chmod(tmp, 0o600);
   await rename(tmp, target);

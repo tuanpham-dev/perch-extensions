@@ -17,7 +17,14 @@ interface ActiveContext {
   cwd: string | null;
 }
 
-const POLL_MS = 10_000;
+// The server announces every save on topic "changed" (storage.notify, Perch
+// 0.9+); a "resync" after the change stream reconnects means saves may have
+// been missed. Either way the panel refetches.
+type StorageNotice = { type: "topic" | "resync" };
+interface StorageApi {
+  subscribeTopic(topic: string, cb: (n: StorageNotice) => void): () => void;
+}
+let storage: StorageApi | null = null;
 const EVENT_KINDS = ["task-completed", "task-failed", "task-blocked", "gate-opened", "worker-lost"] as const;
 const EVENT_LABELS: Record<(typeof EVENT_KINDS)[number], string> = {
   "task-completed": "A task completes",
@@ -345,14 +352,31 @@ function AutomationsPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProp
       .catch((err: Error) => setError(err.message));
   }, []);
 
+  // Refetch on every save, but only while the panel is on screen: a hidden
+  // tab stays mounted, so it notes that it's behind and catches up when it
+  // shows again (it gets a size back, or the page becomes visible).
   useEffect(() => {
-    refresh();
-    const timer = setInterval(() => {
+    let stale = false;
+    const maybeRefresh = () => {
       const el = rootRef.current;
-      if (document.visibilityState !== "visible" || !el || el.offsetParent === null) return;
+      if (document.visibilityState !== "visible" || !el || el.offsetParent === null) {
+        stale = true;
+        return;
+      }
+      stale = false;
       refresh();
-    }, POLL_MS);
-    return () => clearInterval(timer);
+    };
+    const catchUp = () => stale && maybeRefresh();
+    refresh();
+    const off = storage?.subscribeTopic("changed", maybeRefresh);
+    const ro = new ResizeObserver(catchUp);
+    if (rootRef.current) ro.observe(rootRef.current);
+    document.addEventListener("visibilitychange", catchUp);
+    return () => {
+      off?.();
+      ro.disconnect();
+      document.removeEventListener("visibilitychange", catchUp);
+    };
   }, [refresh]);
 
   const post = (path: string, body: unknown) =>
@@ -490,9 +514,19 @@ interface ExtensionContext {
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   app: { getActiveContext(): ActiveContext };
+  storage?: StorageApi;
+}
+
+function NeedsNewerPerch() {
+  return <div className="au-empty">Automations needs Perch 0.9 or newer. Update Perch to use it.</div>;
 }
 
 export function activate(ctx: ExtensionContext): void {
+  if (!ctx.storage) {
+    ctx.registerSidebarPanel({ id: "list", title: "Automations", location: "run", icon: "watch", component: NeedsNewerPerch as typeof AutomationsPanel });
+    return;
+  }
+  storage = ctx.storage;
   serverFetch = ctx.serverFetch;
   getActiveContext = ctx.app.getActiveContext;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
@@ -506,6 +540,7 @@ export function activate(ctx: ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  storage = null;
   removeStylesheet?.();
   removeStylesheet = null;
   serverFetch = null;

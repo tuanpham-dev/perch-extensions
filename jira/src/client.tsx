@@ -4339,6 +4339,9 @@ function editorStatuses(s: JiraState): { name: string; category: string | null }
 }
 
 interface ExtensionContext {
+  // The host's extension storage (Perch 0.9+). Jira's server keeps batches,
+  // reviews and evidence there; without it the extension doesn't run.
+  storage?: unknown;
   registerSidebarPanel(panel: {
     id: string;
     title: string;
@@ -4402,7 +4405,15 @@ interface ExtensionContext {
   };
 }
 
+function NeedsNewerPerch() {
+  return <div className="jira-empty">Jira needs Perch 0.9 or newer. Update Perch to use it.</div>;
+}
+
 export function activate(ctx: ExtensionContext): void {
+  if (!ctx.storage) {
+    ctx.registerSidebarPanel({ id: "jira", title: "Assigned to Me", icon: "project", component: NeedsNewerPerch as typeof AssignedPanel });
+    return;
+  }
   serverFetch = ctx.serverFetch;
   setApiFetcher(ctx.serverFetch);
   setServerEventSource(ctx.serverEventSource ? ctx.serverEventSource.bind(ctx) : null);

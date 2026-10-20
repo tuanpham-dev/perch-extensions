@@ -271,6 +271,43 @@
 }
 .claude-viewer .cv-code-line { white-space: pre; min-height: 1.5em; }
 
+/* ```mermaid blocks drawn as diagrams (MermaidBlock.tsx). */
+.claude-viewer .cv-mermaid {
+  position: relative;
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--cv-border);
+  border-radius: 6px;
+  background: var(--cv-input);
+  overflow-x: auto;
+}
+.claude-viewer .cv-mermaid-svg svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.claude-viewer .cv-mermaid-loading,
+.claude-viewer .cv-mermaid-message { font-size: 0.9em; color: var(--cv-dim); }
+.claude-viewer .cv-mermaid-message { margin-top: 4px; color: var(--cv-err); }
+.claude-viewer .cv-mermaid-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--cv-border);
+  border-radius: 4px;
+  background: var(--cv-input);
+  color: var(--cv-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.claude-viewer .cv-mermaid:hover .cv-mermaid-copy,
+.claude-viewer .cv-mermaid-copy:focus-visible { opacity: 1; }
+.claude-viewer .cv-mermaid-copy:hover { color: var(--cv-strong); }
+@media (pointer: coarse) { .claude-viewer .cv-mermaid-copy { opacity: 1; } }
+
 .claude-viewer .thinking { color: var(--cv-dim); }
 .claude-viewer .thinking summary { cursor: pointer; font-style: italic; width: fit-content; }
 .claude-viewer .thinking-body { border-left: 2px solid var(--cv-border); padding-left: 10px; margin-top: 4px; }

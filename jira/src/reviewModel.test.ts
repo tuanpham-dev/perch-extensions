@@ -27,6 +27,7 @@ import {
   tasksFor,
 } from "../reviewModel.mjs";
 import { createReviewStore } from "../reviewStore.mjs";
+import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 
 const NOW = 1_700_000_000_000;
 const pr = { url: "https://github.com/o/r/pull/7", owner: "o", repo: "r", number: 7, author: null, at: null };
@@ -206,12 +207,12 @@ test("a hand-edited document loads what it can and reports changes per ticket", 
   assert.equal(rememberRepoPath(doc, "../evil", "/x").ok, false);
 });
 
-test("the review store writes reviews.json and reads it back", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "jira-review-store-"));
-  const store = createReviewStore(dir, { now: () => NOW });
+test("the review store keeps one record and reads it back", async () => {
+  const { storage } = createMemoryStorage();
+  const store = createReviewStore(storage, { now: () => NOW });
   await store.update((doc: ReturnType<typeof emptyDocument>) => startTask(doc, "CAP-9", "qa", { agentId: "a" }, NOW));
-  const onDisk = JSON.parse(await readFile(path.join(dir, "jira", "reviews.json"), "utf8"));
-  assert.equal(onDisk.reviews["CAP-9"].tasks.qa.state, "running");
-  const fresh = createReviewStore(dir);
+  const stored = (await storage.collection("reviews").get("main"))?.value as { reviews: Record<string, { tasks: { qa: { state: string } } }> };
+  assert.equal(stored.reviews["CAP-9"].tasks.qa.state, "running");
+  const fresh = createReviewStore(storage);
   assert.equal((await fresh.get()).reviews["CAP-9"].tasks.qa.state, "running");
 });

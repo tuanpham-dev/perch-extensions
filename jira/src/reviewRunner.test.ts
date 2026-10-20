@@ -10,6 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { createReviewRunner, originMatches, sessionNameFor } from "../reviewRunner.mjs";
 import { createReviewStore } from "../reviewStore.mjs";
+import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100e221bc330000000049454e44ae426082", "hex");
 
@@ -45,7 +46,7 @@ function detail(comments: string[]) {
 
 async function setup({ comments, projectMap = {} }: { comments: string[]; projectMap?: Record<string, string> }) {
   const dir = await mkdtemp(path.join(tmpdir(), "jira-review-runner-"));
-  const store = createReviewStore(dir);
+  const store = createReviewStore(createMemoryStorage().storage);
   const calls: string[] = [];
   const windows = new Set<string>();
   const host = {
@@ -76,7 +77,7 @@ async function setup({ comments, projectMap = {} }: { comments: string[]; projec
   const runner = createReviewRunner({
     host,
     store,
-    configDir: dir,
+    filesDir: dir,
     readConfig: async () => ({ siteUrl: "https://j", email: "e", apiToken: "t", settings: {} }),
     issueDetail: async () => detail(comments),
     settingsForRepo: async () => ({}),
@@ -232,7 +233,7 @@ test("a code review checks the pull request's head out into its own worktree, an
       agents: { launchCommand: async () => "claude" },
     },
     store: ctx.store,
-    configDir: ctx.dir,
+    filesDir: ctx.dir,
     readConfig: async () => ({ siteUrl: "https://j", email: "e", apiToken: "t", settings: {} }),
     issueDetail: async () => detail(["Please review https://github.com/o/r/pull/7"]),
     settingsForRepo: async () => ({}),
@@ -291,7 +292,7 @@ test("visual QA uses the active repository only when the ticket names no pull re
   const withPr = await setup({ comments: ["https://github.com/o/elsewhere/pull/1", "https://s.com/?preview_theme_id=9"] });
   const active = await repoWithOrigin(path.join(withPr.dir, "active"), "git@github.com:o/unrelated.git");
   const r1 = await withPr.runner.start("CAP-5", { tasks: ["qa"], agentId: "perch.agents.claude", cwd: active });
-  assert.equal(r1.tasks[0].cwd, path.join(withPr.dir, "jira", "review-scratch", "CAP-5"), "not the unrelated checkout");
+  assert.equal(r1.tasks[0].cwd, path.join(withPr.dir, "review-scratch", "CAP-5"), "not the unrelated checkout");
 
   const noPr = await setup({ comments: ["https://s.com/?preview_theme_id=9"] });
   const theme = await repoWithOrigin(path.join(noPr.dir, "theme"), "git@github.com:o/theme.git");

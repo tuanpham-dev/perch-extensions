@@ -8,7 +8,9 @@ Three status-bar items, each one switchable from the status bar's right-click me
 
 - **Claude usage** - the 5-hour and weekly limits, with the percentage used and how long until each resets, plus the per-model weekly cap where the account has one.
 - **Codex usage** - the windows Codex itself reports, when it reports any.
-- **Model** - the model running in the terminal you are looking at, by name only (`opus-5`, not `claude-opus-5-20251001`). It hides for a plain shell; the agent and folder are in its tooltip.
+- **Model** - the model running in the terminal you are looking at, by name only (`opus-5`, not `claude-opus-5-20251001`), and how full its context window is (`opus-5 · 62%`): amber from 80%, red from 95%, with the exact tokens in its tooltip. It hides for a plain shell; the agent and folder are in its tooltip too.
+
+  The percentage is the latest turn's input (new input plus cache reads and writes for Claude; Codex's own count) over the model's window. Codex records its window; Claude doesn't, so it's 200,000 tokens, or 1,000,000 once a session has sent more than 200,000. Set **Context windows** in Settings (JSON, model id to tokens) for a model that differs.
 
 Clicking an item opens its agent's view (the model item opens the view for the agent running there): its limits, what it has spent, the current block's tokens and burn rate with a per-model breakdown, and the blocks before it.
 

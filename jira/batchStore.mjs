@@ -1,56 +1,27 @@
-// The batches' durable store: one JSON document at
-// <config>/perch/jira/batches.json.
+// The batches' durable store, on the host's extension storage (Perch 0.9+,
+// activate({ storage })): the document is record "main" in collection
+// "batches".
 //
 // Discipline, all of it load-bearing and all of it agent-tasks' (store.mjs
 // there, same reasoning):
-//   - every write is temp-then-rename at 0600, so a crash mid-write leaves
-//     the previous document, never half of a new one;
-//   - writes go through one promise chain, so two concurrent update() calls
-//     cannot read the same document and have the second silently drop the
-//     first's change;
-//   - a missing or corrupt file loads as an empty document rather than
-//     failing activation - the corrupt file is kept aside, not overwritten,
-//     because a batch holds the only record of what agents are running;
+//   - the document is held in memory and writes go through one promise chain,
+//     so two concurrent update() calls cannot read the same document and have
+//     the second silently drop the first's change;
+//   - each save is one storage write, durable once it resolves;
 //   - onChange sees the document before and after every save, which is where
 //     the SSE stream gets "this batch changed" from (batchModel's diffEvents).
 //
-// No archive file, unlike agent-tasks: an archived batch keeps its
+// No archive record, unlike agent-tasks: an archived batch keeps its
 // archivedAt and stays in the document. There is one batch per planning pass,
 // not one run per task, so the document does not grow the way that one does.
 //
-// The config dir is a parameter (the extension passes the host's, tests pass
-// a mkdtemp) so nothing here knows where the real profile lives.
+// `storage` is a parameter (the extension passes the host's, tests pass
+// scripts/memoryStorage.mjs) so nothing here knows where the data lives.
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { emptyDocument, normalizeDocument } from "./batchModel.mjs";
 
 export function newId(prefix) {
   return `${prefix}_${randomBytes(6).toString("hex")}`;
-}
-
-async function readJson(file) {
-  let raw;
-  try {
-    raw = await readFile(file, "utf8");
-  } catch (err) {
-    if (err.code === "ENOENT") return { value: null, raw: null };
-    throw err;
-  }
-  try {
-    return { value: JSON.parse(raw), raw };
-  } catch {
-    return { value: null, raw };
-  }
-}
-
-async function writeJsonAtomic(file, value) {
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
-  // writeFile's mode is masked by the umask; chmod is not.
-  await chmod(tmp, 0o600);
-  await rename(tmp, file);
 }
 
 // The batch document's store. Everything below is document-shaped rather
@@ -59,17 +30,16 @@ async function writeJsonAtomic(file, value) {
 // options:
 //   now       clock, for tests
 //   onChange  (before, after) after every successful save
-export function createBatchStore(configDir, options = {}) {
-  return createDocumentStore({ configDir, file: "batches.json", normalize: normalizeDocument, empty: emptyDocument, ...options });
+export function createBatchStore(storage, options = {}) {
+  return createDocumentStore({ storage, collection: "batches", normalize: normalizeDocument, empty: emptyDocument, ...options });
 }
 
-// One JSON document under <configDir>/jira/, with the discipline described at
-// the top of this file. `normalize(value, now)` turns whatever is on disk into
-// a document every model function can be called on; `empty()` is what a
-// missing file reads as.
-export function createDocumentStore({ configDir, file, normalize, empty, ...options }) {
-  const dir = path.join(configDir, "jira");
-  const storePath = path.join(dir, file);
+// One document (record "main" of `collection`), with the discipline described
+// at the top of this file. `normalize(value, now)` turns whatever is stored
+// into a document every model function can be called on; `empty()` is what a
+// missing record reads as.
+export function createDocumentStore({ storage, collection, normalize, empty, ...options }) {
+  const records = storage.collection(collection);
   const now = options.now ?? (() => Date.now());
   const listeners = new Set();
   if (options.onChange) listeners.add(options.onChange);
@@ -79,14 +49,7 @@ export function createDocumentStore({ configDir, file, normalize, empty, ...opti
 
   async function ensureLoaded() {
     if (doc) return doc;
-    const { value, raw } = await readJson(storePath);
-    if (value === null && raw !== null) {
-      // Unparseable. Keeping it costs one file; throwing it away could cost
-      // the user the record of which worktrees have agents in them.
-      const kept = `${storePath}.corrupt-${now()}`;
-      await rename(storePath, kept).catch(() => {});
-      console.warn(`jira: ${storePath} was not valid JSON - kept it as ${kept} and started empty`);
-    }
+    const value = (await records.get("main"))?.value ?? null;
     // The store's own clock, not normalizeDocument's fallback: normalization
     // repairs a started cluster's missing ticket states, and those carry a
     // timestamp. Letting it reach for Date.now() puts a real one into a test
@@ -117,15 +80,13 @@ export function createDocumentStore({ configDir, file, normalize, empty, ...opti
   }
 
   return {
-    path: storePath,
-
     // A snapshot. Callers read it freely; only update() may change anything.
     async get() {
       return enqueue(async () => structuredClone(await ensureLoaded()));
     },
 
     // `mutator` gets a draft to change in place. It may return a value, which
-    // is handed back once the document is safely on disk - that is how a
+    // is handed back once the document is safely stored - that is how a
     // route gets the id it just created, or a model function's refusal.
     async update(mutator) {
       return enqueue(async () => {
@@ -133,7 +94,7 @@ export function createDocumentStore({ configDir, file, normalize, empty, ...opti
         const before = structuredClone(current);
         const draft = structuredClone(current);
         const result = await mutator(draft);
-        await writeJsonAtomic(storePath, draft);
+        await records.put("main", draft);
         doc = draft;
         notify(before, structuredClone(draft));
         return result;
