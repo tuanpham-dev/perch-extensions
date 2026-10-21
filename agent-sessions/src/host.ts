@@ -41,6 +41,8 @@ export interface ListedSession {
   canResume: boolean;
   openIn: { sessionName: string; windowIndex: number; windowId: string } | null;
   branch: string | null;
+  // In the all-projects list: the project folder it belongs to.
+  project?: string;
 }
 
 export interface SessionMessage {

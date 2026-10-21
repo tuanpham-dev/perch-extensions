@@ -19,7 +19,7 @@ A note is read and edited on its card. On a phone, where cards aren't drawn, tap
 A terminal's notes also float over that terminal as sticky cards. Project notes and file notes float over every terminal of the project, and a file's notes also float over that file's preview tabs (Markdown, JSON, CSV, images, PDFs, HTTP Client and other viewers). A file note's header shows the file's path in the project, with an **Open file** button that opens its preview:
 
 - Drag a card by its header, and resize it from its bottom-right corner. Its place and size are kept as a share of the terminal or preview, so they hold when you resize the window, and they're the same on every device.
-- The header's buttons change the card's colour (six colours, each readable in light and dark themes), open a menu (Edit, Show in NOTES, Delete…), open the file (file notes), and hide that card. Click the card's text to edit it in place; `Esc` goes back to reading.
+- The header's buttons edit the note, change the card's colour (six colours, each readable in light and dark themes), open a menu (Edit, Show in NOTES, Delete…), open the file (file notes), and hide that card. Double-click the card's text, or press its edit button, to edit it in place; a single click selects text and follows links. `Esc` goes back to reading. In NOTES, double-click a note's preview to edit it.
 - A chip in the corner (top right of a terminal, bottom right of a preview) shows **Notes N**, adds a note (on this terminal or on the whole project, or on the file), hides or shows all of them there, and offers **Show all** for cards hidden one by one. With no notes it's a single note button.
 - On a phone, or in a small grid cell, cards aren't drawn: the chip shows the count and opens the NOTES section.
 

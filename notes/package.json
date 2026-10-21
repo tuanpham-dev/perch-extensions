@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "displayName": "Notes",
   "description": "Sticky notes in Markdown on a project, a terminal or a file: coloured cards floating over their terminal or file preview, plus a NOTES section of the sidebar and a badge on every terminal and file that has one. Kept privately on the Perch server, never in the repository, so they're the same in every browser and on your phone.",
   "icon": "./icon.svg",

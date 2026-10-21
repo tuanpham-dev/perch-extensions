@@ -23,13 +23,59 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* Takes the room the controls leave, and shortens (picked project names
+   can be long) before they would wrap. */
 .as-heading {
-  margin-right: auto;
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   color: var(--fg-bright, var(--fg));
 }
 
 .as-project {
+  color: var(--fg-accent, var(--fg));
+}
+
+/* This project | All projects, as Jira's scope switch. */
+.as-scope {
+  display: inline-flex;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.as-scope-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: none;
+  background: none;
+  color: var(--fg-inactive, #999);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.as-scope-button + .as-scope-button {
+  border-left: 1px solid var(--border, #333);
+}
+
+.as-scope-button.active {
+  background: var(--list-active-bg, color-mix(in srgb, var(--focus-border, #4a9eff) 20%, transparent));
+  color: var(--list-active-fg, var(--fg-bright, #eee));
+}
+
+.as-scope-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.as-row-project {
   color: var(--fg-accent, var(--fg));
 }
 
@@ -286,4 +332,69 @@
 .as-error {
   color: var(--error);
   font-size: 12px;
+}
+
+/* The project picker in All projects: a button opening checkboxes. */
+.as-projects {
+  position: relative;
+}
+
+.as-projects-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  cursor: pointer;
+}
+
+.as-projects-button.filtered {
+  border-color: var(--focus-border, var(--input-border));
+}
+
+.as-projects-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.as-projects-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--menu-bg, var(--input-bg, var(--bg)));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.as-projects-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.as-projects-item:hover {
+  background: var(--list-hover-bg);
+}
+
+.as-projects-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.as-projects-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
 }

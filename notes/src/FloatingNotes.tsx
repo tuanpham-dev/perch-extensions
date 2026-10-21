@@ -214,6 +214,17 @@ function Card({
             <Icon name="go-to-file" />
           </button>
         )}
+        {!editing && (
+          <button
+            className="fn-icon"
+            title="Edit"
+            aria-label="Edit note"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setEditing(true)}
+          >
+            <Icon name="edit" />
+          </button>
+        )}
         <button
           className="fn-icon"
           title="Change colour"
@@ -295,13 +306,15 @@ function Card({
             }}
           />
         ) : (
-          <div className="fn-rendered" onClick={() => setEditing(true)} title="Click to edit">
+          // A double-click edits; a single click is free for selecting text
+          // and following links.
+          <div className="fn-rendered" onDoubleClick={() => setEditing(true)} title="Double-click to edit">
             {text.trim() ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={MARKDOWN_COMPONENTS}>
                 {text}
               </ReactMarkdown>
             ) : (
-              <span className="fn-placeholder">Empty note. Click to write.</span>
+              <span className="fn-placeholder">Empty note. Double-click to write.</span>
             )}
           </div>
         )}

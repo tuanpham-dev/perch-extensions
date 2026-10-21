@@ -236,7 +236,7 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
               rows={Math.min(16, Math.max(4, text.split("\n").length + 1))}
             />
           ) : (
-            <div className="notes-preview">
+            <div className="notes-preview" onDoubleClick={() => setEditing(true)} title="Double-click to edit">
               {text.trim() ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={MARKDOWN_COMPONENTS}>
                   {text}

@@ -4,6 +4,9 @@
 //
 //   GET  /sessions?cwd=            the project's conversations, across its
 //                                  worktrees, newest first
+//   POST /sessions/all             { folders } -> the same for several
+//                                  projects at once, each conversation tagged
+//                                  with the project it belongs to
 //   GET  /messages?agent=&id=&cwd= the last 50 messages of one
 //   POST /resume                   { agentId, id, cwd, title } -> the window
 //                                  it opened, or the one it's already open in
@@ -13,6 +16,25 @@ import os from "node:os";
 import path from "node:path";
 
 const PREVIEW_MESSAGES = 50;
+// "All projects" asks about every project the app knows: open, recent and
+// pinned. Bounded, and read a few folders at a time so a long list doesn't
+// start dozens of directory scans at once.
+const MAX_PROJECTS = 100;
+const PARALLEL_FOLDERS = 4;
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return out;
+}
 
 function expandHome(p) {
   if (typeof p !== "string") return "";
@@ -54,6 +76,43 @@ export function activate({ router, host, log }) {
       res.json({ sessions, agents });
     } catch (err) {
       log?.("listing failed:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post("/sessions/all", async (req, res) => {
+    const raw = Array.isArray(req.body?.folders) ? req.body.folders : null;
+    if (!raw) {
+      res.status(400).json({ error: "folders is required" });
+      return;
+    }
+    try {
+      const projects = [...new Set(raw.filter((f) => typeof f === "string" && f).map((f) => path.resolve(expandHome(f))))].slice(
+        0,
+        MAX_PROJECTS,
+      );
+      // Each project's worktrees, tagged with the project; a folder reached
+      // from two projects (a worktree opened on its own) counts once, under
+      // the first.
+      const seen = new Set();
+      const folders = [];
+      for (const [project, list] of await mapLimit(projects, PARALLEL_FOLDERS, async (p) => [p, await foldersOf(p)])) {
+        for (const f of list) {
+          if (seen.has(f.path)) continue;
+          seen.add(f.path);
+          folders.push({ ...f, project });
+        }
+      }
+      const perFolder = await mapLimit(folders, PARALLEL_FOLDERS, async (f) =>
+        (await host.agentSessions.list(f.path).catch(() => [])).map((s) => ({ ...s, branch: f.branch, project: f.project })),
+      );
+      const agents = (await host.agents.list()).map((a) => a.label);
+      const unique = new Map();
+      for (const s of perFolder.flat()) unique.set(`${s.agentId}\u0000${s.id}`, unique.get(`${s.agentId}\u0000${s.id}`) ?? s);
+      const sessions = [...unique.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+      res.json({ sessions, agents });
+    } catch (err) {
+      log?.("listing all failed:", err.message);
       res.status(500).json({ error: err.message });
     }
   });
