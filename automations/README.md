@@ -41,7 +41,7 @@ stop after three hops: the run that would be the fourth is recorded as `stopped`
 
 **Pause All.** The pause button in the panel's header stops every schedule and every Agent Tasks
 event from starting anything until you resume, and stays on across restarts. A schedule that comes
-due while paused is passed over, not saved up for when you resume. **Run now** still works.
+due while paused is passed over, not saved up for when you resume. **Run now** is turned off too.
 
 ## The panel
 

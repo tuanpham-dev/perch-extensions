@@ -541,7 +541,7 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     }),
   );
 
-  // Pause All. Manual Run now still works while paused: it isn't a trigger.
+  // Pause All: nothing starts while paused, Run now included.
   router.post(
     "/pause",
     route(async (req, res) => {
@@ -561,6 +561,7 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
       const automation = await s.get(req.params.id);
       if (!automation) throw new HttpError(404, `no automation ${req.params.id}`);
       if (instance.running.has(automation.id)) throw new HttpError(409, "already running");
+      if (await s.paused()) throw new HttpError(409, "automations are paused - resume them to run one");
       // Answered at once; a headless prompt can take minutes. The panel
       // hears the run start and finish.
       void runAutomation(automation.id, "manual");

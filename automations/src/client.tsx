@@ -427,7 +427,7 @@ function AutomationsPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProp
       {error && <div className="au-error">{error}</div>}
       {paused && (
         <div className="au-paused">
-          Paused - no schedule or Agent Tasks event starts anything. Run now still works.{" "}
+          Paused - nothing runs, not even Run now.{" "}
           <button type="button" className="au-link" onClick={() => void post("/pause", { paused: false })}>
             Resume
           </button>
@@ -480,8 +480,8 @@ function AutomationsPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProp
                   <button
                     type="button"
                     className="icon-button"
-                    title="Run now"
-                    disabled={a.running}
+                    title={paused ? "Paused - resume to run" : "Run now"}
+                    disabled={a.running || paused}
                     onClick={() => void post(`/run/${encodeURIComponent(a.id)}`, {})}
                   >
                     <Icon name={a.running ? "loading" : "play"} className={a.running ? "codicon-modifier-spin" : ""} />

@@ -287,6 +287,9 @@ test("Pause All stops schedules and events, survives a restart, and resumes", as
     await settle();
     assert.equal(calls, 0, "no event starts anything while paused");
     assert.equal((await h.find("auto_event")).runCount, 0);
+    assert.equal((await h.call("POST", "/run/:id", {}, { id: "auto_event" })).status, 409, "Run now is refused while paused");
+    await settle();
+    assert.equal(calls, 0, "a refused Run now starts nothing");
 
     assert.equal((await h.call("POST", "/pause", { paused: false })).body.paused, false);
     assert.equal((await h.doc()).paused, false, "resuming is saved");
