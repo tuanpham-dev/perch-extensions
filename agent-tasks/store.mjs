@@ -10,7 +10,10 @@
 //     crash can't leave a run in both or in neither;
 //   - every save prunes messages to the newest 500 per run and moves runs
 //     that are fully terminal and older than `archiveAfterDays` out to the
-//     archive (model.mjs decides both).
+//     archive (model.mjs decides both);
+//   - an update that leaves the document exactly as it was (an idle sweep, a
+//     heartbeat for a worker that already finished) writes nothing and tells
+//     no listener, so a quiet store stays quiet on disk and in the browser.
 //
 // `storage` is a parameter (the extension passes the host's; tests pass
 // scripts/memoryStorage.mjs) so nothing here knows where the data lives.
@@ -74,15 +77,22 @@ export function createStore(storage, options = {}) {
     });
   }
 
-  async function persist(next) {
+  // Prunes and archives `next`, then saves it - unless nothing differs from
+  // `before`, in which case it writes nothing and returns false. Comparing the
+  // serialized documents is exact for plain JSON: a value put back the way it
+  // was counts as unchanged, and a key added or removed always shows.
+  async function persist(before, next) {
     pruneMessages(next);
     const archived = splitArchivable(next, now(), await archiveDays());
     let archive = null;
     if (Object.keys(archived).length > 0) {
       archive = await readArchive();
       for (const [runId, entry] of Object.entries(archived)) archive.runs[runId] = { ...entry, archivedAt: now() };
+    } else if (JSON.stringify(before) === JSON.stringify(next)) {
+      return false;
     }
     await save(next, archive);
+    return true;
   }
 
   function notify(before, after) {
@@ -104,14 +114,15 @@ export function createStore(storage, options = {}) {
     },
 
     // fn(draft) mutates a copy of the document and returns any value; the
-    // copy is saved and becomes the document only if fn does not throw. fn
-    // may be async. Resolves with fn's return value.
+    // copy is saved and becomes the document only if fn does not throw, and
+    // only when it changed something. fn may be async. Resolves with fn's
+    // return value.
     update(fn) {
       return enqueue(async () => {
         const before = await ensureLoaded();
         const draft = clone(before);
         const result = await fn(draft);
-        await persist(draft);
+        if (!(await persist(before, draft))) return result;
         doc = draft;
         notify(before, draft);
         return result;
@@ -125,6 +136,17 @@ export function createStore(storage, options = {}) {
 
     loadArchive() {
       return enqueue(() => readArchive());
+    },
+
+    // Drops one archived run for good. Resolves true when it was there.
+    deleteArchivedRun(runId) {
+      return enqueue(async () => {
+        const archive = await readArchive();
+        if (!archive.runs[runId]) return false;
+        delete archive.runs[runId];
+        await state.put("archive", archive);
+        return true;
+      });
     },
 
     // Moves one archived run back into the live document. Its activity clock

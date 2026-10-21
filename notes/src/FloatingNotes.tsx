@@ -8,6 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { BodySaver } from "./bodySaver";
 import { call, host } from "./host";
 import {
   clearPendingCardEdit,
@@ -114,13 +115,16 @@ function Card({
   const [menu, setMenu] = useState<"color" | "more" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+  const saver = useRef<BodySaver | null>(null);
+  saver.current ??= new BodySaver((body) => saveBody(note.id, body), note.body);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const shown = live ?? box;
   const color: NoteColor = note.color ?? "yellow";
 
-  // Another device's edit, unless this one is being edited.
+  // Another device's edit, unless this one is being edited or has typing
+  // that isn't saved yet.
   useEffect(() => {
-    if (!editing) setText(note.body);
+    if (!editing && saver.current?.external(note.body)) setText(note.body);
   }, [note.body, editing]);
 
   useEffect(() => {
@@ -132,16 +136,27 @@ function Card({
     }
   }, [editing, note.id, onBusy]);
 
-  const flush = (value: string) => {
+  // Saves whatever is typed now, after any save still in flight; typing that
+  // lands meanwhile keeps the card dirty, so it gets saved too.
+  const flush = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
-    if (value !== note.body) saveBody(note.id, value).catch((err: Error) => setError(err.message));
+    saver.current?.flush().catch((err: Error) => setError(err.message));
   };
 
   const stopEditing = () => {
-    flush(text);
+    flush();
     setEditing(false);
   };
+
+  // Typing not yet saved when the card goes away is saved anyway.
+  useEffect(
+    () => () => {
+      if (saver.current?.dirty) flush();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // Drag (header) or resize (corner): pointer capture, then one save.
   const startGesture = (e: React.PointerEvent, kind: "move" | "resize") => {
@@ -293,8 +308,9 @@ function Card({
             onChange={(e) => {
               const value = e.target.value;
               setText(value);
+              saver.current?.edit(value);
               if (timer.current !== null) window.clearTimeout(timer.current);
-              timer.current = window.setTimeout(() => flush(value), SAVE_DELAY_MS);
+              timer.current = window.setTimeout(flush, SAVE_DELAY_MS);
             }}
             onBlur={stopEditing}
             onKeyDown={(e) => {

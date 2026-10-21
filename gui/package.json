@@ -2,7 +2,7 @@
   "name": "gui",
   "private": true,
   "publisher": "perch",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "displayName": "GUI Apps",
   "description": "Run Linux GUI apps on the server and view/control them in the browser through xpra - adaptive, low-latency HTML5 remote display (much faster than X11 forwarding or VNC). Requires xpra installed on the host; see this extension's README.",
   "icon": "./icon.svg",

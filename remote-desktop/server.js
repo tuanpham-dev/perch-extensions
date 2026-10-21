@@ -86,14 +86,28 @@ function shellQuote(word) {
   return `'${String(word).replace(/'/g, `'\\''`)}'`;
 }
 
+// The commands this file runs itself (qr-host --version, tar), while they
+// run, so deactivate() can end exactly these and nothing else.
+const children = new Set();
+
 function run(bin, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { encoding: "utf8", timeout: BIN_CHECK_TIMEOUT_MS, ...opts }, (err, stdout, stderr) => {
+    const child = execFile(bin, args, { encoding: "utf8", timeout: BIN_CHECK_TIMEOUT_MS, ...opts }, (err, stdout, stderr) => {
+      children.delete(child);
       if (err) reject(Object.assign(new Error(stderr.trim() || err.message), { code: err.code }));
       else resolve(stdout);
     });
+    children.add(child);
   });
 }
+
+// Set while this extension's own session is running (started by /start, or
+// found still running from an earlier run of this server): how deactivate()
+// stops it. Module-level, since a disable and re-enable within one server
+// process reuses this module.
+let stopOwnSession = null;
+// Aborts a release download in progress.
+let downloadCtl = null;
 
 function checkPortFree(port) {
   return new Promise((resolve) => {
@@ -244,14 +258,14 @@ const ARCH_ASSET = { x64: "qr-host-linux-x64.tar.gz", arm64: "qr-host-linux-arm6
 
 const download = { state: "idle", percent: 0, error: null, version: null };
 
-async function fetchJson(url) {
-  const res = await fetch(url, { headers: { accept: "application/vnd.github+json", "user-agent": "perch-remote-desktop" } });
+async function fetchJson(url, signal) {
+  const res = await fetch(url, { signal, headers: { accept: "application/vnd.github+json", "user-agent": "perch-remote-desktop" } });
   if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
   return res.json();
 }
 
-async function fetchText(url) {
-  const res = await fetch(url, { headers: { "user-agent": "perch-remote-desktop" } });
+async function fetchText(url, signal) {
+  const res = await fetch(url, { signal, headers: { "user-agent": "perch-remote-desktop" } });
   if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
   return res.text();
 }
@@ -259,17 +273,17 @@ async function fetchText(url) {
 // Fetches the latest release's asset for this machine, checks it against
 // the release's SHA256SUMS, unpacks it, and leaves nothing half-written
 // behind on failure.
-async function downloadEngine(log) {
+async function downloadEngine(log, signal) {
   const asset = process.platform === "linux" ? ARCH_ASSET[process.arch] : null;
   if (!asset) throw new Error(`no release build for ${process.platform} ${process.arch}; build qr-host yourself and set its path in Settings`);
-  const release = await fetchJson(RELEASE_API);
+  const release = await fetchJson(RELEASE_API, signal);
   download.version = String(release.tag_name ?? "").replace(/^v/, "") || null;
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const file = assets.find((a) => a.name === asset);
   const sums = assets.find((a) => a.name === "SHA256SUMS");
   if (!file) throw new Error(`the latest release (${release.tag_name}) has no ${asset}`);
   if (!sums) throw new Error(`the latest release (${release.tag_name}) has no SHA256SUMS`);
-  const expected = fetchText(sums.browser_download_url).then((text) => {
+  const expected = fetchText(sums.browser_download_url, signal).then((text) => {
     const line = text.split("\n").find((l) => l.trim().endsWith(asset));
     const hash = line ? line.trim().split(/\s+/)[0] : null;
     if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) throw new Error(`SHA256SUMS has no entry for ${asset}`);
@@ -284,7 +298,7 @@ async function downloadEngine(log) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), DOWNLOAD_TIMEOUT_MS);
     try {
-      const res = await fetch(file.browser_download_url, { signal: ctl.signal, headers: { "user-agent": "perch-remote-desktop" } });
+      const res = await fetch(file.browser_download_url, { signal: AbortSignal.any([ctl.signal, signal]), headers: { "user-agent": "perch-remote-desktop" } });
       if (!res.ok || !res.body) throw new Error(`${file.browser_download_url}: ${res.status} ${res.statusText}`);
       const total = Number(res.headers.get("content-length")) || Number(file.size) || 0;
       const hash = createHash("sha256");
@@ -399,7 +413,12 @@ export function activate({ router, log, getSettings, host }) {
     const candidates = [...new Set([lastPort, settings.port, ...owned].filter((p) => typeof p === "number" && p > 0))];
     for (const port of candidates) {
       const status = await probeStatus(port);
-      if (status) return fromHostStatus(port, status);
+      if (status) {
+        // A host left running by an earlier run of this server is still
+        // this extension's: disabling it stops that one too.
+        stopOwnSession = stopEverything;
+        return fromHostStatus(port, status);
+      }
     }
     return NOT_RUNNING;
   }
@@ -414,6 +433,7 @@ export function activate({ router, log, getSettings, host }) {
       log(`qr-host on ${port} did not exit after its session was killed`);
     }
     lastPort = null;
+    if (stopOwnSession === stopEverything) stopOwnSession = null;
   }
 
   async function statusBody(settings, binary, running) {
@@ -455,7 +475,8 @@ export function activate({ router, log, getSettings, host }) {
     download.error = null;
     download.version = null;
     res.json({ ...download });
-    downloadEngine(log)
+    downloadCtl = new AbortController();
+    downloadEngine(log, downloadCtl.signal)
       .then(() => {
         download.state = "done";
       })
@@ -464,7 +485,10 @@ export function activate({ router, log, getSettings, host }) {
         download.error = err.message;
         log(`downloading qr-host failed: ${err.message}`);
       })
-      .finally(forgetBinary);
+      .finally(() => {
+        downloadCtl = null;
+        forgetBinary();
+      });
   });
 
   router.get("/download/status", (_req, res) => {
@@ -535,6 +559,9 @@ export function activate({ router, log, getSettings, host }) {
       } else {
         args.push("--source", settings.display ? `x11:${settings.display}` : "auto");
       }
+      // The log's folder exists only after a download; a qr-host found on
+      // PATH still logs there.
+      await mkdir(DOWNLOAD_DIR, { recursive: true });
       await host.sessions.create(SESSION_NAME, os.homedir(), true);
       // The host's output goes to the session and to a file (its log is
       // on stdout), so a failed start or a rate-control question can be
@@ -559,6 +586,7 @@ export function activate({ router, log, getSettings, host }) {
       ].join(" ");
       await host.sessions.sendText(SESSION_NAME, line, true);
       lastPort = port;
+      stopOwnSession = stopEverything;
 
       const status = await waitForStatus(port);
       if (!status) {
@@ -627,4 +655,18 @@ export function activate({ router, log, getSettings, host }) {
       res.status(500).json({ error: err.message });
     }
   });
+}
+
+// Disable or uninstall: stops what this extension started - its own
+// session (the host takes its display and desktop down with it), its own
+// commands still running, and a download in progress - by its own handles,
+// never by a process-name match.
+export async function deactivate() {
+  downloadCtl?.abort();
+  downloadCtl = null;
+  for (const child of children) child.kill();
+  children.clear();
+  const stop = stopOwnSession;
+  stopOwnSession = null;
+  await stop?.();
 }

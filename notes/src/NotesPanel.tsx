@@ -5,6 +5,7 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { host } from "./host";
 import { plainTitle } from "./plainTitle";
+import { BodySaver } from "./bodySaver";
 import { cardsMenu, useActiveFloat, type MenuItem as NotesMenuItem } from "./activeFloat";
 import {
   addNote,
@@ -101,7 +102,8 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
   const [error, setError] = useState<string | null>(null);
   const [swatches, setSwatches] = useState(false);
   const timer = useRef<number | null>(null);
-  const dirty = useRef(false);
+  const saver = useRef<BodySaver | null>(null);
+  saver.current ??= new BodySaver((body) => saveBody(note.id, body), note.body);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
 
   // A note the panel was asked to show (new, or from a badge): open it.
@@ -117,23 +119,23 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
   // Another device's edit arrives through the poll; take it unless this one
   // has unsaved typing of its own.
   useEffect(() => {
-    if (!dirty.current) setText(note.body);
+    if (saver.current?.external(note.body)) setText(note.body);
   }, [note.body]);
 
-  const flush = (value: string) => {
+  // Saves whatever is typed now. Typing that lands while this save is in
+  // flight keeps the note dirty, so it gets saved too.
+  const flush = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
-    saveBody(note.id, value)
-      .then(() => {
-        dirty.current = false;
-        setError(null);
-      })
+    saver.current
+      ?.flush()
+      .then(() => setError(null))
       .catch((err: Error) => setError(err.message));
   };
 
   useEffect(
     () => () => {
-      if (timer.current !== null && dirty.current) flush(textRef.current?.value ?? text);
+      if (saver.current?.dirty) flush();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -141,9 +143,9 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
 
   const onChange = (value: string) => {
     setText(value);
-    dirty.current = true;
+    saver.current?.edit(value);
     if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => flush(value), SAVE_DELAY_MS);
+    timer.current = window.setTimeout(flush, SAVE_DELAY_MS);
   };
 
   const remove = () => deleteNote(note).catch((err: Error) => setError(err.message));
@@ -231,7 +233,7 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
               value={text}
               placeholder="Write in Markdown…"
               onChange={(e) => onChange(e.target.value)}
-              onBlur={() => dirty.current && flush(text)}
+              onBlur={() => saver.current?.dirty && flush()}
               onKeyDown={(e) => e.stopPropagation()}
               rows={Math.min(16, Math.max(4, text.split("\n").length + 1))}
             />

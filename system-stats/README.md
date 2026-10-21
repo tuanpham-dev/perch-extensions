@@ -11,6 +11,6 @@ Shows how much memory the host is using in Perch's status bar (`6.1 / 23.4 GB`, 
 
 The CPU chart starts recording when the popover opens and is cleared when it closes. The popover asks the server for the full reading (which checks each filesystem) only while it is open. The status bar reading itself is a light poll every 3 seconds, paused while the browser tab is hidden.
 
-Memory "in use" is `MemTotal - MemAvailable` from `/proc/meminfo`, so page cache doesn't count as used. Off Linux, the numbers fall back to Node's `os` module, and the network row is dropped.
+Memory "in use" is `MemTotal - MemAvailable` from `/proc/meminfo`, so page cache doesn't count as used. On macOS it is total memory minus the free, inactive and speculative pages `vm_stat` reports (at the page size in its header), and swap comes from `sysctl vm.swapusage`. Elsewhere the numbers fall back to Node's `os` module. Off Linux the network row is dropped.
 
 This replaces the memory reading that used to be built into Perch's status bar. Like any status bar item, it can be dragged to reorder it or move it to the other end of the bar.

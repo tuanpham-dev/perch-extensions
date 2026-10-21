@@ -21,6 +21,8 @@
 // the tab was closed, past the host's unsaved-changes confirm.
 import type { MonacoNs, TextModel } from "./monacoNs";
 import { clearBackup, hashText, readBackup, writeBackup } from "./unsavedBackup";
+import type { FileText } from "./fileApi";
+import { UTF8, type FileEncoding } from "./textCodec";
 import { GitTracker } from "./gitTracker";
 
 export interface FileEntry {
@@ -30,6 +32,8 @@ export interface FileEntry {
   model: TextModel | null;
   /** Last known on-disk content: the baseline `dirty` is measured against. */
   savedText: string;
+  /** How the file's bytes were read, so a save writes them back the same way. */
+  encoding: FileEncoding;
   refs: number;
   disposed: boolean;
   listeners: Set<() => void>;
@@ -159,6 +163,20 @@ export function markSaved(entry: FileEntry, text: string): void {
   void entry.git?.refresh();
 }
 
+/**
+ * Takes the file as it is on disk now (the "Reload" answer to a save over a
+ * file that changed): it becomes both the baseline and the editor's text.
+ */
+export function reloadFromDisk(entry: FileEntry, file: FileText): void {
+  entry.savedText = file.text;
+  entry.encoding = file.encoding;
+  entry.restored = null;
+  entry.model?.setValue(file.text);
+  flushBackup(entry);
+  notify(entry);
+  void entry.git?.refresh();
+}
+
 /** Hides the restored-edits notice, keeping the edits. */
 export function dismissRestored(entry: FileEntry): void {
   entry.restored = null;
@@ -183,7 +201,7 @@ export function discardChanges(entry: FileEntry): void {
 export function acquireFile(
   monaco: MonacoNs,
   filePath: string,
-  load: () => Promise<string>,
+  load: () => Promise<FileText>,
 ): { entry: FileEntry; release: () => void } {
   let entry = entries.get(filePath);
   if (!entry) {
@@ -191,6 +209,7 @@ export function acquireFile(
       filePath,
       model: null,
       savedText: "",
+      encoding: UTF8,
       refs: 0,
       disposed: false,
       listeners: new Set(),
@@ -203,7 +222,8 @@ export function acquireFile(
     };
     created.ready = (async () => {
       // The backup read runs alongside the file read rather than after it.
-      const [text, backup] = await Promise.all([load(), readBackup(filePath)]);
+      const [file, backup] = await Promise.all([load(), readBackup(filePath)]);
+      const text = file.text;
       if (created.disposed) throw new Error("The editor tab was closed while the file was loading.");
       const uri = monaco.Uri.file(filePath);
       // An existing model for this URI can only be an orphan from a previous
@@ -223,6 +243,7 @@ export function acquireFile(
       }
       created.model = model;
       created.savedText = text;
+      created.encoding = file.encoding;
       created.git = new GitTracker(filePath, model);
       if (restore) {
         created.restored = { diskChanged: restore.base !== hashText(text) };

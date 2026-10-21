@@ -60,18 +60,20 @@ export async function apiGetJson<T>(path: string): Promise<T> {
 }
 
 // ---- Tab keys ----
-// A tab's identity is root + path + revision, joined with NUL (which can't
-// appear in any of them) into the single string openViewerTab takes as a
-// path. The visible title is set separately via its `title` option.
+// A tab's identity is root + path + revision (+ a line range, "10,20", for
+// the history of some lines), joined with NUL (which can't appear in any of
+// them) into the single string openViewerTab takes as a path. The range is
+// only appended when there is one, so a whole-file tab keeps the key it
+// always had. The visible title is set separately via its `title` option.
 const KEY_SEP = "\u0000";
 
-export function encodeKey(root: string, relPath: string, rev = ""): string {
-  return [root, relPath, rev].join(KEY_SEP);
+export function encodeKey(root: string, relPath: string, rev = "", lines = ""): string {
+  return [root, relPath, rev, ...(lines ? [lines] : [])].join(KEY_SEP);
 }
 
-export function decodeKey(key: string): { root: string; relPath: string; rev: string } {
-  const [root, relPath, rev] = key.split(KEY_SEP);
-  return { root, relPath, rev: rev ?? "" };
+export function decodeKey(key: string): { root: string; relPath: string; rev: string; lines: string } {
+  const [root, relPath, rev, lines] = key.split(KEY_SEP);
+  return { root, relPath, rev: rev ?? "", lines: lines ?? "" };
 }
 
 export function basenameOf(p: string): string {

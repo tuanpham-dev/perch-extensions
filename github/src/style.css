@@ -19,7 +19,80 @@
   overflow-y: auto;
 }
 
+.github-error-title {
+  font-weight: 600;
+}
+
+.github-error-detail {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+  word-break: break-word;
+}
+
+/* Only shown when the host has no header slot to portal Refresh into. */
+.github-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 6px 0;
+}
+
+.github-filters {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 2px;
+}
+
+.github-chip {
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--fg-inactive, #999);
+  background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.github-chip:hover {
+  color: var(--fg, #ccc);
+}
+
+.github-chip-on {
+  color: var(--fg-bright, #fff);
+  border-color: var(--focus-border, #007fd4);
+}
+
+.github-state {
+  font-size: 11px;
+  color: var(--fg, #ccc);
+  background: var(--input-bg, transparent);
+  border: 1px solid var(--input-border, var(--border, rgba(255, 255, 255, 0.12)));
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.github-more {
+  margin: 4px 12px 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--fg, #ccc);
+  background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 3px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.github-more:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .github-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   padding: 6px 12px 2px;
   font-size: 11px;
   font-weight: 600;

@@ -80,6 +80,48 @@ function looksBinary(buf) {
   return false;
 }
 
+// "10,20" as { start, end }, or null when it isn't a usable range.
+export function parseLineRange(text) {
+  const m = /^\s*(\d+)\s*,\s*(\d+)\s*$/.exec(String(text ?? ""));
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  return start >= 1 && end >= start ? { start, end } : null;
+}
+
+// LOG_FORMAT records as commits. `withStatus`: each record ends with its
+// --name-status line(s), giving the path at that commit. Without it (a
+// line-range log) the path is the one asked about; anything after the
+// subject (an older git printing -L's patch despite -s) is ignored.
+export function parseLog(raw, relPath, withStatus = true) {
+  return raw
+    .split("\x1e")
+    // The leading separator makes the first chunk empty.
+    .filter((record) => record.trim().length > 0)
+    .map((record) => {
+      const [hash, author, timestamp, rest] = record.split("\x1f");
+      // `rest` is the subject followed by this commit's name-status
+      // lines: "<subject>\n\nM\tpath" (or "R100\told\tnew").
+      const lines = (rest ?? "").split("\n");
+      const subject = lines[0] ?? "";
+      const statusLine = withStatus ? (lines.slice(1).find((l) => l.trim().length > 0) ?? "") : "";
+      const fields = statusLine.split("\t");
+      const code = fields[0] ?? "";
+      const isRename = code.startsWith("R") || code.startsWith("C");
+      return {
+        hash: hash.trim(),
+        author,
+        timestamp: Number(timestamp),
+        subject,
+        status: code ? code[0] : "M",
+        // The path this commit knew the file by, and for a rename the
+        // name it had before.
+        path: (isRename ? fields[2] : fields[1]) ?? relPath,
+        oldPath: isRename ? (fields[1] ?? null) : null,
+      };
+    });
+}
+
 export function activate({ router }) {
   // Resolve a request's repo root and the path relative to it. Every route
   // below starts here, so a path outside a repository (or outside its root)
@@ -117,7 +159,12 @@ export function activate({ router }) {
 
   // One file's commits, newest first, following it through renames. The
   // name-status line under each record carries the path AT that commit,
-  // which is what a diff of that revision has to ask for.
+  // which is what a diff of that revision has to ask for. Paged: `skip`
+  // and `limit` (at most 500 a call), so Load More reaches any depth.
+  //
+  // With `lines=start,end` it is the history of that line range instead
+  // (`git log -L start,end:file`, from `rev` when given): the commits that
+  // changed those lines, which git tracks as they move through the file.
   router.get("/history", async (req, res) => {
     const target = await resolveTarget(req, res);
     if (!target) return;
@@ -129,50 +176,32 @@ export function activate({ router }) {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(500, Math.floor(rawLimit)) : 50;
     const rawSkip = Number(req.query.skip);
     const skip = Number.isFinite(rawSkip) && rawSkip > 0 ? Math.floor(rawSkip) : 0;
+    const lines = typeof req.query.lines === "string" ? req.query.lines : "";
+    const range = parseLineRange(lines);
+    if (lines && !range) {
+      res.status(400).json({ error: "lines must be start,end (1-based, start <= end)" });
+      return;
+    }
+    const rev = typeof req.query.rev === "string" ? req.query.rev.trim() : "";
+    if (rev && !COMMIT_HASH_RE.test(rev)) {
+      res.status(400).json({ error: "rev must be a hex commit SHA" });
+      return;
+    }
+    const paging = ["-n", String(limit), "--skip", String(skip)];
     try {
-      const raw = await git(
-        [
-          "log",
-          "--follow",
-          "--name-status",
-          "-M",
-          `--format=${LOG_FORMAT}`,
-          "-n",
-          String(limit),
-          "--skip",
-          String(skip),
-          "--",
-          target.relPath,
-        ],
-        target.root,
-      );
-      const commits = raw
-        .split("\x1e")
-        // The leading separator makes the first chunk empty.
-        .filter((record) => record.trim().length > 0)
-        .map((record) => {
-          const [hash, author, timestamp, rest] = record.split("\x1f");
-          // `rest` is the subject followed by this commit's name-status
-          // lines: "<subject>\n\nM\tpath" (or "R100\told\tnew").
-          const lines = (rest ?? "").split("\n");
-          const subject = lines[0] ?? "";
-          const statusLine = lines.slice(1).find((l) => l.trim().length > 0) ?? "";
-          const fields = statusLine.split("\t");
-          const code = fields[0] ?? "";
-          const isRename = code.startsWith("R") || code.startsWith("C");
-          return {
-            hash,
-            author,
-            timestamp: Number(timestamp),
-            subject,
-            status: code ? code[0] : "M",
-            // The path this commit knew the file by, and for a rename the
-            // name it had before.
-            path: (isRename ? fields[2] : fields[1]) ?? target.relPath,
-            oldPath: isRename ? (fields[1] ?? null) : null,
-          };
-        });
-      res.json({ commits, path: target.relPath });
+      const raw = range
+        ? // -s: the commits only; their patches are what the diff pane shows.
+          await git(
+            ["log", `-L${range.start},${range.end}:${target.relPath}`, "-s", `--format=${LOG_FORMAT}`, ...paging, ...(rev ? [rev] : [])],
+            target.root,
+            BLAME_TIMEOUT,
+          )
+        : await git(
+            ["log", "--follow", "--name-status", "-M", `--format=${LOG_FORMAT}`, ...paging, "--", target.relPath],
+            target.root,
+          );
+      const commits = parseLog(raw, target.relPath, !range);
+      res.json({ commits, path: target.relPath, hasMore: commits.length === limit });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

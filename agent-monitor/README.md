@@ -37,7 +37,7 @@ is nothing more to say, the body repeats the state (`Claude Code finished.`).
 
 Each fires once per change of state, so a question reported twice by the agent is one
 notification. A turn you interrupted and a resumed session send nothing. Turn either kind off
-with the two Agent Monitor notify settings in Settings. Core drops a second push for the same
+with `agentMonitor.notify.waiting` (an agent asking you something) and `agentMonitor.notify.done` (a finished turn) in Settings. Core drops a second push for the same
 window within 5 seconds, so two permission prompts in quick succession show as one.
 
 ## The AGENTS board
@@ -158,7 +158,9 @@ Each one is classified in priority order:
    the bundled daemon or the tmux backend, so this step is dormant and the state comes
    from the hooks above or the transcript below.
 3. **Transcript recency**, for the Claude Code session running in that window (from
-   `~/.claude/sessions/`), or else the cwd's most recently written transcript
+   `~/.claude/sessions/`), or else the cwd's most recently written transcript (in
+   `~/.claude/projects/<slug>`, where the slug is the folder's path with every character
+   other than a letter or digit turned into `-`, so `~/my_app proj` is found too)
    — written within `agentMonitor.waitingThresholdSeconds` (default 45) means working,
    otherwise done, and idle once it has been quiet for 30 minutes. Not waiting: without
    a hook a permission prompt and a finished turn look the same, and the `?` would sit on

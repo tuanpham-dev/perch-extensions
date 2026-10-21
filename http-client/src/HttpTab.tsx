@@ -3,14 +3,19 @@ import { createPortal } from "react-dom";
 import { fromCurl, toCurl } from "./curl";
 import { call, host, HttpError, pendingScratch, type HistoryEntry, type HttpResponse } from "./host";
 import {
+  chainedNames,
   environmentNames,
   formatRequest,
   mergeEnvironments,
   parseHttpFile,
   resolveRequest,
+  resolveText,
+  serverVariableNames,
   type Environments,
   type HttpFile,
   type HttpRequest,
+  type NamedExchange,
+  type ResolveContext,
 } from "./httpFile";
 import { ResponseView, formatSize } from "./ResponseView";
 
@@ -22,6 +27,35 @@ const HISTORY_BODY_BASE64 = Math.ceil((1024 * 1024 * 4) / 3);
 function dirOf(p: string): string {
   const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return i > 0 ? p.slice(0, i) : p;
+}
+
+// The last exchange of each named request, per file, for {{name.response.…}}.
+// Module-level so it outlives the tab being closed and reopened.
+const namedExchanges = new Map<string, Record<string, NamedExchange>>();
+
+function exchangesFor(key: string): Record<string, NamedExchange> {
+  let found = namedExchanges.get(key);
+  if (!found) namedExchanges.set(key, (found = {}));
+  return found;
+}
+
+function decodeBody(base64: string): string {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+// A path from a .http file against the file's folder ("~" and absolute
+// paths as they are), for reading a "<@ ./file" body.
+function joinPath(dir: string, p: string): string {
+  if (p.startsWith("/") || p.startsWith("~") || /^[A-Za-z]:[\\/]/.test(p)) return p;
+  return `${dir.replace(/[\\/]+$/, "")}/${p.replace(/^\.[\\/]/, "")}`;
+}
+
+// Everything in a request that can hold a {{variable}}.
+function requestText(req: HttpRequest): string {
+  return [req.url, ...req.headers.flat(), req.body, req.bodyFile ?? ""].join("\n");
 }
 
 function newId(): string {
@@ -95,11 +129,23 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
   const [lastId, setLastId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  // Env files that exist but couldn't be read, shown above the requests.
+  const [envErrors, setEnvErrors] = useState<{ file: string; error: string }[]>([]);
+  const [serverVars, setServerVars] = useState<{ dotenv: Record<string, string>; processEnv: Record<string, string> }>({ dotenv: {}, processEnv: {} });
+  // Bumped when a named request's response arrives, so {{name.response…}}
+  // highlighting catches up.
+  const [, setExchangeVersion] = useState(0);
   const historyKey = scratch ? "scratch" : filePath;
   const baseDir = scratch ? (host.app?.getActiveContext().cwd ?? "") : dirOf(filePath);
   const cancelRef = useRef<string | null>(null);
+  // The send in flight, which may be a request a chained one reads from.
+  const inFlightRef = useRef<string | null>(null);
 
+  // Counts file reads, so the env files are read again on every Reload or
+  // return to the tab even when the .http text itself didn't change.
+  const [reads, setReads] = useState(0);
   const loadFile = useCallback(() => {
     if (scratch) return;
     fetch(`/api/download?path=${encodeURIComponent(filePath)}`)
@@ -107,6 +153,7 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
       .then((text) => {
         setSource(text);
         setLoadError(null);
+        setReads((n) => n + 1);
       })
       .catch((err: Error) => setLoadError(err.message));
   }, [filePath, scratch]);
@@ -116,17 +163,25 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
     if (active) loadFile();
   }, [active, loadFile]);
 
+  // The server-side values the file asks for by name ({{$dotenv X}},
+  // {{$processEnv Y}}), fetched along with the environments.
+  const wanted = useMemo(() => serverVariableNames(scratch ? `${draft.url}\n${draft.headers}\n${draft.body}` : (source ?? "")), [scratch, draft, source]);
+  const wantedKey = `${wanted.dotenv.join(",")}|${wanted.processEnv.join(",")}`;
   useEffect(() => {
     if (!baseDir) return;
-    call<{ shared: Environments; private: Environments }>(`/env?dir=${encodeURIComponent(baseDir)}`)
+    const params = new URLSearchParams({ dir: baseDir, dotenv: wanted.dotenv.join(","), processEnv: wanted.processEnv.join(",") });
+    call<{ shared: Environments; private: Environments; dotenv?: Record<string, string>; processEnv?: Record<string, string>; errors?: { file: string; error: string }[] }>(`/env?${params}`)
       .then((d) => {
         const merged = mergeEnvironments(d.shared, d.private);
         setEnvs(merged);
+        setServerVars({ dotenv: d.dotenv ?? {}, processEnv: d.processEnv ?? {} });
+        setEnvErrors(d.errors ?? []);
         const names = environmentNames(merged);
         setEnv((current) => (current && names.includes(current) ? current : (names[0] ?? null)));
       })
-      .catch(() => {});
-  }, [baseDir, source]);
+      .catch((err: Error) => setEnvErrors([{ file: "environments", error: err.message }]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseDir, source, wantedKey, reads]);
 
   const loadHistory = useCallback(() => {
     call<{ entries: HistoryEntry[] }>(`/history?key=${encodeURIComponent(historyKey)}`)
@@ -140,69 +195,113 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
   const fileVars = scratch ? {} : parsed.variables;
   const current = requests[Math.min(selected, Math.max(0, requests.length - 1))];
 
-  const resolve = (req: HttpRequest) => resolveRequest(req, fileVars, envs, env);
+  const exchanges = exchangesFor(historyKey);
+  const context = (): ResolveContext => ({ ...serverVars, named: exchanges });
+  const resolve = (req: HttpRequest) => resolveRequest(req, fileVars, envs, env, context());
 
-  const send = async (req: HttpRequest, index: number) => {
-    setSelected(index);
-    setNotice(null);
+  const record = (entry: Record<string, unknown>) =>
+    void call("/history", { method: "POST", body: JSON.stringify({ key: historyKey, entry: { at: Date.now(), ...entry } }) })
+      .then(loadHistory)
+      .catch(() => {});
+
+  // Sends one request and records it; throws with a message to show. The
+  // named requests it reads from that haven't answered yet go first, so
+  // {{login.response.body.$.token}} works on the first Send.
+  const transmit = async (req: HttpRequest, chain: string[], run: string): Promise<{ response: HttpResponse; id: string }> => {
+    for (const name of chainedNames(requestText(req))) {
+      if (exchanges[name] || name === req.name) continue;
+      const dep = requests.find((r) => r.name === name);
+      if (!dep) continue; // left for resolve to report as missing
+      if (chain.includes(name)) throw new Error(`These requests read from each other: ${[...chain, name].join(" → ")}`);
+      setNotice(`Sending ${name} first…`);
+      await transmit(dep, [...chain, name], run);
+    }
     const { resolved, missing } = resolve(req);
-    if (missing.length) {
-      setError(`{{${missing[0]}}} has no value${env ? ` in "${env}"` : ""}`);
-      setResponse(null);
-      return;
+    if (missing.length) throw new Error(`{{${missing[0]}}} has no value${env ? ` in "${env}"` : ""}${chain.length ? ` (in ${req.name ?? "a request"})` : ""}`);
+    if (!resolved.url) throw new Error("Enter a URL");
+    let body = resolved.body;
+    let bodyFile = resolved.bodyFile;
+    // "<@ ./file": the file's text with its own {{variables}} filled.
+    if (bodyFile && req.bodyFileVars) {
+      const path = joinPath(baseDir, bodyFile);
+      const r = await fetch(`/api/download?path=${encodeURIComponent(path)}`);
+      if (!r.ok) throw new Error(`Couldn't read the body file ${path} (${r.status})`);
+      const fileMissing = new Set<string>();
+      body = resolveText(await r.text(), fileVars, envs, env, fileMissing, context());
+      if (fileMissing.size) throw new Error(`{{${[...fileMissing][0]}}} in ${bodyFile} has no value`);
+      bodyFile = undefined;
     }
-    if (!resolved.url) {
-      setError("Enter a URL");
-      return;
-    }
+    // Cancel pressed while an earlier step ran: send nothing more.
+    if (cancelRef.current !== run) throw new Error("Cancelled");
     const id = newId();
-    cancelRef.current = id;
-    setSendingId(id);
-    setError(null);
+    inFlightRef.current = id;
     try {
-      const r = await call<HttpResponse>("/send", { method: "POST", body: JSON.stringify({ id, ...resolved }) });
-      if (cancelRef.current !== id) return;
-      setResponse(r);
-      setLastId(id);
+      const r = await call<HttpResponse>("/send", {
+        method: "POST",
+        body: JSON.stringify({ id, ...resolved, body, bodyFile, baseDir }),
+      });
+      if (req.name) {
+        exchanges[req.name] = {
+          request: { headers: resolved.headers, body },
+          response: { headers: r.headers, body: decodeBody(r.bodyBase64) },
+        };
+        setExchangeVersion((v) => v + 1);
+      }
       // History keeps a body up to 1 MB; a bigger one is listed without it.
       const keepBody = !r.truncated && r.bodyBase64.length <= HISTORY_BODY_BASE64;
-      void call("/history", {
-        method: "POST",
-        body: JSON.stringify({
-          key: historyKey,
-          entry: {
-            at: Date.now(),
-            method: resolved.method,
-            url: resolved.url,
-            status: r.status,
-            timeMs: r.timeMs,
-            sizeBytes: r.sizeBytes,
-            contentType: r.contentType,
-            headers: r.headers,
-            ...(keepBody ? { bodyBase64: r.bodyBase64 } : {}),
-          },
-        }),
-      })
-        .then(loadHistory)
-        .catch(() => {});
+      record({
+        method: resolved.method,
+        url: resolved.url,
+        status: r.status,
+        timeMs: r.timeMs,
+        sizeBytes: r.sizeBytes,
+        contentType: r.contentType,
+        headers: r.headers,
+        ...(keepBody ? { bodyBase64: r.bodyBase64 } : {}),
+      });
+      return { response: r, id };
     } catch (err) {
-      if (cancelRef.current !== id) return;
-      setResponse(null);
-      setError((err as Error).message);
-      void call("/history", {
-        method: "POST",
-        body: JSON.stringify({ key: historyKey, entry: { at: Date.now(), method: resolved.method, url: resolved.url, error: (err as Error).message } }),
-      })
-        .then(loadHistory)
-        .catch(() => {});
+      record({ method: resolved.method, url: resolved.url, error: (err as Error).message });
+      throw err;
     } finally {
-      if (cancelRef.current === id) setSendingId(null);
+      if (inFlightRef.current === id) inFlightRef.current = null;
     }
   };
 
+  const send = async (req: HttpRequest, index: number) => {
+    if (sendingId) return;
+    setSelected(index);
+    setNotice(null);
+    const run = newId();
+    cancelRef.current = run;
+    setSendingId(run);
+    setError(null);
+    try {
+      const { response: r, id } = await transmit(req, req.name ? [req.name] : [], run);
+      if (cancelRef.current !== run) return;
+      setNotice(null);
+      setResponse(r);
+      setLastId(id);
+    } catch (err) {
+      if (cancelRef.current !== run) return;
+      setNotice(null);
+      setResponse(null);
+      setError((err as Error).message);
+    } finally {
+      if (cancelRef.current === run) setSendingId(null);
+    }
+  };
+
+  // Stops the send in flight (the server deletes anything it had spooled)
+  // and, for a chain, every step after it.
   const cancel = () => {
     if (!sendingId) return;
-    void call("/cancel", { method: "POST", body: JSON.stringify({ id: sendingId }) });
+    if (inFlightRef.current) void call("/cancel", { method: "POST", body: JSON.stringify({ id: inFlightRef.current }) });
+    cancelRef.current = null;
+    setSendingId(null);
+    setNotice(null);
+    setResponse(null);
+    setError("Cancelled");
   };
 
   const saveResponse = async () => {
@@ -270,8 +369,49 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
     });
   };
 
+  const clearHistory = async () => {
+    if (!(await host.app?.confirmDialog?.(scratch ? "Delete the history of scratch requests?" : "Delete this file's request history?", "Delete"))) return;
+    try {
+      await call("/history/clear", { method: "POST", body: JSON.stringify({ key: historyKey }) });
+      setHistory([]);
+      setHistoryQuery("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const shownHistory = useMemo(() => {
+    const q = historyQuery.trim().toLowerCase();
+    if (!q) return history;
+    return history.filter((h) => `${h.method} ${h.url} ${h.error ? "error " + h.error : (h.status ?? "")}`.toLowerCase().includes(q));
+  }, [history, historyQuery]);
+
+  // Ctrl+Enter (Cmd+Enter) sends the selected request from anywhere in the tab.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (scratch) void send(scratchToRequest(draft), 0);
+    else if (current) void send(current, Math.min(selected, requests.length - 1));
+  };
+
+  // The scratch fields keep their keys from the host's shortcuts, but
+  // Ctrl+Enter still sends.
+  const fieldKeys = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onKeyDown(e);
+    e.stopPropagation();
+  };
+
   const names = environmentNames(envs);
-  const missingFor = (req: HttpRequest) => new Set(resolve(req).missing);
+  // A {{login.response…}} whose request is in this file but hasn't been
+  // sent isn't missing: Send sends it first.
+  const missingFor = (req: HttpRequest) =>
+    new Set(
+      resolve(req).missing.filter((expr) => {
+        const name = /^([A-Za-z_][\w-]*)\.(?:request|response)\./.exec(expr)?.[1];
+        return !name || exchanges[name] || !requests.some((r) => r.name === name);
+      }),
+    );
 
   const toolbar = (
     <>
@@ -289,7 +429,9 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
   );
 
   return (
-    <div className={`http-client${active ? "" : " hidden"}`}>
+    // tabIndex -1: a click anywhere in the tab focuses it, so Ctrl+Enter
+    // reaches onKeyDown without first clicking a field.
+    <div className={`http-client${active ? "" : " hidden"}`} tabIndex={-1} onKeyDown={onKeyDown}>
       {active && toolbarTarget && createPortal(toolbar, toolbarTarget)}
       <div className="hc-toolbar">
         <span className="hc-title">{scratch ? "New request" : filePath.split(/[\\/]/).pop()}</span>
@@ -315,8 +457,29 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
           </button>
           {showHistory && (
             <div className="hc-history" role="menu">
+              {history.length > 0 && (
+                <div className="hc-history-tools">
+                  <input
+                    className="hc-input"
+                    type="search"
+                    autoFocus
+                    placeholder="Search URL, method or status"
+                    aria-label="Search history"
+                    value={historyQuery}
+                    onChange={(e) => setHistoryQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === "Escape") setShowHistory(false);
+                    }}
+                  />
+                  <button className="hc-button" onClick={() => void clearHistory()}>
+                    Clear
+                  </button>
+                </div>
+              )}
               {history.length === 0 && <div className="hc-muted hc-pad">No requests sent yet.</div>}
-              {history.map((h, i) => (
+              {history.length > 0 && shownHistory.length === 0 && <div className="hc-muted hc-pad">Nothing matches.</div>}
+              {shownHistory.map((h, i) => (
                 <button key={i} role="menuitem" className="hc-history-row" onClick={() => showFromHistory(h)}>
                   <span className={`hc-status ${h.error ? "bad" : (h.status ?? 0) >= 400 ? "warn" : "ok"}`}>{h.error ? "ERR" : h.status}</span>
                   <span className="hc-history-req">
@@ -329,6 +492,11 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
           )}
         </div>
       </div>
+      {envErrors.map((e) => (
+        <div key={e.file} className="hc-error hc-pad">
+          Couldn't read {e.file}: {e.error}
+        </div>
+      ))}
       <div className="hc-body">
         <div className="hc-requests">
           {loadError && <div className="hc-error hc-pad">Couldn't read the file: {loadError}</div>}
@@ -352,7 +520,10 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
                   }}
                   onKeyDown={(e) => {
                     e.stopPropagation();
-                    if (e.key === "Enter") void send(scratchToRequest(draft), 0);
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void send(scratchToRequest(draft), 0);
+                    }
                   }}
                 />
                 {sendingId ? (
@@ -367,11 +538,11 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
               </div>
               <label className="hc-field">
                 Headers <span className="hc-muted">one per line, Name: value</span>
-                <textarea rows={4} value={draft.headers} onChange={(e) => setDraft({ ...draft, headers: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                <textarea rows={4} value={draft.headers} onChange={(e) => setDraft({ ...draft, headers: e.target.value })} onKeyDown={fieldKeys} />
               </label>
               <label className="hc-field">
                 Body
-                <textarea rows={8} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                <textarea rows={8} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} onKeyDown={fieldKeys} />
               </label>
             </div>
           ) : source !== null && requests.length === 0 ? (
@@ -392,6 +563,7 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
                       </button>
                     )}
                     {req.name && <span className="hc-name"># @name {req.name}</span>}
+                    {req.noRedirect && <span className="hc-name"># @no-redirect</span>}
                   </div>
                   <pre className="hc-request-text">
                     <span className="hc-method">{req.method}</span> <Highlighted text={req.url} missing={missing} />
@@ -405,6 +577,12 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
                       <>
                         {"\n\n"}
                         <Highlighted text={req.body} missing={missing} />
+                      </>
+                    )}
+                    {req.bodyFile && (
+                      <>
+                        {"\n\n"}
+                        <span className="hc-method">{req.bodyFileVars ? "<@" : "<"}</span> <Highlighted text={req.bodyFile} missing={missing} />
                       </>
                     )}
                   </pre>
@@ -435,7 +613,7 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
           ) : response ? (
             <ResponseView response={response} />
           ) : (
-            <div className="hc-muted hc-pad">Send a request to see its response here.</div>
+            <div className="hc-muted hc-pad">Send a request (Ctrl+Enter) to see its response here.</div>
           )}
         </div>
       </div>

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "DB Client",
   "description": "Browse and query SQLite, PostgreSQL, MySQL/MariaDB, Redis and MongoDB from a DATABASES section: schema tree, a query tab with a results grid, a Redis key browser and a MongoDB query bar. Connections are read-only until you make them writable, enforced on the server; passwords go to Perch's secret store. Suggests connections from your project's .env.",
   "icon": "./icon.svg",

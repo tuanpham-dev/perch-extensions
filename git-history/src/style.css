@@ -471,3 +471,74 @@
   padding-right: 14px;
   font: inherit;
 }
+
+/* ---- History: filter and keyboard ---- */
+
+.gh-filter {
+  flex: 0 1 220px;
+  min-width: 80px;
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 4px;
+  background: var(--input-bg, var(--bg));
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.gh-filter + .gh-summary-count {
+  margin-left: 0;
+}
+
+/* The keyboard's row in the one-column layout (where a click opens the
+   editor rather than selecting). */
+.gh-row.cursor {
+  background: var(--list-hover-bg);
+}
+
+.gh-row:focus {
+  outline: none;
+}
+
+.gh-row:focus-visible {
+  outline: 1px solid var(--focus-border, var(--fg-accent));
+  outline-offset: -1px;
+}
+
+/* ---- Blame: a selected line range ---- */
+
+.gh-lineno {
+  cursor: pointer;
+}
+
+.gh-line.in-range {
+  background: color-mix(in srgb, var(--fg-accent) 14%, transparent);
+}
+
+.gh-range-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.gh-range-bar + .gh-summary-count {
+  margin-left: 0;
+}
+
+.gh-range-bar button {
+  padding: 1px 8px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.gh-range-bar button:hover {
+  background: var(--list-hover-bg);
+}

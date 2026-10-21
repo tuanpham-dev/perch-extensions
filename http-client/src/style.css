@@ -405,3 +405,20 @@
 .hc-pad {
   padding: 10px 12px;
 }
+
+/* The tab takes focus on click (for Ctrl+Enter) without drawing a ring. */
+.http-client:focus {
+  outline: none;
+}
+
+.hc-history-tools {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hc-history-tools .hc-input {
+  flex: 1;
+  min-width: 0;
+}

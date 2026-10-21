@@ -24,7 +24,7 @@ that moment.
 
 | Action | Does |
 | --- | --- |
-| Ask the AI and keep the answer | Sends the prompt to the AI chosen in `automations.aiProfile` (or your default in **Settings → AI Providers**), running in the repository when one is set. The reply becomes the automation's last result. |
+| Ask the AI and keep the answer | Sends the prompt to the AI chosen in `automations.aiProfile` (or your default in **Settings → AI Providers**), with the model in `automations.aiModel` when one is set, running in the repository when one is set. It may take up to 10 minutes. The reply becomes the automation's last result. |
 | Create an Agent Tasks task | Creates a run and a task in [Agent Tasks](../agent-tasks/README.md), with the prompt as the task spec. |
 | Create a task and start a worker on it | The same, then starts a worker with the chosen agent, in a new worktree or in the repository. |
 
@@ -33,10 +33,20 @@ id, the run and the repository.
 
 An automation that is still running is not started again on top of itself.
 
+**No loops.** Automations remembers every task it creates: which automation made it, and how deep
+in a chain it is. A task's events never start the automation that created it, so an automation
+on "a task fails" that creates a task that fails runs once. Automations that set each other off
+stop after three hops: the run that would be the fourth is recorded as `stopped` with the note
+"stopped: chain depth 3 reached" instead of running.
+
+**Pause All.** The pause button in the panel's header stops every schedule and every Agent Tasks
+event from starting anything until you resume, and stays on across restarts. A schedule that comes
+due while paused is passed over, not saved up for when you resume. **Run now** still works.
+
 ## The panel
 
-Each row shows the name, the trigger, the next run, the last result (click to expand it), an
-enable checkbox, **Run now**, Edit and Delete. The + in the header creates one. Rows that need
+Each row shows the name, the trigger, the next run, the last result (click to expand it, along
+with the 19 runs before it), an enable checkbox, **Run now**, Edit and Delete. The + in the header creates one. Rows that need
 Agent Tasks say **Requires the Agent Tasks extension** while its socket cannot be reached.
 
 ## Agent Tasks
@@ -61,13 +71,15 @@ liveness sweep - see the Agent Tasks README for the worker contract and the full
 | --- | --- | --- |
 | `automations.missedRunGraceMinutes` | `60` (0-1440) | How late a missed scheduled run may still fire at startup. 0 fires nothing missed. |
 | `automations.aiProfile` | default AI | Which AI answers "ask the AI" automations. |
+| `automations.aiModel` | that AI's model | Which model it uses. |
 
 ## Files
 
-Every automation, with its last run, result and next run, is kept in Perch's extension storage: a
+Every automation, with its last 20 runs and their results, and its next run, is kept in Perch's extension storage: a
 private database under Perch's config folder (`~/.config/perch/extension-data/perch.automations`
 by default, or under `PERCH_CONFIG_DIR`). The Automations panel updates as soon as anything
-changes, with no polling. Uninstalling Automations keeps them; **Settings → Extensions → Stored
+changes, including a run starting or finishing and Agent Tasks appearing or going away, with no
+polling. Uninstalling Automations keeps them; **Settings → Extensions → Stored
 data** deletes them.
 
 Needs Perch 0.9 or newer. Version 1.1 starts empty: automations saved by earlier versions (in

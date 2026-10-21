@@ -1,8 +1,9 @@
 // ai-command: natural language → shell command via this extension's
-// /generate server route (local claude CLI). Entry points: the "AI: Generate
-// Command…" palette command and a "??" quick-switcher query. The result is
-// typed at the active pane's prompt WITHOUT Enter — the user reviews and
-// runs it themselves, always. Dialog UI mounts into its own react root
+// /generate server route (the AI set in Settings → AI Providers). Entry
+// points: the "AI: Generate Command…" palette command and a "??"
+// quick-switcher query. The result is typed at the prompt of the pane that
+// was active on submit, WITHOUT Enter — the user reviews and runs it
+// themselves, always. Dialog UI mounts into its own react root
 // (host's react-dom/client via the build shim) so it works with no panel
 // anywhere — this extension has no sidebar presence at all.
 import { useEffect, useRef, useState } from "react";
@@ -24,12 +25,30 @@ let removeContextListener: (() => void) | null = null;
 const NO_CONTEXT: ActiveContext = { sessionName: null, windowIndex: null, cwd: null };
 let activeContext: ActiveContext = NO_CONTEXT;
 
-async function generate(query: string): Promise<string> {
+// Where a generated command goes: the terminal that was active when the
+// request was submitted, captured then, so switching tabs while the AI
+// answers still types it into the window it was asked from.
+interface Target {
+  sessionName: string;
+  windowIndex: number | null;
+  cwd: string | null;
+}
+
+function captureTarget(): Target {
+  const { sessionName, windowIndex, cwd } = activeContext;
+  if (!sessionName) throw new Error("no active session");
+  return { sessionName, windowIndex, cwd };
+}
+
+// The signal aborts the request (Escape in the dialog); the server route
+// notices the closed connection and drops the AI's reply.
+async function generate(query: string, target: Target, signal: AbortSignal): Promise<string> {
   if (!serverFetch) throw new Error("extension not active");
   const res = await serverFetch("/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query, cwd: activeContext.cwd ?? undefined }),
+    body: JSON.stringify({ query, cwd: target.cwd ?? undefined }),
+    signal,
   });
   const body = (await res.json().catch(() => null)) as { command?: string; error?: string } | null;
   if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
@@ -38,13 +57,12 @@ async function generate(query: string): Promise<string> {
 }
 
 // Insert only — submit is never sent as true from this extension.
-async function insertIntoActivePane(text: string): Promise<void> {
-  const session = activeContext.sessionName;
-  if (!session || !serverFetch) throw new Error("no active session");
+async function insertInto(target: Target, text: string): Promise<void> {
+  if (!serverFetch) throw new Error("no active session");
   const res = await serverFetch("/type", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session, text, submit: false }),
+    body: JSON.stringify({ session: target.sessionName, windowIndex: target.windowIndex ?? undefined, text, submit: false }),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -59,19 +77,50 @@ function GenerateDialog({ initialQuery, close }: { initialQuery: string; close: 
   // A dialog opened from "??" starts generating immediately; run once.
   const autoRan = useRef(false);
 
+  // The request in flight, so Escape (or a click outside) can abort it.
+  const inFlight = useRef<AbortController | null>(null);
+
   const submit = async (q: string) => {
     if (!q.trim() || busy) return;
     setBusy(true);
     setError(null);
+    const controller = new AbortController();
+    inFlight.current = controller;
     try {
-      const command = await generate(q.trim());
-      await insertIntoActivePane(command);
+      const target = captureTarget();
+      const command = await generate(q.trim(), target, controller.signal);
+      // Aborted after the reply arrived but before typing: still type nothing.
+      if (controller.signal.aborted) return;
+      await insertInto(target, command);
       close();
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
+    } finally {
+      if (inFlight.current === controller) inFlight.current = null;
     }
   };
+
+  // Escape cancels whatever is in flight and closes. Listened for on the
+  // document, in the capture phase, because the input is read-only while a
+  // request runs and focus may have left the dialog entirely.
+  const cancelAndClose = () => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+    close();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelAndClose();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (initialQuery && !autoRan.current) {
@@ -87,9 +136,6 @@ function GenerateDialog({ initialQuery, close }: { initialQuery: string; close: 
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !busy) close();
       }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") close();
-      }}
     >
       <div className="aicmd-dialog" role="dialog" aria-label="AI: Generate Command">
         <form
@@ -101,7 +147,7 @@ function GenerateDialog({ initialQuery, close }: { initialQuery: string; close: 
           <input
             className="aicmd-input"
             autoFocus
-            disabled={busy}
+            readOnly={busy}
             placeholder="Describe the command - e.g. list the 5 largest files here"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -110,7 +156,7 @@ function GenerateDialog({ initialQuery, close }: { initialQuery: string; close: 
         {busy && (
           <div className="aicmd-status">
             <span className="aicmd-spinner" aria-hidden="true" />
-            Generating (the local AI CLI can take a few seconds)…
+            Generating (the AI can take a few seconds)… Escape cancels.
           </div>
         )}
         {error && <div className="aicmd-error">{error}</div>}

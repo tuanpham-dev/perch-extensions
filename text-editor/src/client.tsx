@@ -18,10 +18,12 @@ import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
 import Icon from "./Icon";
-import { downloadUrl, fetchFileText, saveFileText } from "./fileApi";
+import { downloadUrl, fetchFileText, type FileText } from "./fileApi";
+import type { Pick } from "./diskConflict";
+import { saveEntry } from "./saveFile";
 import { loadMonaco, refreshTheme, unloadMonaco, type ThemeApi } from "./monacoLoader";
 import type { StandaloneEditor } from "./monacoNs";
-import { acquireFile, discardChanges, dismissRestored, disposeAllFiles, isDirty, markSaved, type FileEntry } from "./models";
+import { acquireFile, discardChanges, dismissRestored, disposeAllFiles, isDirty, type FileEntry } from "./models";
 import type { TokenColorRule } from "./shikiTheme";
 import {
   registerDiffRequest,
@@ -82,16 +84,16 @@ function looksBinary(text: string): boolean {
 // The guards run before the model is created, so a refusal never leaves a
 // half-loaded editor behind — and because they live in the loader passed to
 // acquireFile, a second tab on the same path inherits the same verdict.
-async function loadFileText(filePath: string): Promise<string> {
+async function loadFileText(filePath: string): Promise<FileText> {
   const size = await headSize(filePath);
   if (size !== null && size > MAX_BYTES) {
     throw new Error("File is too large to edit here (over 2MB) - open it in another viewer.");
   }
-  const text = await fetchFileText(filePath);
-  if (looksBinary(text)) {
+  const file = await fetchFileText(filePath);
+  if (looksBinary(file.text)) {
     throw new Error("This file looks binary - open it in another viewer.");
   }
-  return text;
+  return file;
 }
 
 function messageOf(err: unknown): string {
@@ -151,22 +153,17 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
   const save = useCallback(async (): Promise<boolean> => {
     const entry = entryRef.current;
     if (!entry?.model) return false;
-    const content = entry.model.getValue();
     setSaving(true);
     setSaveError(null);
     try {
-      await saveFileText(filePath, content);
-      // Shared baseline: a save in either split pane clears the dirty flag in
-      // both, since they are the same document.
-      markSaved(entry, content);
-      return true;
+      return await saveEntry(entry);
     } catch (err) {
       setSaveError(messageOf(err));
       return false;
     } finally {
       setSaving(false);
     }
-  }, [filePath]);
+  }, []);
 
   useEffect(() => {
     saveRef.current = () => void save();
@@ -399,6 +396,7 @@ interface ExtensionContext {
     openPreview?(path: string): void;
     closeViewerTab?(viewerId: string, path: string): void;
     openDiff?(req: DiffRequest): Promise<boolean>;
+    pickItem?: Pick;
   };
 }
 
@@ -432,6 +430,7 @@ export function activate(ctx: ExtensionContext): void {
     openPreview: ctx.app.openPreview,
     closeViewerTab: ctx.app.closeViewerTab,
     quickDiff: ctx.quickDiff,
+    pickItem: ctx.app.pickItem,
   });
 
   // VS Code's own bindings for moving between changes. They act on the file

@@ -1,8 +1,11 @@
 // PostgreSQL through `pg`. A read-only connection runs each query inside
 // BEGIN READ ONLY … ROLLBACK, and refuses statements that would end that
-// transaction (see ../sqlText.mjs); the server enforces the rest.
+// transaction (see ../sqlText.mjs); the server enforces the rest. Each
+// statement is read through a cursor (`pg-cursor`), so at most the row limit
+// plus one ever comes over the wire, however many rows the query has.
 import pg from "pg";
-import { readOnlyViolation } from "../sqlText.mjs";
+import Cursor from "pg-cursor";
+import { readOnlyViolation, splitStatements, txControlIn } from "../sqlText.mjs";
 import { QueryError, ReadOnlyError, connectionMessage, rowsResult, withDeadline } from "./common.mjs";
 
 const TYPES = {
@@ -27,7 +30,11 @@ export async function connectPostgres(cfg, password) {
   };
   const where = `${options.host}:${options.port}`;
   const client = new pg.Client(options);
-  client.on("error", () => {}); // a dropped connection surfaces on the next query
+  // A dropped connection (server restart, pg_terminate_backend, network)
+  // marks this adapter dead; the pool opens a fresh one on the next query.
+  let dead = false;
+  client.on("error", () => (dead = true));
+  client.on("end", () => (dead = true));
   try {
     await client.connect();
   } catch (err) {
@@ -44,19 +51,45 @@ export async function connectPostgres(cfg, password) {
     }
   }
 
+  // One statement through a cursor: reads limit + 1 rows (one more than is
+  // shown, to tell that there were more), then closes the cursor, which stops
+  // the rest on the server. A statement without rows comes back with its
+  // command tag and count.
+  async function readStatement(sql, limit) {
+    const cursor = client.query(new Cursor(sql, null, { rowMode: "array" }));
+    // On an error the cursor has already ended itself; closing it again would
+    // send a stray Close.
+    const rows = await cursor.read(limit + 1);
+    await cursor.close();
+    const r = cursor._result;
+    return { fields: r.fields, rows, command: r.command, rowCount: r.rowCount };
+  }
+
   return {
     engine: "postgres",
+    alive: () => !dead,
     async query(text, { limit, timeoutMs, readOnly }) {
       const refused = readOnly ? readOnlyViolation(text, "postgres") : null;
       if (refused) throw new ReadOnlyError(refused);
+      // A cursor runs one statement, so a script runs statement by statement.
+      // A writable script that doesn't manage its own transaction still runs
+      // as one, as it would sent whole: a later error undoes the earlier ones.
+      const statements = splitStatements(text, "postgres");
+      const wrap = readOnly ? "BEGIN READ ONLY" : statements.length > 1 && !txControlIn(text, "postgres") ? "BEGIN" : null;
       const run = async () => {
-        if (readOnly) await client.query("BEGIN READ ONLY");
+        if (wrap) await client.query(wrap);
+        const out = [];
+        let committed = false;
         try {
-          const raw = await client.query({ text, rowMode: "array" });
-          return Array.isArray(raw) ? raw : [raw];
+          for (const sql of statements) out.push(await readStatement(sql, limit));
+          if (wrap === "BEGIN") {
+            await client.query("COMMIT");
+            committed = true;
+          }
         } finally {
-          if (readOnly) await client.query("ROLLBACK").catch(() => {});
+          if (wrap && !committed) await client.query("ROLLBACK").catch(() => {});
         }
+        return out;
       };
       let results;
       try {

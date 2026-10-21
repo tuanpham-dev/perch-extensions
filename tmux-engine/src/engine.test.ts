@@ -3,11 +3,11 @@
 // pane-to-window mapping and the replay payload.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { buildSessions, createTmuxEngine, decodeOutput, hexChunks, paneIdOf, replayPayload, windowIdOf } from "../engine.js";
+import { buildSessions, createTmuxEngine, decodeOutput, hexChunks, paneIdOf, parseTmuxVersion, replayPayload, tmuxVersionProblem, windowIdOf } from "../engine.js";
 
 const hasTmux = (() => {
   try {
@@ -317,5 +317,67 @@ test("a real tmux terminal used after the app takes the window, and the app can 
   } finally {
     term.kill();
     view.close();
+  }
+});
+
+test("tmux older than 3.2 is refused with a message; 3.2 and newer pass", () => {
+  assert.deepEqual(parseTmuxVersion("tmux 3.3a\n"), [3, 3]);
+  assert.deepEqual(parseTmuxVersion("tmux next-3.4"), [3, 4]);
+  assert.equal(parseTmuxVersion("tmux master"), null);
+  for (const ok of ["tmux 3.2", "tmux 3.2a", "tmux 3.3a", "tmux 3.10", "tmux 4.0", "tmux next-3.5", "tmux master"]) {
+    assert.equal(tmuxVersionProblem(ok), null, ok);
+  }
+  for (const old of ["tmux 3.1c", "tmux 3.0a", "tmux 2.9", "tmux 1.8"]) {
+    assert.match(tmuxVersionProblem(old) ?? "", /too old for the tmux backend: it needs tmux 3\.2 or newer/, old);
+  }
+});
+
+// No real tmux needed: a stand-in binary answers the listing and records
+// the capture-pane command line it's asked for.
+test("capture passes its options through: styles asks tmux for colours (-e)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "perch-tmux-fake-"));
+  const log = path.join(dir, "calls.log");
+  const bin = path.join(dir, "tmux");
+  writeFileSync(
+    bin,
+    [
+      "#!/bin/sh",
+      'case "$1" in',
+      "  list-sessions) printf '$1\\037main\\0371700000000\\0370\\037/tmp\\n' ;;",
+      "  list-panes) printf '$1\\037@1\\0370\\037sh\\0371\\0371\\0370\\0370\\037%%1\\0370\\0371\\037/tmp\\037sh\\0370\\n' ;;",
+      '  capture-pane) echo "$*" >> "$CALLS_LOG"; printf \'hello   \\n\\n\' ;;',
+      "esac",
+    ].join("\n"),
+  );
+  chmodSync(bin, 0o755);
+  const engine = createTmuxEngine({ env: { ...process.env, CALLS_LOG: log }, bin });
+  try {
+    assert.equal(await engine.capture("main", 0, { styles: true }), "hello");
+    assert.equal(await engine.capture("main", 5), "hello");
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    assert.match(calls[0], /^capture-pane -p -J -e -t %1$/);
+    assert.match(calls[1], /^capture-pane -p -J -t %1 -S -5$/);
+  } finally {
+    engine.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the backend refuses to start on a faked tmux 3.1", async () => {
+  const { activate } = await import("../server.js");
+  const dir = mkdtempSync(path.join(tmpdir(), "perch-tmux-old-"));
+  writeFileSync(path.join(dir, "tmux"), "#!/bin/sh\necho 'tmux 3.1c'\n");
+  chmodSync(path.join(dir, "tmux"), 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${dir}:${savedPath}`;
+  const logged = [];
+  try {
+    let registered;
+    activate({ host: { terminalEngines: { register: (e) => (registered = e) } }, log: (m) => logged.push(m) });
+    assert.throws(() => registered.create({ env: process.env }), /tmux 3\.1c is too old for the tmux backend/);
+    assert.equal(logged.length, 1);
+  } finally {
+    process.env.PATH = savedPath;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -11,6 +11,10 @@
 // The code is syntax-highlighted through the same lazily-loaded Shiki chunk
 // claude-viewer uses, following the active Perch theme. Blame's content is
 // the whole file in order, so the highlighting is exact.
+//
+// Clicking a line number selects that line, shift-clicking another extends
+// the selection to a range, and "History of These Lines" opens the History
+// tab for just that range (git log -L).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
@@ -18,7 +22,10 @@ import { parseBlamePorcelain, type Blame } from "./blameModel";
 import { TokenLine, langFor, useTokens } from "./Highlight";
 import {
   apiGetJson,
+  basenameOf,
   decodeKey,
+  encodeKey,
+  openViewerTab,
   formatAbsoluteTime,
   formatRelativeTime,
   openCommitFileDiff,
@@ -53,6 +60,26 @@ export default function BlameView({ filePath, active, toolbarTarget, reloadKey }
   // The commit the pointer is over: every block of that same commit lights
   // up, which is how you see a commit's whole footprint in a file.
   const [hoveredHash, setHoveredHash] = useState<string | null>(null);
+  // The selected line range, 1-based and inclusive: `anchor` is the line
+  // clicked first, `end` the one a shift-click extended it to.
+  const [range, setRange] = useState<{ anchor: number; end: number } | null>(null);
+  const lo = range ? Math.min(range.anchor, range.end) : 0;
+  const hi = range ? Math.max(range.anchor, range.end) : 0;
+
+  const clickLine = (lineNo: number, extend: boolean) =>
+    setRange((cur) => {
+      if (extend && cur) return { anchor: cur.anchor, end: lineNo };
+      // A second plain click on the only selected line clears it.
+      if (cur && cur.anchor === lineNo && cur.end === lineNo) return null;
+      return { anchor: lineNo, end: lineNo };
+    });
+
+  const openRangeHistory = () => {
+    if (!range) return;
+    openViewerTab?.("history", encodeKey(root, relPath, rev, `${lo},${hi}`), {
+      title: `History · ${basenameOf(relPath)}:${lo === hi ? lo : `${lo}-${hi}`}`,
+    });
+  };
 
   const load = useCallback(async () => {
     setState("loading");
@@ -165,9 +192,18 @@ export default function BlameView({ filePath, active, toolbarTarget, reloadKey }
               <div className="gh-run-lines">
                 {blame.lines.slice(run.start, run.end + 1).map((line, offset) => {
                   const lineTokens = tokens?.[run.start + offset] ?? null;
+                  const inRange = range !== null && line.lineNo >= lo && line.lineNo <= hi;
                   return (
-                    <div className="gh-line" key={line.lineNo}>
-                      <span className="gh-lineno">{line.lineNo}</span>
+                    <div className={`gh-line${inRange ? " in-range" : ""}`} key={line.lineNo}>
+                      <span
+                        className="gh-lineno"
+                        title="Click to select this line, Shift+click to select a range"
+                        // Shift+click would otherwise also select the code between.
+                        onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+                        onClick={(e) => clickLine(line.lineNo, e.shiftKey)}
+                      >
+                        {line.lineNo}
+                      </span>
                       <pre className="gh-code">
                         {lineTokens ? <TokenLine tokens={lineTokens} /> : line.content || " "}
                       </pre>
@@ -188,6 +224,15 @@ export default function BlameView({ filePath, active, toolbarTarget, reloadKey }
       <div className="gh-head">
         <span className="gh-path">{relPath}</span>
         <span className="gh-rev">{rev ? `@ ${shortHash(rev)}` : "@ HEAD"}</span>
+        {range && (
+          <span className="gh-range-bar">
+            {lo === hi ? `Line ${lo}` : `Lines ${lo}–${hi}`}
+            <button onClick={openRangeHistory}>History of {lo === hi ? "This Line" : "These Lines"}</button>
+            <button title="Clear the selection" aria-label="Clear the selection" onClick={() => setRange(null)}>
+              ×
+            </button>
+          </span>
+        )}
         {blame && state === "ready" && (
           <span className="gh-summary-count">
             {blame.runs.length} {blame.runs.length === 1 ? "block" : "blocks"} · {blame.lines.length} lines

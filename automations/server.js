@@ -20,6 +20,14 @@
 // only if it is within automations.missedRunGraceMinutes; older misses are
 // rescheduled without running.
 //
+// Automations can't loop through Agent Tasks: every task one creates is
+// remembered with its chain depth (runs.mjs), its own tasks' events never
+// start it again, and a chain stops after three hops. Pause All (persisted)
+// stops every schedule and event while it is on. Each automation keeps its
+// last 20 run results. The store announces every save and the server also
+// announces a run starting and Agent Tasks coming or going, so an open panel
+// follows all of it live.
+//
 // Every route, the tick, the stream handler and each action run catch their
 // own errors: this may run on a core that exits the whole server on an
 // unhandled rejection.
@@ -27,6 +35,7 @@ import http from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
 import { describeTrigger, dueAction, isSchedule, nextRun, normalizeTrigger } from "./schedule.mjs";
+import { CHAIN_STOP_NOTE, childDepth, eventDecision, pushRun, rememberOrigin } from "./runs.mjs";
 import { createAutomationStore, newAutomationId } from "./store.mjs";
 
 const TICK_MS = 15_000;
@@ -34,6 +43,9 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
 const RESULT_MAX = 8_000;
 const PROMPT_MAX = 20_000;
+// An "ask the AI" run may have a CLI agent read a repository first; ai.run's
+// own default is 60 seconds.
+const AI_TIMEOUT_MS = 10 * 60_000;
 const NOT_INSTALLED = "Agent Tasks is not installed";
 const ACTION_KINDS = ["headless", "create-task", "start-worker"];
 
@@ -197,6 +209,7 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     return {
       graceMinutes: Number.isFinite(grace) ? Math.min(1440, Math.max(0, grace)) : 60,
       aiProfile: typeof raw["automations.aiProfile"] === "string" ? raw["automations.aiProfile"].trim() : "",
+      aiModel: typeof raw["automations.aiModel"] === "string" ? raw["automations.aiModel"].trim() : "",
     };
   }
 
@@ -212,14 +225,20 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     return `\n\n${lines.join("\n")}`;
   }
 
-  async function perform(automation, event) {
+  // `depth` is the chain depth any task this run creates gets.
+  async function perform(automation, event, depth) {
     const { action } = automation;
     const repo = automation.repo ? expandHome(automation.repo) : "";
     const prompt = `${action.prompt}${eventContext(event)}`;
     if (action.kind === "headless") {
       if (typeof runAi !== "function") throw new Error("this perch has no AI backend for extensions - update it");
-      const { aiProfile } = await settings();
-      const reply = await runAi(prompt, { profileId: aiProfile || undefined, cwd: repo || undefined });
+      const { aiProfile, aiModel } = await settings();
+      const reply = await runAi(prompt, {
+        profileId: aiProfile || undefined,
+        model: aiModel || undefined,
+        cwd: repo || undefined,
+        timeoutMs: AI_TIMEOUT_MS,
+      });
       return reply;
     }
     const title = action.title || automation.name;
@@ -228,6 +247,11 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
       repo,
       title,
       spec: prompt,
+    });
+    // Remembered before a worker can start on it, so its events always find
+    // where it came from.
+    await s.update((doc) => {
+      rememberOrigin(doc.origins, created.taskId, { automationId: automation.id, depth });
     });
     if (action.kind === "create-task") return `Created task ${created.taskId} in run ${created.runId}.`;
     const started = await socketPost("worker-start", {
@@ -238,10 +262,30 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     return `Started a worker (${started.dispatchId}) in session ${started.dispatch?.sessionName ?? "?"} on task ${created.taskId}.`;
   }
 
+  // Adds one run to an automation's history (and, for a schedule, moves its
+  // next run on). Never rejects; a failed save is logged, and announced so
+  // the panel still sees the run is over.
+  async function recordRun(id, run, { counted = true } = {}) {
+    try {
+      await s.update((doc) => {
+        const entry = doc.automations[id];
+        if (!entry) return;
+        pushRun(entry, run, { counted });
+        if (counted && isSchedule(entry.trigger)) {
+          entry.nextRunAt = nextRun(entry.trigger, entry.trigger.kind === "interval" ? run.at : Date.now());
+        }
+      });
+    } catch (err) {
+      log(`automation ${id}: could not record its result:`, err?.message ?? err);
+      announce();
+    }
+  }
+
   // Runs one automation now and records the outcome. Never rejects. An
   // automation already running is not started a second time on top of
   // itself; the skipped run is recorded so nobody wonders where it went.
-  async function runAutomation(id, reason, event) {
+  // `origin` is the triggering task's record, for an event run.
+  async function runAutomation(id, reason, event, origin) {
     const automation = await s.get(id);
     if (!automation) return null;
     if (instance.running.has(id)) {
@@ -249,11 +293,14 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
       return { skipped: true };
     }
     instance.running.add(id);
+    // Nothing is saved when a run starts, so say so: the panel shows it
+    // spinning at once, not when it finishes.
+    announce();
     const startedAt = Date.now();
     let status = "ok";
     let result;
     try {
-      result = await perform(automation, event);
+      result = await perform(automation, event, childDepth(origin));
     } catch (err) {
       status = err instanceof SocketUnavailable ? "unavailable" : "error";
       result = err?.message ?? String(err);
@@ -261,20 +308,7 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
       instance.running.delete(id);
     }
     const resultText = String(result ?? "").slice(0, RESULT_MAX);
-    try {
-      await s.update((doc) => {
-        const entry = doc.automations[id];
-        if (!entry) return;
-        entry.lastRunAt = startedAt;
-        entry.lastResult = resultText;
-        entry.lastStatus = status;
-        entry.lastReason = reason;
-        entry.runCount = (entry.runCount ?? 0) + 1;
-        if (isSchedule(entry.trigger)) entry.nextRunAt = nextRun(entry.trigger, entry.trigger.kind === "interval" ? startedAt : Date.now());
-      });
-    } catch (err) {
-      log(`automation ${automation.name}: could not record its result:`, err?.message ?? err);
-    }
+    await recordRun(id, { at: startedAt, status, reason, result: resultText, durationMs: Date.now() - startedAt });
     log(`automation ${automation.name} (${reason}): ${status}`);
     return { status, result: resultText };
   }
@@ -290,9 +324,13 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
         if (!isSchedule(entry.trigger)) continue;
         if (typeof entry.nextRunAt !== "number") entry.nextRunAt = nextRun(entry.trigger, now);
         const decision = dueAction(entry, now, { startup, graceMinutes });
-        if (decision === "skip") {
-          entry.lastStatus = "missed";
-          entry.lastResult = `Missed the run due ${new Date(entry.nextRunAt).toLocaleString()} while the server was down (outside the ${graceMinutes} minute grace window).`;
+        if (decision !== "wait" && doc.paused) {
+          // Paused: a run that comes due is passed over, not saved up, so
+          // resuming doesn't set off everything that came due meanwhile.
+          entry.nextRunAt = nextRun(entry.trigger, now);
+        } else if (decision === "skip") {
+          const result = `Missed the run due ${new Date(entry.nextRunAt).toLocaleString()} while the server was down (outside the ${graceMinutes} minute grace window).`;
+          pushRun(entry, { at: now, status: "missed", reason: "missed", result }, { counted: false });
           entry.nextRunAt = nextRun(entry.trigger, now);
         } else if (decision === "fire" && !instance.running.has(entry.id)) {
           toFire.push(entry.id);
@@ -320,12 +358,22 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     return true;
   }
 
+  // Each matching automation runs unless Pause All is on, the event's task
+  // is one it made itself, or the chain that led here is already three deep
+  // (recorded as a stopped run, so the end of a chain is visible).
   async function onEvent(event) {
     if (!event?.type || event.type === "hello" || event.type === "ping") return;
     const automations = await s.list();
+    const paused = await s.paused();
+    const origin = event.taskId ? await s.origin(event.taskId) : null;
     for (const a of automations) {
-      if (a.enabled && a.trigger?.kind === "event" && matches(a.trigger, event)) {
-        void runAutomation(a.id, "event", event);
+      if (!a.enabled || a.trigger?.kind !== "event" || !matches(a.trigger, event)) continue;
+      const decision = eventDecision(a, origin, { paused });
+      if (decision === "run") void runAutomation(a.id, "event", event, origin);
+      else if (decision === "depth") {
+        const result = `${CHAIN_STOP_NOTE}: ${event.type} on task ${event.taskId} came from a chain of ${origin?.depth} automation runs, so this one did not run.`;
+        void recordRun(a.id, { at: Date.now(), status: "stopped", reason: "event", result }, { counted: false });
+        log(`automation ${a.name}: ${CHAIN_STOP_NOTE}`);
       }
     }
   }
@@ -347,9 +395,12 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     const down = (err) => {
       if (settled) return;
       settled = true;
+      const wasConnected = instance.connected;
       instance.connected = false;
       instance.stream = null;
       instance.lastError = err ? (err.code === "ENOENT" || err.code === "ECONNREFUSED" ? NOT_INSTALLED : err.message) : "stream closed";
+      // Agent Tasks has gone: the panel's "Requires..." notes come back.
+      if (wasConnected) announce();
       scheduleReconnect(nextDelay);
     };
     const req = http.request(
@@ -360,8 +411,11 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
           down(new Error(`subscribe answered ${res.statusCode}`));
           return;
         }
+        const wasConnected = instance.connected;
         instance.connected = true;
         instance.lastError = null;
+        // Agent Tasks has appeared: the panel's "Requires..." notes go.
+        if (!wasConnected) announce();
         nextDelay = RECONNECT_MIN_MS;
         res.setEncoding("utf8");
         res.on("data", (chunk) => {
@@ -424,6 +478,7 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     route(async (_req, res) => {
       res.json({
         automations: await decorate(await s.list()),
+        paused: await s.paused(),
         agentTasks: { connected: instance.connected, error: instance.lastError },
         tickSeconds: TICK_MS / 1000,
       });
@@ -444,6 +499,7 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
         lastResult: "",
         lastStatus: null,
         runCount: 0,
+        runs: [],
         nextRunAt: nextRun(fields.trigger, now),
       };
       await s.update((doc) => {
@@ -485,14 +541,28 @@ export function activate({ router, log = console.log, getSettings, host, ai, sto
     }),
   );
 
+  // Pause All. Manual Run now still works while paused: it isn't a trigger.
+  router.post(
+    "/pause",
+    route(async (req, res) => {
+      if (typeof req.body?.paused !== "boolean") throw bad("paused must be true or false");
+      const paused = req.body.paused;
+      await s.update((doc) => {
+        doc.paused = paused;
+      });
+      log(paused ? "automations paused" : "automations resumed");
+      res.json({ paused });
+    }),
+  );
+
   router.post(
     "/run/:id",
     route(async (req, res) => {
       const automation = await s.get(req.params.id);
       if (!automation) throw new HttpError(404, `no automation ${req.params.id}`);
       if (instance.running.has(automation.id)) throw new HttpError(409, "already running");
-      // Answered at once; a headless prompt can take a minute. The panel
-      // polls for the result.
+      // Answered at once; a headless prompt can take minutes. The panel
+      // hears the run start and finish.
       void runAutomation(automation.id, "manual");
       res.json({ started: true });
     }),

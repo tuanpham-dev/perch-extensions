@@ -2,7 +2,7 @@
   "name": "automations",
   "private": true,
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Automations",
   "description": "Agent work that starts itself: run a prompt through the app's AI, create an Agent Tasks task or start a worker on a daily, interval or cron schedule, or when an Agent Tasks task completes, fails, blocks, opens a gate or loses its worker. Runs on the server, with no browser open.",
   "icon": "./icon.svg",
@@ -22,6 +22,12 @@
           "format": "ai-profile",
           "default": "",
           "description": "Which AI answers headless automations. Empty uses the default in Settings - AI Providers."
+        },
+        "automations.aiModel": {
+          "type": "string",
+          "format": "ai-model",
+          "default": "",
+          "description": "Model for headless automations. Empty uses whatever model the AI above is configured with."
         }
       }
     }

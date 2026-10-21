@@ -48,11 +48,8 @@ import {
   reduceHookEvent,
 } from "./hookStatus.mjs";
 import { resolveProject } from "./projects.mjs";
-import { open, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import path from "node:path";
-
-const CLAUDE_PROJECTS_DIR = path.join(homedir(), ".claude", "projects");
+import { CLAUDE_PROJECTS_DIR, mostRecentTranscript, sessionTranscript } from "./transcripts.mjs";
+import { open, stat } from "node:fs/promises";
 
 // ---- Window listing: core's own session list, one entry per real window
 // (a window is one terminal), with the stable window id hook events are
@@ -160,60 +157,36 @@ async function listAgentPanes(host, programs) {
   return panes;
 }
 
-// ---- Claude project-dir / session-id resolution (ported from core's
-// subagentWatcher.ts / extensions/subagent-viewer/server.js — extensions
-// can't import each other) ----
-
-function cwdToProjectDirName(cwd) {
-  return cwd.replace(/[/.]/g, "-");
-}
-
-async function mostRecentSessionId(projectDir) {
-  let entries;
-  try {
-    entries = await readdir(projectDir);
-  } catch {
-    return null;
-  }
-  const jsonlNames = entries.filter((e) => e.endsWith(".jsonl") && !e.includes("/"));
-  let best = null;
-  for (const name of jsonlNames) {
-    try {
-      const s = await stat(path.join(projectDir, name));
-      const id = name.slice(0, -".jsonl".length);
-      if (!best || s.mtimeMs > best.mtimeMs) best = { id, mtimeMs: s.mtimeMs };
-    } catch {
-      // Skip — vanished mid-scan.
-    }
-  }
-  return best;
-}
+// ---- Claude transcript resolution (transcripts.mjs has the project-dir
+// slug rule) ----
 
 const SESSION_ID_TTL_MS = 15_000;
-const sessionIdCache = new Map();
+const sessionIdCache = new Map(); // cwd -> { at, value: { id, file } | null }
 
 // Which session file to watch is worth caching — a readdir + a stat per
-// entry, and the answer only changes when a new session starts. Its MTIME is
-// not: that number IS the working/done signal, and a cached one made the
-// state up to SESSION_ID_TTL_MS stale on top of the threshold, so a pane
-// that had just written its transcript still read as finished for
-// the rest of the TTL. The id comes from the cache; the mtime is re-stat'd
-// every call, which is one stat on a known path.
-async function mostRecentSessionCached(projectDir) {
-  const cached = sessionIdCache.get(projectDir);
+// entry, and the answer only changes when a new session starts (or a window
+// opens, which drops the cache: see activate()). Its MTIME is not: that
+// number IS the working/done signal, and a cached one made the state up to
+// SESSION_ID_TTL_MS stale on top of the threshold, so a pane that had just
+// written its transcript still read as finished for the rest of the TTL. The
+// file comes from the cache; the mtime is re-stat'd every call, which is one
+// stat on a known path.
+async function mostRecentSessionCached(cwd) {
+  const cached = sessionIdCache.get(cwd);
   let value = cached && Date.now() - cached.at < SESSION_ID_TTL_MS ? cached.value : undefined;
   if (value === undefined) {
-    value = await mostRecentSessionId(projectDir);
-    sessionIdCache.set(projectDir, { at: Date.now(), value });
+    const found = await mostRecentTranscript(CLAUDE_PROJECTS_DIR, cwd);
+    value = found ? { id: found.id, file: found.file } : null;
+    sessionIdCache.set(cwd, { at: Date.now(), value });
   }
   if (!value) return value;
   try {
-    const fresh = await stat(path.join(projectDir, `${value.id}.jsonl`));
+    const fresh = await stat(value.file);
     return { id: value.id, mtimeMs: fresh.mtimeMs };
   } catch {
     // Vanished (a cleared session) — drop the cache entry so the next call
     // re-resolves rather than reporting a file that is gone.
-    sessionIdCache.delete(projectDir);
+    sessionIdCache.delete(cwd);
     return null;
   }
 }
@@ -370,16 +343,11 @@ async function paneTranscript(pane) {
   if (pane.command !== TRANSCRIPT_PROGRAM) return null;
   const own = (await claudeSessionsByWindow()).get(pane.paneId);
   if (own) {
-    const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(own.cwd ?? pane.cwd));
-    try {
-      const s = await stat(path.join(projectDir, `${own.sessionId}.jsonl`));
-      return { id: own.sessionId, mtimeMs: s.mtimeMs };
-    } catch {
-      // Recorded but nothing written yet (a brand-new session).
-      return null;
-    }
+    // Null when recorded but nothing written yet (a brand-new session).
+    const found = await sessionTranscript(CLAUDE_PROJECTS_DIR, own.cwd ?? pane.cwd, own.sessionId);
+    return found ? { id: found.id, mtimeMs: found.mtimeMs } : null;
   }
-  return mostRecentSessionCached(path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(pane.cwd)));
+  return mostRecentSessionCached(pane.cwd);
 }
 
 async function classifyPane(pane, waitingThresholdMs) {
@@ -481,6 +449,36 @@ async function resolveProjects(host, panes) {
 
 const NO_PROJECT = { repo: "", project: "", branch: null, linked: false };
 
+// After a session or window opens, closes or is renamed: what this file holds
+// per window follows the new listing. A closed window's hook record and cached
+// answers go at once rather than when they age out or are crowded out, and
+// the per-folder transcript lookup is redone, since a new window is usually a
+// new agent session. A listing that fails changes nothing; the next change
+// tries again.
+export async function followSessions(host) {
+  let sessions;
+  try {
+    sessions = await host.sessions.list();
+  } catch {
+    return;
+  }
+  const live = new Set();
+  for (const session of sessions) for (const win of session.windows ?? []) live.add(win.id);
+  for (const paneId of [...hookEvents.keys()]) if (!live.has(paneId)) hookEvents.delete(paneId);
+  for (const paneId of [...classifyCache.keys()]) if (!live.has(paneId)) classifyCache.delete(paneId);
+  for (const key of [...windowAgentCache.keys()]) if (!live.has(key.slice(0, key.indexOf("\n")))) windowAgentCache.delete(key);
+  sessionIdCache.clear();
+}
+
+// For tests: what is held for one window.
+export function heldForWindow(paneId) {
+  return {
+    hook: hookEvents.has(paneId),
+    classified: classifyCache.has(paneId),
+    agent: [...windowAgentCache.keys()].some((key) => key.startsWith(`${paneId}\n`)),
+  };
+}
+
 export function activate({ router, getSettings, host }) {
   // Core installs the hooks (Settings → AI Providers), receives every event at one
   // endpoint and normalizes it; all this extension does is remember the last
@@ -513,6 +511,12 @@ export function activate({ router, getSettings, host }) {
         console.warn("agent-monitor: could not send a notification:", err.message);
       });
     },
+  });
+
+  // Session events (Perch 0.9.3), not a timer: see followSessions above.
+  // Dropped for us when this server hook unmounts.
+  host.sessions?.onChange?.(() => {
+    followSessions(host).catch((err) => console.warn("agent-monitor: could not follow a session change:", err.message));
   });
 
   router.get("/agents", async (_req, res) => {

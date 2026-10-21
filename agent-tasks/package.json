@@ -2,7 +2,7 @@
   "name": "agent-tasks",
   "private": true,
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Agent Tasks",
   "description": "Orchestrates several AI coding agents from one AGENT TASKS panel: runs of dependency-ordered tasks, each worked by a supervised agent in its own worktree and session, with a coordinator inbox and decision gates. Workers report back through the agent-task CLI and the app's agent hooks, and are tracked by window id while no browser is open.",
   "icon": "./icon.svg",
@@ -33,7 +33,7 @@
     }
   },
   "perch": {
-    "minPerch": "0.9.0",
+    "minPerch": "0.9.3",
     "client": "./dist/client.js",
     "server": "./server.js"
   }

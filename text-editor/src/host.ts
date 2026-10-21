@@ -5,6 +5,7 @@
 // prop to pass these down — and putting them in client.tsx would make every
 // viewer import the module that imports it. This module is the shared leaf
 // both sides can depend on.
+import type { Pick } from "./diskConflict";
 import type { ThemeApi } from "./monacoLoader";
 
 export interface QuickDiffBase {
@@ -32,6 +33,9 @@ export let hostCloseViewerTab: ((viewerId: string, path: string) => void) | null
 export let hostQuickDiff: QuickDiffApi | null = null;
 export let hostCanPreview: ((path: string) => boolean) | null = null;
 export let hostOpenPreview: ((path: string) => void) | null = null;
+// ctx.app.pickItem, for the "changed on disk" question on save. Absent on
+// older hosts, and a save then overwrites without asking, as it always did.
+export let hostPickItem: Pick | null = null;
 
 export function setHost(host: {
   assetUrl: (relPath: string) => string;
@@ -41,6 +45,7 @@ export function setHost(host: {
   openPreview?: (path: string) => void;
   closeViewerTab?: (viewerId: string, path: string) => void;
   quickDiff?: QuickDiffApi;
+  pickItem?: Pick;
 }): void {
   hostAssetUrl = host.assetUrl;
   hostThemeApi = host.themeApi;
@@ -49,6 +54,7 @@ export function setHost(host: {
   hostCanPreview = host.canPreview ?? null;
   hostOpenPreview = host.openPreview ?? null;
   hostQuickDiff = host.quickDiff ?? null;
+  hostPickItem = host.pickItem ?? null;
 }
 
 export function clearHost(): void {
@@ -59,4 +65,5 @@ export function clearHost(): void {
   hostCanPreview = null;
   hostOpenPreview = null;
   hostQuickDiff = null;
+  hostPickItem = null;
 }

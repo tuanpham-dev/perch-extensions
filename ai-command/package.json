@@ -1,8 +1,9 @@
 {
   "name": "ai-command",
   "private": true,
+  "type": "module",
   "publisher": "perch",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "displayName": "AI Command Search",
   "description": "Natural language to shell command using the AI configured in Settings \u2192 AI Providers: \"AI: Generate Command\" in the palette (or a \"??\" quick-switcher query) types the generated command at the prompt for review - never runs it.",
   "icon": "./icon.svg",

@@ -315,6 +315,7 @@ export function SessionsTab({ filePath, active }: { filePath: string; active: bo
     );
   }, [sessions, query, agentFilter, scope, projectFilterOn, pickedProjects]);
   const current = (sessions ?? []).find((s) => selectionKey(s) === selected) ?? null;
+  const listRef = useRef<HTMLDivElement>(null);
 
   const resume = async (s: ListedSession) => {
     setResumeError(null);
@@ -335,6 +336,42 @@ export function SessionsTab({ filePath, active }: { filePath: string; active: bo
     } finally {
       setResuming(false);
     }
+  };
+
+  // Arrow keys move through the listed conversations (from the search box
+  // too) and Enter resumes the selected one. On a narrow screen selecting
+  // opens the preview in place of the list, so there the arrows move focus
+  // between rows and Enter opens the focused one's preview instead.
+  const onListKey = (e: React.KeyboardEvent, fromSearch = false) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const rows = listRef.current ? [...listRef.current.querySelectorAll<HTMLElement>("[data-key]")] : [];
+    const focusedAt = rows.findIndex((r) => r === document.activeElement);
+    const at = narrow && focusedAt >= 0 ? focusedAt : visible.findIndex((s) => selectionKey(s) === selected);
+    let next = -1;
+    if (e.key === "ArrowDown") next = Math.min(visible.length - 1, at + 1);
+    else if (e.key === "ArrowUp") next = Math.max(0, at - 1);
+    else if (!fromSearch && e.key === "Home") next = 0;
+    else if (!fromSearch && e.key === "End") next = visible.length - 1;
+    else if (e.key === "Enter") {
+      const s = visible[at] ?? (fromSearch ? visible[0] : undefined);
+      if (!s) return;
+      e.preventDefault();
+      if (narrow) setSelected(selectionKey(s));
+      else void resume(s);
+      return;
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
+    const s = visible[next];
+    if (!s) return;
+    if (narrow) {
+      rows[next]?.focus();
+      return;
+    }
+    setSelected(selectionKey(s));
+    setResumeError(null);
+    if (fromSearch) rows[next]?.scrollIntoView({ block: "nearest" });
+    else rows[next]?.focus();
   };
 
   const showList = !narrow || !current;
@@ -378,7 +415,10 @@ export function SessionsTab({ filePath, active }: { filePath: string; active: bo
           aria-label={scope === "all" ? "Search titles and projects" : "Search titles"}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            onListKey(e, true);
+          }}
         />
         {scope === "all" && allSessions && (
           <ProjectFilter projects={projectsInList} picked={pickedProjects} onChange={setPickedProjects} />
@@ -398,7 +438,7 @@ export function SessionsTab({ filePath, active }: { filePath: string; active: bo
       {error && <div className="as-error as-pad">Couldn't list conversations: {error}</div>}
       <div className="as-body">
         {showList && (
-          <div className="as-list" role="listbox" aria-label="Conversations">
+          <div className="as-list" role="listbox" aria-label="Conversations" ref={listRef} onKeyDown={(e) => onListKey(e)}>
             {sessions === null && !error && (
               <div className="as-muted as-pad">{scope === "all" ? "Loading every project's conversations…" : "Loading conversations…"}</div>
             )}
@@ -414,8 +454,11 @@ export function SessionsTab({ filePath, active }: { filePath: string; active: bo
               return (
                 <button
                   key={key}
+                  data-key={key}
                   role="option"
                   aria-selected={key === selected}
+                  // One row in the Tab order: the selected one, else the first.
+                  tabIndex={key === selected || (!visible.some((v) => selectionKey(v) === selected) && s === visible[0]) ? 0 : -1}
                   className={`as-row${key === selected ? " selected" : ""}`}
                   onClick={() => {
                     setSelected(key);

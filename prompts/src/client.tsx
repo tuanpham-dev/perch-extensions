@@ -19,6 +19,7 @@ import "./style.css";
 import Icon from "./Icon";
 import { injectStylesheet } from "./injectStylesheet";
 import { fetchFileText, fileExists, makeDir, NotFoundError, saveFileText } from "./fileApi";
+import { checkDiskConflict, type Pick } from "./diskConflict";
 import { createDraftClient, hashText, type DraftClient, type DraftsApi } from "./drafts";
 
 const PROMPT_SUFFIX = ".prompt.md";
@@ -42,6 +43,9 @@ let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | nul
 let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) => void) | null = null;
 let closeViewerTab: ((viewerId: string, path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
+// ctx.app.pickItem, for the "changed on disk" question on save. Absent on
+// older hosts, and a save then overwrites without asking, as it always did.
+let pickItem: Pick | null = null;
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 let removeContextListener: (() => void) | null = null;
@@ -287,6 +291,10 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
   // delete a backup) before it has been read.
   const [draftsReady, setDraftsReady] = useState(false);
   const [restored, setRestored] = useState<{ diskChanged: boolean } | null>(null);
+  // Set when the file couldn't be read (anything but "not there"): what's on
+  // disk is unknown, so Save stays off rather than write this tab's text -
+  // empty, most likely - over it. A successful reload clears it.
+  const loadFailedRef = useRef(false);
 
   // `restore` is only for the tab's first load: a later reload-on-focus runs
   // while clean, and must not pull in a backup over what the user is looking at.
@@ -295,38 +303,40 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
     const pendingDraft = restore && drafts ? drafts.read(filePath) : Promise.resolve(null);
     let text: string | null = null;
     try {
-      text = await fetchFileText(filePath);
+      // The draft path is never written, so there's nothing to read.
+      text = draft ? "" : await fetchFileText(filePath);
       setError(null);
     } catch (err) {
       if (err instanceof NotFoundError) {
-        // The draft path is never written, and a prompt can also be opened
-        // before it exists — both mean "start empty", not an error.
+        // A prompt can be opened before it exists: that means "start
+        // empty", not an error.
         text = "";
         setError(null);
       } else {
-        setError(errorText(err));
+        setError(`Couldn't read ${basenameOf(filePath)} (${errorText(err)}) - saving is off so it isn't overwritten.`);
       }
     }
-    const draft = asPromptDraft(await pendingDraft);
+    loadFailedRef.current = text === null;
+    const backup = asPromptDraft(await pendingDraft);
     if (text !== null) {
       diskTextRef.current = text;
-      if (draft && draft.text !== text) {
-        setContent(draft.text);
+      if (backup && backup.text !== text) {
+        setContent(backup.text);
         setDirtyState(true);
         hasDraftRef.current = true;
-        setRestored({ diskChanged: draft.base !== hashText(text) });
+        setRestored({ diskChanged: backup.base !== hashText(text) });
       } else {
         setContent(text);
         setDirtyState(false);
         // Matching the disk text: a save whose delete never landed.
-        if (draft) drafts?.clear(filePath);
+        if (backup) drafts?.clear(filePath);
       }
       setDraftsReady(true);
     } else {
       setDirtyState(false);
     }
     setLoading(false);
-  }, [filePath]);
+  }, [filePath, draft]);
 
   useEffect(() => {
     void load(true);
@@ -481,6 +491,22 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
       if (draft) {
         await saveDraft();
       } else {
+        if (loadFailedRef.current) {
+          setError(`Couldn't read ${basenameOf(filePath)} when it opened, so saving is off to keep it from being overwritten. Reopen the tab to try again.`);
+          return;
+        }
+        // Asks first when the file changed on disk since it was loaded.
+        const choice = await checkDiskConflict({
+          name: basenameOf(filePath),
+          loaded: diskTextRef.current,
+          readDisk: () => fetchFileText(filePath),
+          pick: pickItem ?? undefined,
+        });
+        if (choice === "cancel") return;
+        if (choice === "reload") {
+          await load();
+          return;
+        }
         await writeTo(filePath);
         diskTextRef.current = contentRef.current;
         setDirtyState(false);
@@ -599,6 +625,7 @@ interface ExtensionContext {
     openViewerTab(viewerId: string, path: string, opts?: { title?: string }): void;
     closeViewerTab(viewerId: string, path: string): void;
     refreshFiles(): void;
+    pickItem?: Pick;
   };
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
@@ -615,6 +642,7 @@ export function activate(ctx: ExtensionContext): void {
   openViewerTab = ctx.app.openViewerTab.bind(ctx.app);
   closeViewerTab = ctx.app.closeViewerTab.bind(ctx.app);
   refreshFiles = ctx.app.refreshFiles.bind(ctx.app);
+  pickItem = ctx.app.pickItem ? ctx.app.pickItem.bind(ctx.app) : null;
   extSettings = ctx.settings;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
 
@@ -678,6 +706,7 @@ export function deactivate(): void {
   openViewerTab = null;
   closeViewerTab = null;
   refreshFiles = null;
+  pickItem = null;
   extSettings = null;
   activeContext = NO_CONTEXT;
 }

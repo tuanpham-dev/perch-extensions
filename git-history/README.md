@@ -27,7 +27,13 @@ names the old path.
   content, so it opens read-only.
 - **Right-click a row** for *Open Diff*, *View at This Revision* (opens the Blame
   view pinned to that commit) and *Copy SHA*.
-- **Load More** pages by 50.
+- **Load More** pages by 50, as far back as the history goes.
+- **Filter** with the box in the header: it matches a commit's message, its
+  author, or the start of its SHA, among the commits loaded so far.
+- **Keyboard:** the arrow keys (and Page Up/Down, Home/End) move through the
+  list - from the filter box too - and Enter opens the commit's diff in the
+  editor. In two columns the arrows move the selection, so the diff pane
+  follows.
 
 ## Blame
 
@@ -50,6 +56,12 @@ its own:
 - **Hovering a block highlights every other block from the same commit**, which
   is how you see one commit's whole footprint in the file.
 - **Clicking a block's gutter** opens that commit's diff of the file.
+- **History of some lines:** click a line number to select that line,
+  Shift+click another to select the range between, then **History of These
+  Lines** opens a History tab of just the commits that changed them
+  (`git log -L start,end:file`), which git follows as the lines move. On a Blame
+  pinned to a revision the range is read from that revision; at HEAD, line
+  numbers are HEAD's, so uncommitted edits above the range can shift it.
 
 Lines you have edited but not committed form their own block, marked "Not
 committed". Two files are refused rather than rendered: one over 2 MB ("Too

@@ -1,6 +1,7 @@
 // automations: the AUTOMATIONS section of the Run tab - every automation with
-// its trigger, next run and last result, an enable toggle, Run now, and a
-// create/edit form for every trigger and action kind. The scheduler itself is
+// its trigger, next run and last result (expanded: its last 20 runs), an
+// enable toggle, Run now, a Pause All switch, and a create/edit form for every
+// trigger and action kind. The scheduler itself is
 // server-side and runs with no browser open; this only reads and edits it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -18,8 +19,9 @@ interface ActiveContext {
 }
 
 // The server announces every save on topic "changed" (storage.notify, Perch
-// 0.9+); a "resync" after the change stream reconnects means saves may have
-// been missed. Either way the panel refetches.
+// 0.9+), and also a run starting and Agent Tasks coming or going; a "resync"
+// after the change stream reconnects means notices may have been missed.
+// Either way the panel refetches.
 type StorageNotice = { type: "topic" | "resync" };
 interface StorageApi {
   subscribeTopic(topic: string, cb: (n: StorageNotice) => void): () => void;
@@ -56,6 +58,16 @@ interface Action {
   worktree?: string;
 }
 
+type RunStatus = "ok" | "error" | "unavailable" | "missed" | "stopped";
+
+interface RunRecord {
+  at: number | null;
+  status: RunStatus | null;
+  reason: string;
+  result: string;
+  durationMs?: number;
+}
+
 interface Automation {
   id: string;
   name: string;
@@ -65,10 +77,12 @@ interface Automation {
   repo: string;
   lastRunAt: number | null;
   lastResult: string;
-  lastStatus: "ok" | "error" | "unavailable" | "missed" | null;
+  lastStatus: RunStatus | null;
   lastReason?: string;
   nextRunAt: number | null;
   runCount: number;
+  // Newest first, at most 20; missing on one never run since this existed.
+  runs?: RunRecord[];
   triggerSummary: string;
   running: boolean;
   needsAgentTasks: boolean;
@@ -76,6 +90,7 @@ interface Automation {
 
 interface ListResponse {
   automations: Automation[];
+  paused: boolean;
   agentTasks: { connected: boolean; error: string | null };
   tickSeconds: number;
 }
@@ -384,8 +399,19 @@ function AutomationsPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProp
       .then(refresh)
       .catch((err: Error) => setError(err.message));
 
+  const paused = data?.paused === true;
   const header = (
     <>
+      <button
+        type="button"
+        className={`icon-button${paused ? " au-paused-button" : ""}`}
+        title={paused ? "Paused - click to resume every automation" : "Pause all automations"}
+        aria-pressed={paused}
+        disabled={!data}
+        onClick={() => void post("/pause", { paused: !paused })}
+      >
+        <Icon name={paused ? "debug-continue" : "debug-pause"} />
+      </button>
       <button type="button" className="icon-button" title="New automation" onClick={() => setEditing("new")}>
         <Icon name="add" />
       </button>
@@ -399,6 +425,14 @@ function AutomationsPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProp
     <div className="au-panel" ref={rootRef}>
       {actionsTarget && createPortal(header, actionsTarget)}
       {error && <div className="au-error">{error}</div>}
+      {paused && (
+        <div className="au-paused">
+          Paused - no schedule or Agent Tasks event starts anything. Run now still works.{" "}
+          <button type="button" className="au-link" onClick={() => void post("/pause", { paused: false })}>
+            Resume
+          </button>
+        </div>
+      )}
       {editing === "new" && (
         <AutomationForm
           onDone={(saved) => {
@@ -492,6 +526,19 @@ function AutomationsPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProp
                 </button>
               ) : (
                 <div className="au-meta">Never run.</div>
+              )}
+              {expanded === a.id && (a.runs?.length ?? 0) > 1 && (
+                <ol className="au-history" aria-label={`Earlier runs of ${a.name}`}>
+                  {a.runs!.slice(1).map((r, i) => (
+                    <li key={`${r.at}-${i}`} className={`au-history-item au-status-${r.status ?? "none"}`} title={r.result}>
+                      <span className="au-result-when">
+                        {r.status ?? ""} {when(r.at)}
+                        {r.reason ? ` - ${r.reason}` : ""}
+                      </span>{" "}
+                      <span className="au-history-text">{r.result}</span>
+                    </li>
+                  ))}
+                </ol>
               )}
             </li>
           ),

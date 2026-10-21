@@ -15,7 +15,7 @@ import { createMemoryStorage } from "../../scripts/memoryStorage.mjs";
 // The host's extension storage, in memory: runs live in it, and the socket
 // and CLI in its runtime folder.
 const configHome = await mkdtemp(path.join(tmpdir(), "at-hooks-"));
-const { storage } = createMemoryStorage({ root: configHome });
+const { storage, events: storageEvents } = createMemoryStorage({ root: configHome });
 const sockPath = path.join(storage.runtimeDir(), "control.sock");
 const server = await import("../server.js");
 
@@ -32,6 +32,12 @@ let hookSubscription: { events: string[]; onEvent: (e: HookEvent) => void } | nu
 const typed: { session: string; text: string; submit: boolean }[] = [];
 const sessions = new Map<string, { id: string; command: string }[]>();
 let paneCounter = 40;
+// host.sessions.onChange subscribers; the fake fires them by hand, the way
+// core does after a window closes.
+const sessionListeners = new Set<() => void>();
+function sessionsChanged() {
+  for (const cb of sessionListeners) cb();
+}
 
 const host = {
   agents: {
@@ -47,6 +53,10 @@ const host = {
     },
   },
   sessions: {
+    onChange(cb: () => void) {
+      sessionListeners.add(cb);
+      return () => sessionListeners.delete(cb);
+    },
     list: async () => [...sessions.keys()].map((name) => ({ name })),
     create: async (name: string) => {
       sessions.set(name, [{ id: `%${++paneCounter}`, command: "claude" }]);
@@ -99,7 +109,7 @@ function verb(name: string, body: Record<string, unknown>): Promise<{ status: nu
   });
 }
 
-function call(method: string, route: string, body: unknown = {}): Promise<{ status: number; body: any }> {
+function call(method: string, route: string, body: unknown = {}, query: Record<string, string> = {}): Promise<{ status: number; body: any }> {
   const handler = routes.get(`${method} ${route}`);
   if (!handler) throw new Error(`no route ${method} ${route}`);
   return new Promise((resolve) => {
@@ -115,7 +125,7 @@ function call(method: string, route: string, body: unknown = {}): Promise<{ stat
         resolve({ status, body: value });
       },
     };
-    handler({ method, originalUrl: route, body }, res);
+    handler({ method, originalUrl: route, body, query }, res);
   });
 }
 
@@ -160,8 +170,8 @@ after(async () => {
   await server.deactivate();
 });
 
-test("the extension subscribes to exactly stop and permission", () => {
-  assert.deepEqual([...(hookSubscription?.events ?? [])].sort(), ["permission", "stop"]);
+test("the extension subscribes to stop, permission and the tool events", () => {
+  assert.deepEqual([...(hookSubscription?.events ?? [])].sort(), ["permission", "stop", "tool-end", "tool-start"]);
 });
 
 test("the socket and the store it creates are private to the user", async () => {
@@ -367,6 +377,93 @@ test("a worktree an active worker is using is left alone, and run cleanup report
 function removedTargetFor(dispatch: { worktreePath: string }) {
   return path.join(configHome, "worktrees", dispatch.worktreePath.split("/").pop()!);
 }
+
+test("a worker whose window closes is marked lost when the sessions change, with no timer", async () => {
+  const { taskId, dispatch: started } = await startedTask("window closes");
+  sessions.delete(started.sessionName);
+  sessionsChanged();
+  await waitFor(async () => (await stateOf(taskId)).dispatch.state === "lost");
+  const { task, dispatch, inbox } = await stateOf(taskId);
+  assert.match(dispatch.lostReason, /is gone/);
+  assert.equal(task.status, "ready");
+  assert.ok(inbox.some((m: { type: string; taskId: string }) => m.type === "escalation" && m.taskId === taskId));
+});
+
+test("a sweep that finds every worker alive writes nothing", async () => {
+  const { taskId } = await startedTask("alive and well");
+  await stateOf(taskId);
+  const writes = storageEvents.filter((e) => e.type === "change").length;
+  sessionsChanged();
+  // The sweep is quick, but give it room to write if it were going to.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(storageEvents.filter((e) => e.type === "change").length, writes);
+});
+
+// Last of the worker tests: moving the clock past the timeout loses every
+// silent worker still running from the tests above.
+test("tool-start and tool-end count as a heartbeat, so a worker using only tools is not lost", async () => {
+  const quiet = await startedTask("silent worker");
+  const busy = await startedTask("tools only");
+  const realNow = Date.now;
+  const start = realNow();
+  try {
+    // A tool event right after launch is not written down (the launch was the last sign of life)...
+    hookSubscription!.onEvent({ event: "tool-start", paneId: busy.dispatch.paneId, payload: { tool_name: "Bash" } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await stateOf(busy.taskId)).dispatch.lastHeartbeatAt, busy.dispatch.lastHeartbeatAt);
+
+    // ...but a few minutes in, one is.
+    Date.now = () => start + 5 * 60_000;
+    hookSubscription!.onEvent({ event: "tool-end", paneId: busy.dispatch.paneId, payload: { tool_name: "Bash" } });
+    await waitFor(async () => (await stateOf(busy.taskId)).dispatch.lastHeartbeatAt === start + 5 * 60_000);
+
+    // Past the 600s default timeout for the launch, not for the last tool event.
+    Date.now = () => start + 11 * 60_000;
+    sessionsChanged();
+    await waitFor(async () => (await stateOf(quiet.taskId)).dispatch.state === "lost");
+    assert.match((await stateOf(quiet.taskId)).dispatch.lostReason, /no sign of life/);
+    assert.equal((await stateOf(busy.taskId)).dispatch.state, "active");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("archived runs can be searched and deleted", async () => {
+  const archived = (id: string, objective: string, title: string, archivedAt: number) => ({
+    run: { id, objective, repo: configHome, createdAt: 1, updatedAt: 1 },
+    tasks: { [`task_${id.slice(4)}`]: { id: `task_${id.slice(4)}`, runId: id, title, deps: [], outcome: "completed" } },
+    dispatches: {},
+    gates: {},
+    messages: {},
+    archivedAt,
+  });
+  await storage.collection("state").put("archive", {
+    version: 1,
+    runs: {
+      run_aaaaaaaaaaaa: archived("run_aaaaaaaaaaaa", "Ship the billing page", "Wire Stripe webhooks", 2),
+      run_bbbbbbbbbbbb: archived("run_bbbbbbbbbbbb", "Fix login", "Reset password flow", 1),
+    },
+  });
+
+  let res = await call("GET", "/archive");
+  assert.deepEqual(res.body.runs.map((r: { id: string }) => r.id), ["run_aaaaaaaaaaaa", "run_bbbbbbbbbbbb"], "newest first");
+  assert.equal(res.body.total, 2);
+
+  res = await call("GET", "/archive", {}, { q: "billing" });
+  assert.deepEqual(res.body.runs.map((r: { id: string }) => r.id), ["run_aaaaaaaaaaaa"], "by objective");
+  res = await call("GET", "/archive", {}, { q: "PASSWORD reset" });
+  assert.deepEqual(res.body.runs.map((r: { id: string }) => r.id), ["run_bbbbbbbbbbbb"], "by task title, every word, any case");
+  res = await call("GET", "/archive", {}, { q: "stripe login" });
+  assert.deepEqual(res.body.runs, [], "words from different runs match neither");
+  assert.equal(res.body.total, 2, "the total is the whole archive");
+
+  res = await call("POST", "/archive-delete", { runId: "run_bbbbbbbbbbbb" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  res = await call("GET", "/archive");
+  assert.deepEqual(res.body.runs.map((r: { id: string }) => r.id), ["run_aaaaaaaaaaaa"]);
+  assert.equal((await call("POST", "/archive-delete", { runId: "run_bbbbbbbbbbbb" })).status, 404);
+  assert.equal((await call("POST", "/archive-restore", { runId: "run_bbbbbbbbbbbb" })).status, 404, "a deleted run cannot come back");
+});
 
 test("a second activate() tears the first down instead of failing to bind", async () => {
   server.activate({ router, log: () => {}, getSettings: async () => ({}), host, storage });

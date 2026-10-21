@@ -13,10 +13,11 @@ import {
   type RowsResult,
   type TabStart,
 } from "./host";
+import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid, download, toCsv, toJson } from "./ResultsGrid";
 
 type MongoResult = { kind: "docs"; docs: unknown[]; truncated: boolean; rowCount: number; timeMs: number; limit: number };
-type RedisReply = { kind: "redis"; reply: unknown; timeMs: number };
+type RedisReply = { kind: "redis"; reply: unknown; truncated?: boolean; rowCount?: number; notes?: string[]; timeMs: number; limit: number };
 type Result = RowsResult | MongoResult | RedisReply;
 
 function newQueryId(): string {
@@ -73,13 +74,21 @@ function Footer({ result, onExport }: { result: RowsResult | MongoResult; onExpo
 
 // ---- SQL ----
 
-function SqlTab({ conn, start, active }: { conn: Connection; start: TabStart; active: boolean }) {
+// What every query tab gets. `session` is the tab's own id: the server gives
+// each tab its own database connection, so Cancel or a slow query in one tab
+// leaves the others alone.
+interface TabProps {
+  conn: Connection;
+  start: TabStart;
+  active: boolean;
+  session: string;
+}
+
+function SqlTab({ conn, start, active, session }: TabProps) {
   const [text, setText] = useState(start.text ?? "");
   const [result, setResult] = useState<RowsResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
-  const [history, setHistory] = useState<{ at: number; text: string }[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   const run = useCallback(
@@ -89,7 +98,7 @@ function SqlTab({ conn, start, active }: { conn: Connection; start: TabStart; ac
       setRunning(queryId);
       setError(null);
       try {
-        setResult(await call<RowsResult>("/query", { method: "POST", body: JSON.stringify({ id: conn.id, queryId, text: sql }) }));
+        setResult(await call<RowsResult>("/query", { method: "POST", body: JSON.stringify({ id: conn.id, session, queryId, text: sql }) }));
       } catch (err) {
         setResult(null);
         setError((err as Error).message);
@@ -97,7 +106,7 @@ function SqlTab({ conn, start, active }: { conn: Connection; start: TabStart; ac
         setRunning((r) => (r === queryId ? null : r));
       }
     },
-    [conn.id],
+    [conn.id, session],
   );
 
   useEffect(() => {
@@ -115,13 +124,6 @@ function SqlTab({ conn, start, active }: { conn: Connection; start: TabStart; ac
     if (running) void call("/cancel", { method: "POST", body: JSON.stringify({ queryId: running }) });
   };
 
-  const loadHistory = () => {
-    setShowHistory((v) => !v);
-    call<{ entries: { at: number; text: string }[] }>(`/history?id=${conn.id}`)
-      .then((d) => setHistory(d.entries))
-      .catch(() => {});
-  };
-
   const exportAs = (kind: "csv" | "json") => {
     if (!result) return;
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -136,30 +138,7 @@ function SqlTab({ conn, start, active }: { conn: Connection; start: TabStart; ac
         <span className="db-engine">{ENGINE_LABELS[conn.engine]}</span>
         <ModePill conn={conn} />
         <span className="db-spacer" />
-        <div className="db-history-wrap">
-          <button className="db-button" onClick={loadHistory} aria-expanded={showHistory}>
-            History
-          </button>
-          {showHistory && (
-            <div className="db-history" role="menu">
-              {history.length === 0 && <div className="db-muted db-pad">No queries yet.</div>}
-              {history.map((h, i) => (
-                <button
-                  key={i}
-                  role="menuitem"
-                  className="db-history-row"
-                  onClick={() => {
-                    setText(h.text);
-                    setShowHistory(false);
-                  }}
-                >
-                  <span className="db-history-text">{h.text}</span>
-                  <span className="db-muted">{new Date(h.at).toLocaleString()}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <HistoryMenu connId={conn.id} connName={conn.name} onPick={setText} />
         {running ? (
           <button className="db-button" onClick={cancel}>
             <span className="codicon codicon-debug-stop" aria-hidden="true" /> Cancel
@@ -205,7 +184,39 @@ function SqlTab({ conn, start, active }: { conn: Connection; start: TabStart; ac
 
 // ---- MongoDB ----
 
-function MongoTab({ conn, start, active }: { conn: Connection; start: TabStart; active: boolean }) {
+// A MongoDB history entry is the query's JSON spec; shown as a shell-like
+// line, and picked back into the query bar.
+interface MongoSpec {
+  db?: string;
+  collection?: string;
+  mode?: "find" | "aggregate";
+  filter?: string;
+  projection?: string;
+  sort?: string;
+  pipeline?: string;
+}
+
+function parseSpec(text: string): MongoSpec | null {
+  try {
+    const spec = JSON.parse(text) as MongoSpec;
+    return spec && typeof spec === "object" ? spec : null;
+  } catch {
+    return null;
+  }
+}
+
+const oneLine = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
+
+function describeSpec(text: string): string {
+  const spec = parseSpec(text);
+  if (!spec) return text;
+  const target = `${spec.db ? `${spec.db}.` : ""}${spec.collection ?? "?"}`;
+  if (spec.mode === "aggregate") return `${target}.aggregate(${oneLine(spec.pipeline) || "[]"})`;
+  const extra = [oneLine(spec.projection), oneLine(spec.sort) && `sort ${oneLine(spec.sort)}`].filter(Boolean).join(", ");
+  return `${target}.find(${oneLine(spec.filter) || "{}"})${extra ? ` · ${extra}` : ""}`;
+}
+
+function MongoTab({ conn, start, active, session }: TabProps) {
   const [db, setDb] = useState(start.db ?? conn.database ?? "");
   const [collection, setCollection] = useState(start.collection ?? "");
   const [mode, setMode] = useState<"find" | "aggregate">("find");
@@ -224,7 +235,7 @@ function MongoTab({ conn, start, active }: { conn: Connection; start: TabStart; 
     setError(null);
     try {
       const spec = { db, collection, mode, filter, projection, sort, pipeline };
-      setResult(await call<MongoResult>("/query", { method: "POST", body: JSON.stringify({ id: conn.id, queryId, spec }) }));
+      setResult(await call<MongoResult>("/query", { method: "POST", body: JSON.stringify({ id: conn.id, session, queryId, spec }) }));
     } catch (err) {
       setResult(null);
       setError((err as Error).message);
@@ -248,6 +259,18 @@ function MongoTab({ conn, start, active }: { conn: Connection; start: TabStart; 
 
   const columns = result ? [...new Set(result.docs.flatMap((d) => Object.keys((d ?? {}) as object)))] : [];
 
+  const pick = (text: string) => {
+    const spec = parseSpec(text);
+    if (!spec) return;
+    setDb(spec.db ?? "");
+    setCollection(spec.collection ?? "");
+    setMode(spec.mode === "aggregate" ? "aggregate" : "find");
+    setFilter(spec.filter ?? "");
+    setProjection(spec.projection ?? "");
+    setSort(spec.sort ?? "");
+    if (spec.pipeline !== undefined) setPipeline(spec.pipeline);
+  };
+
   return (
     <div className={`db-tab${active ? "" : " hidden"}`}>
       <div className="db-toolbar">
@@ -255,6 +278,7 @@ function MongoTab({ conn, start, active }: { conn: Connection; start: TabStart; 
         <span className="db-engine">MongoDB</span>
         <ModePill conn={conn} />
         <span className="db-spacer" />
+        <HistoryMenu connId={conn.id} connName={conn.name} onPick={pick} describe={describeSpec} />
         {running ? (
           <button className="db-button" onClick={() => void call("/cancel", { method: "POST", body: JSON.stringify({ queryId: running }) })}>
             Cancel
@@ -394,37 +418,76 @@ function RedisValueView({ value }: { value: RedisValue }) {
   );
 }
 
-function RedisTab({ conn, start, active }: { conn: Connection; start: TabStart; active: boolean }) {
+function RedisTab({ conn, start, active, session }: TabProps) {
   const [pattern, setPattern] = useState(start.pattern ?? "*");
   const [keys, setKeys] = useState<RedisKey[] | null>(null);
+  // Where SCAN left off ("0": the whole keyspace has been read), and the
+  // pattern that scan was for.
+  const [cursor, setCursor] = useState<{ next: string; pattern: string }>({ next: "0", pattern: "*" });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [runningCmd, setRunningCmd] = useState<string | null>(null);
   const [selected, setSelected] = useState<RedisValue | null>(null);
   const [command, setCommand] = useState("");
   const [consoleLog, setConsoleLog] = useState<{ cmd: string; out: string; error?: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const keysPage = useCallback(
+    (match: string, from: string) =>
+      call<{ keys: RedisKey[]; cursor: string }>(
+        `/redis/keys?id=${conn.id}&session=${session}&pattern=${encodeURIComponent(match)}&cursor=${encodeURIComponent(from)}`,
+      ),
+    [conn.id, session],
+  );
+
   const scan = useCallback(() => {
+    const match = pattern || "*";
     setError(null);
-    call<{ keys: RedisKey[] }>(`/redis/keys?id=${conn.id}&pattern=${encodeURIComponent(pattern || "*")}`)
-      .then((d) => setKeys(d.keys))
+    keysPage(match, "0")
+      .then((d) => {
+        setKeys(d.keys);
+        setCursor({ next: d.cursor, pattern: match });
+      })
       .catch((err: Error) => setError(err.message));
-  }, [conn.id, pattern]);
+  }, [keysPage, pattern]);
+
+  // The next page of the same scan; SCAN may return a key twice, so repeats
+  // are dropped.
+  const loadMore = () => {
+    setLoadingMore(true);
+    keysPage(cursor.pattern, cursor.next)
+      .then((d) => {
+        setKeys((prev) => {
+          const seen = new Set((prev ?? []).map((k) => k.key));
+          return [...(prev ?? []), ...d.keys.filter((k) => !seen.has(k.key))];
+        });
+        setCursor({ next: d.cursor, pattern: cursor.pattern });
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoadingMore(false));
+  };
 
   useEffect(() => scan(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const open = (key: string) =>
-    call<RedisValue>(`/redis/value?id=${conn.id}&key=${encodeURIComponent(key)}`)
+    call<RedisValue>(`/redis/value?id=${conn.id}&session=${session}&key=${encodeURIComponent(key)}`)
       .then(setSelected)
       .catch((err: Error) => setError(err.message));
 
   const runCommand = async () => {
     const cmd = command.trim();
-    if (!cmd) return;
+    if (!cmd || runningCmd) return;
     setCommand("");
+    const queryId = newQueryId();
+    setRunningCmd(queryId);
     try {
-      const r = await call<RedisReply>("/query", { method: "POST", body: JSON.stringify({ id: conn.id, queryId: newQueryId(), text: cmd }) });
-      setConsoleLog((log) => [...log, { cmd, out: typeof r.reply === "string" ? r.reply : JSON.stringify(r.reply, null, 2) }].slice(-50));
+      const r = await call<RedisReply>("/query", { method: "POST", body: JSON.stringify({ id: conn.id, session, queryId, text: cmd }) });
+      const out = typeof r.reply === "string" ? r.reply : JSON.stringify(r.reply, null, 2);
+      const notes = [...(r.notes ?? []), ...(r.truncated && r.rowCount ? [`Showing the first ${r.limit.toLocaleString("en-US")} of ${r.rowCount.toLocaleString("en-US")} items`] : [])];
+      setConsoleLog((log) => [...log, { cmd, out: notes.length ? `${out}\n(${notes.join(" · ")})` : out }].slice(-50));
     } catch (err) {
       setConsoleLog((log) => [...log, { cmd, out: (err as Error).message, error: true }].slice(-50));
+    } finally {
+      setRunningCmd(null);
     }
   };
 
@@ -435,6 +498,7 @@ function RedisTab({ conn, start, active }: { conn: Connection; start: TabStart; 
         <span className="db-engine">Redis</span>
         <ModePill conn={conn} />
         <span className="db-spacer" />
+        <HistoryMenu connId={conn.id} connName={conn.name} onPick={setCommand} />
         <input
           className="db-input db-mono"
           aria-label="Key pattern"
@@ -464,6 +528,16 @@ function RedisTab({ conn, start, active }: { conn: Connection; start: TabStart; 
               </button>
             ))
           )}
+          {keys !== null && (keys.length > 0 || cursor.next !== "0") && (
+            <div className="db-redis-more db-muted">
+              <span>{keys.length.toLocaleString("en-US")} keys</span>
+              {cursor.next !== "0" && (
+                <button className="db-link" onClick={loadMore} disabled={loadingMore}>
+                  {loadingMore ? "Loading…" : "Load more"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <div className="db-redis-side">{selected ? <RedisValueView value={selected} /> : <div className="db-muted db-pad">Select a key to see its value.</div>}</div>
       </div>
@@ -476,17 +550,24 @@ function RedisTab({ conn, start, active }: { conn: Connection; start: TabStart; 
             </div>
           ))}
         </div>
-        <input
-          className="db-input db-mono"
-          placeholder="Redis command, such as HGETALL user:1"
-          aria-label="Redis command"
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter") void runCommand();
-          }}
-        />
+        <div className="db-console-input">
+          <input
+            className="db-input db-mono"
+            placeholder="Redis command, such as HGETALL user:1"
+            aria-label="Redis command"
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") void runCommand();
+            }}
+          />
+          {runningCmd && (
+            <button className="db-button" onClick={() => void call("/cancel", { method: "POST", body: JSON.stringify({ queryId: runningCmd }) })}>
+              <span className="codicon codicon-debug-stop" aria-hidden="true" /> Cancel
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -495,6 +576,12 @@ function RedisTab({ conn, start, active }: { conn: Connection; start: TabStart; 
 export function QueryTab({ filePath, active }: { filePath: string; active: boolean }) {
   const id = connectionIdOfTab(filePath);
   const conn = useConnection(id);
+  // This tab's session on the server; its connection closes with the tab.
+  const [session] = useState(newQueryId);
+  useEffect(
+    () => () => void call("/release", { method: "POST", body: JSON.stringify({ id, session }) }).catch(() => {}),
+    [id, session],
+  );
   const [start] = useState<TabStart>(() => {
     const s = pendingTabs.get(filePath) ?? {};
     pendingTabs.delete(filePath);
@@ -502,9 +589,9 @@ export function QueryTab({ filePath, active }: { filePath: string; active: boole
   });
   if (conn === undefined) return <div className={`db-tab db-muted db-pad${active ? "" : " hidden"}`}>Loading…</div>;
   if (conn === null) return <div className={`db-tab db-muted db-pad${active ? "" : " hidden"}`}>This connection was removed.</div>;
-  if (conn.engine === "mongo") return <MongoTab conn={conn} start={start} active={active} />;
-  if (conn.engine === "redis") return <RedisTab conn={conn} start={start} active={active} />;
-  return <SqlTab conn={conn} start={start} active={active} />;
+  if (conn.engine === "mongo") return <MongoTab conn={conn} start={start} active={active} session={session} />;
+  if (conn.engine === "redis") return <RedisTab conn={conn} start={start} active={active} session={session} />;
+  return <SqlTab conn={conn} start={start} active={active} session={session} />;
 }
 
 export { ApiError };

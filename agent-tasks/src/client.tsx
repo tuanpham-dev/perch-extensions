@@ -742,27 +742,63 @@ function Leftovers({
   );
 }
 
-function ArchivedRuns({ onRestored }: { onRestored: () => void }) {
+// Search runs on the server (objective, repo and task titles), a moment after
+// typing stops, so a long archive is never shipped whole just to be filtered.
+function ArchivedRuns({
+  onRestored,
+  confirm,
+}: {
+  onRestored: () => void;
+  confirm: (message: string, label?: string) => Promise<boolean>;
+}) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState<ArchivedRun[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(() => {
-    apiGet<{ runs: ArchivedRun[] }>("/archive")
-      .then((r) => setRuns(r.runs))
-      .catch((err: Error) => setError(err.message));
+  // The newest request wins: an older search answering late is dropped.
+  const requestRef = useRef(0);
+  const load = useCallback((q: string) => {
+    const request = ++requestRef.current;
+    apiGet<{ runs: ArchivedRun[]; total?: number }>(q.trim() ? `/archive?q=${encodeURIComponent(q.trim())}` : "/archive")
+      .then((r) => {
+        if (request !== requestRef.current) return;
+        setRuns(r.runs);
+        setTotal(r.total ?? r.runs.length);
+        setError(null);
+      })
+      .catch((err: Error) => {
+        if (request === requestRef.current) setError(err.message);
+      });
   }, []);
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(() => load(query), query ? 200 : 0);
+    return () => clearTimeout(timer);
+  }, [open, query, load]);
+  const remove = async (run: ArchivedRun) => {
+    if (!(await confirm(`Delete the archived run "${run.objective}" and all its tasks for good?`, "Delete"))) return;
+    apiPost("/archive-delete", { runId: run.id })
+      .then(() => load(query))
+      .catch((err: Error) => setError(err.message));
+  };
   return (
-    <Section
-      title="ARCHIVED RUNS"
-      open={open}
-      onToggle={() => {
-        if (!open) load();
-        setOpen(!open);
-      }}
-    >
+    <Section title="ARCHIVED RUNS" open={open} onToggle={() => setOpen(!open)}>
       {error && <div className="at-error">{error}</div>}
+      {(total > 0 || query) && (
+        <div className="at-archive-search">
+          <input
+            className="dialog-input"
+            type="search"
+            value={query}
+            placeholder="Search archived runs"
+            aria-label="Search archived runs"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      )}
       {runs === null && !error && <div className="at-empty">Loading...</div>}
-      {runs?.length === 0 && <div className="at-empty">Nothing archived.</div>}
+      {runs?.length === 0 && <div className="at-empty">{query.trim() ? "No archived run matches." : "Nothing archived."}</div>}
       <ul className="at-list">
         {runs?.map((run) => (
           <li key={run.id} className="at-row">
@@ -770,6 +806,7 @@ function ArchivedRuns({ onRestored }: { onRestored: () => void }) {
               <span className="at-run-objective">{run.objective}</span>
               <span className="at-meta">
                 {run.taskCount} tasks - archived {new Date(run.archivedAt).toLocaleDateString()}
+                {run.repo ? ` - ${run.repo}` : ""}
               </span>
             </span>
             <button
@@ -778,13 +815,16 @@ function ArchivedRuns({ onRestored }: { onRestored: () => void }) {
               onClick={() =>
                 apiPost("/archive-restore", { runId: run.id })
                   .then(() => {
-                    load();
+                    load(query);
                     onRestored();
                   })
                   .catch((err: Error) => setError(err.message))
               }
             >
               Restore
+            </button>
+            <button type="button" className="icon-button" title="Delete this archived run" onClick={() => void remove(run)}>
+              <Icon name="trash" />
             </button>
           </li>
         ))}
@@ -1059,7 +1099,7 @@ function AgentTasksPanel({ actionsTarget, confirmDialog }: SidebarPanelHostProps
         })}
       </Section>
 
-      <ArchivedRuns onRestored={refresh} />
+      <ArchivedRuns onRestored={refresh} confirm={confirm} />
     </div>
   );
 }

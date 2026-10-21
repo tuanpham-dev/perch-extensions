@@ -317,6 +317,17 @@
   margin-top: 4px;
 }
 
+.at-archive-search {
+  display: flex;
+  padding: 2px 8px 4px 12px;
+}
+
+.at-archive-search .dialog-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+
 .at-gate-free .dialog-input {
   flex: 1;
   min-width: 0;

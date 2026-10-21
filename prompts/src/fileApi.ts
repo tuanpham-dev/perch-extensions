@@ -10,16 +10,37 @@ export function downloadUrl(targetPath: string): string {
 
 export class NotFoundError extends Error {}
 
-// Rejects with NotFoundError for a path that isn't there, so the editor can
-// treat "no file yet" as an empty draft rather than a failure. The host's
-// download route answers a missing path with 400 ("path is not a file or
-// directory"), not 404 — and since this always sends a non-empty path, its
-// only other 400 case ("path is required") can't happen here.
+// Rejects with NotFoundError only for a path that is really not there, so the
+// editor can treat "no file yet" as an empty draft; any other failure is a
+// plain Error, and the editor must not then save over the file. A 404 is
+// taken as missing. The host's download route also answers a missing path
+// with 400 ("path is not a file or directory") - but a 400 can mean other
+// things too, so that one is only believed once the parent folder's listing
+// confirms the name isn't in it.
 export async function fetchFileText(targetPath: string): Promise<string> {
   const res = await fetch(downloadUrl(targetPath));
-  if (res.status === 400 || res.status === 404) throw new NotFoundError(`${targetPath} not found`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (res.status === 404) throw new NotFoundError(`${targetPath} not found`);
+  if (res.status === 400 && (await confirmedMissing(targetPath))) throw new NotFoundError(`${targetPath} not found`);
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.text();
+}
+
+// True only when the host says the name isn't in its folder, or that the
+// folder itself isn't there. Anything unclear (an unreadable folder, a
+// network error) is false: better an error than an empty prompt saved over
+// a file that exists.
+async function confirmedMissing(targetPath: string): Promise<boolean> {
+  const slash = targetPath.lastIndexOf("/");
+  const dir = targetPath.slice(0, slash) || "/";
+  const name = targetPath.slice(slash + 1);
+  try {
+    const res = await fetch(`/api/fs?path=${encodeURIComponent(dir)}`);
+    const body = (await res.json().catch(() => null)) as { entries?: { name: string }[]; error?: string } | null;
+    if (res.ok) return Array.isArray(body?.entries) && !body.entries.some((e) => e.name === name);
+    return res.status === 400 && body?.error === "path is not a directory";
+  } catch {
+    return false;
+  }
 }
 
 // True if the path exists — a HEAD against the same download route, used for

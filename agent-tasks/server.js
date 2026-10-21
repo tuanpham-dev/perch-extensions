@@ -19,6 +19,9 @@
 //   3. neither: the sweep marks it lost when its pane is gone or it has been
 //      silent for longer than agentTasks.heartbeatTimeoutSeconds, and the task
 //      goes back to ready for the coordinator to decide. Never auto-retried.
+//      The sweep runs when the host says sessions changed
+//      (host.sessions.onChange, Perch 0.9.3) and when the next worker's
+//      silence runs out - never on a fixed timer.
 //
 // Every async entry point - routes, socket verbs, the sweep tick, the hook
 // callback, the background preamble - catches its own errors. Newer cores
@@ -44,7 +47,13 @@ import {
 import { buildPreamble, buildPreambleLine } from "./preamble.mjs";
 import { createStore, newId } from "./store.mjs";
 
-const SWEEP_INTERVAL_MS = 15_000;
+// When a sweep could not list every session, so a missing pane might only be
+// a session renamed mid-listing, it looks again this soon.
+const UNSURE_RECHECK_MS = 15_000;
+// A tool-start or tool-end hook counts as a heartbeat, but at most this often
+// is it written down: an agent runs many tools a minute, and the timeout it
+// guards is at least a minute.
+const TOOL_HEARTBEAT_EVERY_MS = 15_000;
 const CHECK_WAIT_MAX_MS = 10 * 60 * 1000;
 const LAUNCH_SETTLE_MS = 600;
 const INBOX_LIMIT = 200;
@@ -191,7 +200,7 @@ function getStore(storage, getSettings) {
 async function teardown(instance) {
   if (!instance) return;
   instance.stopped = true;
-  clearInterval(instance.sweepTimer);
+  clearTimeout(instance.deadlineTimer);
   for (const off of [...instance.cleanups]) {
     try {
       off();
@@ -222,7 +231,7 @@ export function activate({ router, log = console.log, getSettings, host, storage
   binDir = path.join(runtime, "bin");
   cliPath = path.join(binDir, "agent-task");
   const s = getStore(storage, getSettings);
-  const instance = { stopped: false, sweepTimer: null, cleanups: new Set(), control: null, log };
+  const instance = { stopped: false, deadlineTimer: null, cleanups: new Set(), control: null, log };
   const previous = current;
   current = instance;
   // Every save tells open browsers, which refetch instead of polling.
@@ -947,11 +956,18 @@ export function activate({ router, log = console.log, getSettings, host, storage
   // carries no failure reason for Claude Code or Codex, so it completes as
   // succeeded; a turn the user interrupted (Esc) is not the task finishing and
   // is ignored. `permission` files a question in the inbox, since a worker
-  // waiting on a prompt is waiting on the coordinator.
+  // waiting on a prompt is waiting on the coordinator. `tool-start` and
+  // `tool-end` (sent only once per-tool-call hooks are on in Settings -> AI
+  // Providers) are a sign of life: a worker busy with tools that never runs
+  // `agent-task heartbeat` is still working, not lost.
   async function onHookEvent(event) {
     const doc = await s.get();
     const dispatch = dispatchForPane(doc, event.paneId);
     if (!dispatch) return;
+    if (event.event === "tool-start" || event.event === "tool-end") {
+      if (Date.now() - (dispatch.lastHeartbeatAt ?? 0) >= TOOL_HEARTBEAT_EVERY_MS) await touch(dispatch.id);
+      return;
+    }
     if (event.event === "stop") {
       if (event.payload?.is_interrupt === true) {
         await touch(dispatch.id);
@@ -1014,12 +1030,15 @@ export function activate({ router, log = console.log, getSettings, host, storage
 
   // ---- Liveness sweep ----
 
+  // Resolves true when a worker's pane was missing from a listing that could
+  // not read every session, so the sweep should look again soon.
   async function sweep() {
     const doc = await s.get();
     const active = Object.values(doc.dispatches).filter((d) => d.state === "active");
-    if (active.length === 0) return;
+    if (active.length === 0) return false;
     const { heartbeatTimeoutMs } = await settings();
     const { panes, certain } = await allPanes();
+    const unsure = !certain && active.some((d) => !panes.has(d.paneId));
     const now = Date.now();
     await s.update((draft) => {
       for (const snapshot of active) {
@@ -1050,6 +1069,59 @@ export function activate({ router, log = console.log, getSettings, host, storage
         });
       }
     });
+    return unsure;
+  }
+
+  // One sweep at a time; a request while one runs queues exactly one more, so
+  // a burst of session changes costs two sweeps, not one per change.
+  let sweeping = false;
+  let sweepAgain = false;
+  let unsure = false;
+  function requestSweep() {
+    if (instance.stopped) return;
+    if (sweeping) {
+      sweepAgain = true;
+      return;
+    }
+    sweeping = true;
+    sweep()
+      .then((result) => {
+        unsure = result;
+      })
+      .catch((err) => log("liveness sweep failed:", err?.stack ?? err))
+      .finally(() => {
+        sweeping = false;
+        if (sweepAgain) {
+          sweepAgain = false;
+          requestSweep();
+        } else {
+          armDeadline().catch((err) => log("liveness timer failed:", err?.stack ?? err));
+        }
+      });
+  }
+
+  // The one timer: set for the moment the quietest active worker's silence
+  // runs out (or sooner, to recheck an unsure listing), and re-set after every
+  // save and every sweep. Nothing is scheduled while no worker is running.
+  // Workers waiting on a person are never timed out, so they set no deadline.
+  let armGeneration = 0;
+  async function armDeadline(doc) {
+    const generation = ++armGeneration;
+    const snapshot = doc ?? (await s.get());
+    const { heartbeatTimeoutMs } = await settings();
+    if (generation !== armGeneration || instance.stopped) return;
+    let next = Infinity;
+    for (const d of Object.values(snapshot.dispatches)) {
+      if (d.state !== "active") continue;
+      if (unsure) next = Math.min(next, Date.now() + UNSURE_RECHECK_MS);
+      if (!d.awaiting) next = Math.min(next, (d.lastHeartbeatAt ?? d.startedAt) + heartbeatTimeoutMs);
+    }
+    clearTimeout(instance.deadlineTimer);
+    instance.deadlineTimer = null;
+    if (next === Infinity) return;
+    // A second past the deadline, so the sweep sees the silence as over.
+    instance.deadlineTimer = setTimeout(requestSweep, Math.max(0, next - Date.now()) + 1000);
+    instance.deadlineTimer.unref?.();
   }
 
   // ---- State for the panel ----
@@ -1117,11 +1189,27 @@ export function activate({ router, log = console.log, getSettings, host, storage
       res.json({ ok: true });
     }),
   );
+  // `?q=` narrows the list to runs whose objective, repo, id or any task title
+  // contains every word of it, ignoring case.
   router.get(
     "/archive",
-    route(async (_req, res) => {
+    route(async (req, res) => {
       const archive = await s.loadArchive();
+      const words = String(req.query?.q ?? "")
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+      const matches = (entry) => {
+        if (words.length === 0) return true;
+        const text = [entry.run?.id, entry.run?.objective, entry.run?.repo, shortenHome(entry.run?.repo ?? "")]
+          .concat(Object.values(entry.tasks ?? {}).map((t) => t?.title))
+          .filter((v) => typeof v === "string")
+          .join("\n")
+          .toLowerCase();
+        return words.every((w) => text.includes(w));
+      };
       const runs = Object.values(archive.runs)
+        .filter(matches)
         .map((entry) => ({
           ...entry.run,
           repo: shortenHome(entry.run?.repo ?? ""),
@@ -1129,7 +1217,15 @@ export function activate({ router, log = console.log, getSettings, host, storage
           taskCount: Object.keys(entry.tasks ?? {}).length,
         }))
         .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
-      res.json({ runs });
+      res.json({ runs, total: Object.keys(archive.runs).length });
+    }),
+  );
+  router.post(
+    "/archive-delete",
+    route(async (req, res) => {
+      const runId = str(req.body?.runId, "runId", { required: true });
+      if (!(await s.deleteArchivedRun(runId))) throw notFound(`no archived run ${runId}`);
+      res.json({ deleted: runId });
     }),
   );
   router.post(
@@ -1181,7 +1277,7 @@ export function activate({ router, log = console.log, getSettings, host, storage
 
     if (host.agentHooks?.subscribe) {
       const unsubscribe = host.agentHooks.subscribe({
-        events: ["stop", "permission"],
+        events: ["stop", "permission", "tool-start", "tool-end"],
         onEvent(event) {
           if (instance.stopped) return;
           onHookEvent(event).catch((err) => log("hook event failed:", err?.stack ?? err));
@@ -1191,17 +1287,17 @@ export function activate({ router, log = console.log, getSettings, host, storage
     }
 
     if (host.sessions) {
-      let sweeping = false;
-      instance.sweepTimer = setInterval(() => {
-        if (sweeping || instance.stopped) return;
-        sweeping = true;
-        sweep()
-          .catch((err) => log("liveness sweep failed:", err?.stack ?? err))
-          .finally(() => {
-            sweeping = false;
-          });
-      }, SWEEP_INTERVAL_MS);
-      instance.sweepTimer.unref?.();
+      // A pane closing is a session change; a save (a heartbeat, a new
+      // worker) moves the next deadline.
+      if (host.sessions.onChange) instance.cleanups.add(host.sessions.onChange(() => requestSweep()));
+      else log("this perch has no host.sessions.onChange: a closed worker pane is only noticed at its heartbeat timeout - update it");
+      instance.cleanups.add(
+        s.onChange((_before, after) => {
+          if (!instance.stopped) armDeadline(after).catch((err) => log("liveness timer failed:", err?.stack ?? err));
+        }),
+      );
+      // Workers may have died while Perch was down.
+      requestSweep();
     } else {
       log("this perch has no host.sessions: workers cannot be launched or swept - update it");
     }

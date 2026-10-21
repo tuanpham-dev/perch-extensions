@@ -13,10 +13,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
-import { saveFileText } from "./fileApi";
+import { fetchFileText } from "./fileApi";
+import { saveEntry } from "./saveFile";
 import { loadMonaco } from "./monacoLoader";
 import type { MonacoNs, StandaloneEditor, TextModel } from "./monacoNs";
-import { acquireFile, isDirty, markSaved, type FileEntry } from "./models";
+import { acquireFile, isDirty, type FileEntry } from "./models";
 import { getMergeRequest, type MergeRequest } from "./requests";
 import { findConflicts, resolvedLines, type ConflictBlock, type ResolutionChoice } from "./conflictMarkers";
 import { hostAssetUrl, hostCloseViewerTab, hostOpenDiff, hostThemeApi } from "./host";
@@ -38,12 +39,6 @@ interface Props {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-async function loadWorkingFile(path: string): Promise<string> {
-  const res = await fetch(`/api/download?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.text();
 }
 
 export default function MergeView({ filePath, active, toolbarTarget, setDirty, fontSize }: Props) {
@@ -81,13 +76,10 @@ export default function MergeView({ filePath, active, toolbarTarget, setDirty, f
   const save = useCallback(async (): Promise<boolean> => {
     const entry = entryRef.current;
     if (!entry?.model) return false;
-    const content = entry.model.getValue();
     setSaving(true);
     setSaveError(null);
     try {
-      await saveFileText(entry.filePath, content);
-      markSaved(entry, content);
-      return true;
+      return await saveEntry(entry);
     } catch (err) {
       setSaveError(messageOf(err));
       return false;
@@ -114,7 +106,7 @@ export default function MergeView({ filePath, active, toolbarTarget, setDirty, f
         const monaco = await loadMonaco(hostAssetUrl, hostThemeApi);
         if (cancelled) return;
 
-        const acquired = acquireFile(monaco, request.path, () => loadWorkingFile(request.path));
+        const acquired = acquireFile(monaco, request.path, () => fetchFileText(request.path));
         entryRef.current = acquired.entry;
         const model = await acquired.entry.ready;
         if (cancelled || !containerRef.current) {

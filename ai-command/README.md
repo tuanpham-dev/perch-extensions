@@ -7,7 +7,9 @@ Natural language → shell command, powered by the AI configured in Settings →
 - **Command palette** (`Ctrl+Shift+P`) → "AI: Generate Command…", describe what you want, press Enter.
 - **Quick switcher** (`Ctrl+P`) → type `??` followed by your request (e.g. `??list the 5 largest files here`) and press Enter on the "Ask AI" row.
 
-Either way the reply lands on your command line in the active terminal, ready to edit or run yourself.
+Either way the reply lands on your command line in the terminal that was active when you pressed Enter - switching tabs while the AI answers doesn't move it - ready to edit or run yourself. **Escape** while it's generating cancels the request, and nothing is typed.
+
+The AI is told the server's operating system and shell (from the machine the terminal runs on, not the browser's), so it answers with commands for that system.
 
 The text is inserted through the app's own session API, so it works on the bundled terminal daemon and on the tmux Terminal Backend alike.
 

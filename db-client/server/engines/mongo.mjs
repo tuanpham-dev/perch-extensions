@@ -39,6 +39,8 @@ export async function connectMongo(cfg, password) {
 
   return {
     engine: "mongo",
+    // The driver reconnects by itself.
+    alive: () => true,
     // { db, collection, mode: "find" | "aggregate", filter, projection, sort, pipeline }
     async query(spec, { limit, timeoutMs, readOnly }) {
       const db = client.db(spec.db || defaultDb);
@@ -57,7 +59,9 @@ export async function connectMongo(cfg, password) {
           maxTimeMS: timeoutMs,
         });
       }
-      cursor.limit?.(limit + 1);
+      // find's limit, or a $limit stage at the end of the pipeline: the server
+      // sends at most one more than is shown.
+      cursor.limit(limit + 1);
       running.add(cursor);
       try {
         const docs = await withDeadline(cursor.toArray(), timeoutMs + 1000, () => cursor.close());

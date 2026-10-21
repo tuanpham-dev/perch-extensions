@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Agent Sessions",
   "description": "Browse a project's past agent conversations - Claude Code, Codex, and any agent whose extension provides a reader - with a preview of each, and resume any of them in a new terminal. Open it from a project's tab group menu, the command palette, or Ctrl+P.",
   "icon": "./icon.svg",

@@ -11,12 +11,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
-import { saveFileText } from "./fileApi";
+import { checkDiskConflict } from "./diskConflict";
+import { fetchFileText, saveFileText, type FileText } from "./fileApi";
+import { UTF8 } from "./textCodec";
 import { loadMonaco } from "./monacoLoader";
 import type { CodeEditor, StandaloneDiffEditor, TextModel } from "./monacoNs";
 import { languageFor } from "./models";
 import { getDiffRequest, type DiffRequest } from "./requests";
-import { hostAssetUrl, hostCloseViewerTab, hostThemeApi } from "./host";
+import { hostAssetUrl, hostCloseViewerTab, hostPickItem, hostThemeApi } from "./host";
 import { onSettingsChange, vimEnabled } from "./settings";
 import { useVimMode } from "./vim";
 
@@ -75,11 +77,29 @@ export default function DiffEditorView({ filePath, active, toolbarTarget, setDir
   const save = useCallback(async (): Promise<boolean> => {
     const models = modelsRef.current;
     if (!models || !editablePath) return false;
-    const content = models.modified.getValue();
     setSaving(true);
     setSaveError(null);
     try {
-      await saveFileText(editablePath, content);
+      // Asks first when the file changed on disk since the diff was opened.
+      // The disk read also says which encoding to write back in.
+      let disk: FileText | null = null;
+      const choice = await checkDiskConflict({
+        name: editablePath.slice(editablePath.lastIndexOf("/") + 1),
+        loaded: savedTextRef.current,
+        readDisk: async () => (disk = await fetchFileText(editablePath)).text,
+        pick: hostPickItem ?? undefined,
+      });
+      if (choice === "cancel") return false;
+      if (choice === "reload") {
+        if (disk) {
+          const { text } = disk;
+          savedTextRef.current = text;
+          models.modified.setValue(text);
+        }
+        return false;
+      }
+      const content = models.modified.getValue();
+      await saveFileText(editablePath, content, (disk as FileText | null)?.encoding ?? UTF8);
       setDirtyState(false);
       setDirtyRef.current?.(false);
       // The saved text is the new baseline: further edits are dirty again,

@@ -7,10 +7,11 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 export function toCurl(req: ResolvedRequest): string {
   const parts = ["curl"];
-  if (req.method !== "GET" || req.body) parts.push("-X", req.method);
+  if (req.method !== "GET" || req.body || req.bodyFile) parts.push("-X", req.method);
   parts.push(quote(req.url));
   for (const [k, v] of req.headers) parts.push("-H", quote(`${k}: ${v}`));
-  if (req.body) parts.push("--data-raw", quote(req.body));
+  if (req.bodyFile) parts.push("--data-binary", quote(`@${req.bodyFile}`));
+  else if (req.body) parts.push("--data-raw", quote(req.body));
   return parts.join(" ");
 }
 

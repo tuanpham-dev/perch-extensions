@@ -373,3 +373,60 @@ test("saving archives an old finished run, and restoring brings it back without 
   assert.equal((await store.loadArchive()).runs.run_old, undefined);
   assert.equal(await store.restoreRun("run_missing"), null);
 });
+
+test("an update that changes nothing writes nothing and tells no listener", async () => {
+  const { storage, events } = createMemoryStorage();
+  const store = createStore(storage, { archiveAfterDays: 30, now: () => T0 });
+  await store.update((d: Doc) => {
+    d.runs.run_1 = { id: "run_1", objective: "one", createdAt: T0, updatedAt: T0 };
+    d.dispatches.dsp_1 = { id: "dsp_1", runId: "run_1", taskId: "task_1", state: "active", lastHeartbeatAt: T0 };
+  });
+  const writes = events.filter((e: { type: string }) => e.type === "change").length;
+  let told = 0;
+  store.onChange(() => told++);
+
+  // An idle sweep: looks at everything, decides nothing is lost.
+  assert.equal(await store.update(() => "nothing to do"), "nothing to do");
+  // A value put back the way it was.
+  await store.update((d: Doc) => {
+    d.dispatches.dsp_1.lastHeartbeatAt = T0;
+  });
+  assert.equal(events.filter((e: { type: string }) => e.type === "change").length, writes, "no storage write");
+  assert.equal(told, 0, "no change announced");
+
+  await store.update((d: Doc) => {
+    d.dispatches.dsp_1.lastHeartbeatAt = T0 + 1;
+  });
+  assert.equal(events.filter((e: { type: string }) => e.type === "change").length, writes + 1, "a real change is saved");
+  assert.equal(told, 1);
+});
+
+test("an idle update still archives a run whose time has come", async () => {
+  let clock = T0;
+  const { storage } = createMemoryStorage();
+  const store = createStore(storage, { archiveAfterDays: 30, now: () => clock });
+  await store.update((d: Doc) => {
+    d.runs.run_old = { id: "run_old", objective: "old", createdAt: T0, updatedAt: T0 };
+    d.tasks.task_old = { id: "task_old", runId: "run_old", title: "t", deps: [], outcome: "completed", createdAt: T0, updatedAt: T0 };
+  });
+  clock = T0 + 40 * DAY;
+  await store.update(() => {});
+  assert.equal(((await storage.collection("state").get("main"))?.value as Doc).runs.run_old, undefined);
+  assert.ok((await store.loadArchive()).runs.run_old);
+});
+
+test("an archived run can be deleted for good", async () => {
+  let clock = T0;
+  const { storage } = createMemoryStorage();
+  const store = createStore(storage, { archiveAfterDays: 30, now: () => clock });
+  await store.update((d: Doc) => {
+    d.runs.run_old = { id: "run_old", objective: "old", createdAt: T0, updatedAt: T0 };
+  });
+  clock = T0 + 40 * DAY;
+  await store.update(() => {});
+  assert.ok((await store.loadArchive()).runs.run_old);
+  assert.equal(await store.deleteArchivedRun("run_old"), true);
+  assert.equal((await store.loadArchive()).runs.run_old, undefined);
+  assert.equal(await store.deleteArchivedRun("run_old"), false, "a second delete finds nothing");
+  assert.equal(await store.restoreRun("run_old"), null, "and it cannot be restored");
+});

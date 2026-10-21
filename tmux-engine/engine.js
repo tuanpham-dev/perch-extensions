@@ -39,6 +39,29 @@ const PROCESS_TTL_MS = 1_000;
 
 const REFRESH_PREFIX = "\x1b[0m\x1b[?1049l\x1b[?25h\x1b[H\x1b[2J\x1b[3J";
 
+// The oldest tmux this engine drives: control clients that ignore their own
+// size (refresh-client -f ignore-size) arrived in 3.2.
+export const MIN_TMUX_VERSION = [3, 2];
+
+// "tmux 3.3a", "tmux next-3.4", "tmux 3.2-rc2" -> [major, minor]. Null when
+// there's no version number in it (a build from git says "tmux master").
+export function parseTmuxVersion(text) {
+  const m = /(\d+)\.(\d+)/.exec(String(text ?? ""));
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+// Why `tmux -V`'s answer is too old to use, or null when it will do. A
+// version that can't be read is let through: that's a development build,
+// which is newer than any release.
+export function tmuxVersionProblem(text) {
+  const version = parseTmuxVersion(text);
+  if (!version) return null;
+  const [major, minor] = version;
+  const [needMajor, needMinor] = MIN_TMUX_VERSION;
+  if (major > needMajor || (major === needMajor && minor >= needMinor)) return null;
+  return `${String(text).trim()} is too old for the tmux backend: it needs tmux ${needMajor}.${needMinor} or newer. Update tmux, or pick another backend in Settings -> Terminal Backend.`;
+}
+
 export function windowIdOf(paneId) {
   return `tmux-${paneId.slice(1)}`;
 }
@@ -933,7 +956,7 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
     },
     clearRestored: async () => {},
     sendText: (target, data) => sendText(target, data),
-    capture: (target, scrollback) => capture(target, scrollback),
+    capture: (target, scrollback, opts) => capture(target, scrollback, opts),
     attach,
     onEvent: (listener) => {
       listeners.add(listener);

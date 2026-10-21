@@ -1,8 +1,9 @@
 {
   "name": "git-history",
   "private": true,
+  "type": "module",
   "publisher": "perch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Git History",
   "description": "Git: File History and Git: Blame on any tracked file, from the FILES tree menu. History follows renames and opens a file's diff at any commit through your configured editor; blame shows who last touched each line. Read-only - it never changes the repository.",
   "icon": "./icon.svg",

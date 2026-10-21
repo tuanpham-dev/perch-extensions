@@ -190,3 +190,37 @@
   justify-content: flex-end;
   gap: 6px;
 }
+
+.au-status-stopped {
+  border-left-color: var(--fg-inactive, #999);
+}
+
+/* Pause All */
+
+.au-paused {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--warning, #e5c07b);
+}
+
+.au-paused-button {
+  color: var(--warning, #e5c07b);
+}
+
+/* Earlier runs, under an expanded row */
+
+.au-history {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+/* :where() so the .au-status-* colours above still win over this border. */
+:where(.au-history-item) {
+  padding: 1px 0 1px 6px;
+  border-left: 2px solid var(--fg-inactive, #999);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

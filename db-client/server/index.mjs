@@ -12,10 +12,16 @@
 //   POST   /connections/parse-url          { url } -> fields
 //   GET    /suggest?dir=                   connection URLs found in the project's .env files
 //   GET    /schema?id=
-//   POST   /query                          { id, queryId, text } | { id, queryId, spec } (MongoDB)
+//   POST   /query                          { id, session, queryId, text } | { id, session, queryId, spec } (MongoDB)
 //   POST   /cancel                         { queryId }
-//   GET    /history?id=
-//   GET    /redis/keys?id=&pattern=        GET /redis/value?id=&key=
+//   POST   /release                        { id, session }: the tab closed, close its connection
+//   GET    /history?id=&q=                 newest first; q filters by text
+//   DELETE /history?id=
+//   GET    /redis/keys?id=&session=&pattern=&cursor=    GET /redis/value?id=&session=&key=
+//
+// `session` is the query tab's own id: each tab gets its own connection, so a
+// long query or Cancel in one tab doesn't touch another. Without one (the
+// DATABASES panel's schema) the connection's shared session is used.
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
@@ -47,6 +53,23 @@ function expandHome(p) {
 
 // A history key: the connection's prefix, then a fixed-width timestamp.
 export const historyKey = (id, at) => `${id}/${String(at).padStart(15, "0")}`;
+
+// History records matching `q` (case-insensitive, anywhere in the text), or
+// all of them for an empty `q`. A MongoDB entry is JSON with its filter as an
+// escaped string inside, so it's also matched with those escapes undone.
+export function filterHistory(entries, q) {
+  const needle = String(q ?? "").trim().toLowerCase();
+  if (!needle) return entries;
+  return entries.filter((e) => {
+    const text = String(e.text).toLowerCase();
+    return text.includes(needle) || text.replace(/\\(["\\])/g, "$1").includes(needle);
+  });
+}
+
+// Deletes every history record of connection `id` from `history`.
+export function clearHistory(history, id) {
+  for (const r of history.list({ prefix: `${id}/`, keysOnly: true })) history.delete(r.key);
+}
 
 // Records one query in `tx`'s history collection: the same text run before
 // moves to the top, and only the newest `limit` are kept.
@@ -177,7 +200,9 @@ export function activate({ router, getSettings, secrets, log, storage }) {
   };
 
   // ---- Open connections ----
-  const pool = new Map(); // id -> { key, adapter: Promise, timer }
+  // One adapter per connection and tab session: id -> session -> { key,
+  // adapter: Promise, ready (the adapter once open), busy, timer }.
+  const pool = new Map();
   const running = new Map(); // queryId -> adapter
 
   // getSettings() resolves to this extension's settings, defaults included.
@@ -186,10 +211,12 @@ export function activate({ router, getSettings, secrets, log, storage }) {
     return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
   };
 
-  async function closeEntry(id) {
-    const entry = pool.get(id);
-    pool.delete(id);
+  async function closeSession(id, session) {
+    const sessions = pool.get(id);
+    const entry = sessions?.get(session);
     if (!entry) return;
+    sessions.delete(session);
+    if (!sessions.size) pool.delete(id);
     clearTimeout(entry.timer);
     try {
       await (await entry.adapter).close();
@@ -198,15 +225,33 @@ export function activate({ router, getSettings, secrets, log, storage }) {
     }
   }
 
+  // Every session of a connection, as when it's edited or removed.
+  async function closeEntry(id) {
+    await Promise.all([...(pool.get(id)?.keys() ?? [])].map((session) => closeSession(id, session)));
+  }
+
   closeAll = async () => {
     await Promise.all([...pool.keys()].map((id) => closeEntry(id)));
   };
 
-  async function adapterFor(conn) {
+  // Closes a session that's been idle a while; one still running a query
+  // waits for the next check.
+  function scheduleIdle(id, session, entry) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      if (entry.busy > 0) scheduleIdle(id, session, entry);
+      else if (pool.get(id)?.get(session) === entry) void closeSession(id, session);
+    }, IDLE_MS);
+    entry.timer.unref?.();
+  }
+
+  // The open session entry for a connection, opening it if need be. A session
+  // whose connection dropped is closed and opened afresh.
+  async function entryFor(conn, session = "") {
     const key = JSON.stringify(conn);
-    let entry = pool.get(conn.id);
-    if (entry && entry.key !== key) {
-      await closeEntry(conn.id);
+    let entry = pool.get(conn.id)?.get(session);
+    if (entry && (entry.key !== key || (entry.ready && entry.ready.alive?.() === false))) {
+      await closeSession(conn.id, session);
       entry = null;
     }
     if (!entry) {
@@ -221,15 +266,28 @@ export function activate({ router, getSettings, secrets, log, storage }) {
               : conn.engine === "redis"
                 ? connectRedis(conn, password)
                 : connectMongo(conn, password);
-      entry = { key, adapter: open, timer: null };
-      pool.set(conn.id, entry);
-      open.catch(() => pool.get(conn.id) === entry && pool.delete(conn.id));
+      const created = { key, adapter: open, ready: null, busy: 0, timer: null };
+      entry = created;
+      if (!pool.has(conn.id)) pool.set(conn.id, new Map());
+      pool.get(conn.id).set(session, created);
+      open.then(
+        (adapter) => (created.ready = adapter),
+        () => {
+          const sessions = pool.get(conn.id);
+          if (sessions?.get(session) !== created) return;
+          clearTimeout(created.timer);
+          sessions.delete(session);
+          if (!sessions.size) pool.delete(conn.id);
+        },
+      );
     }
-    clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => void closeEntry(conn.id), IDLE_MS);
-    entry.timer.unref?.();
-    return entry.adapter;
+    scheduleIdle(conn.id, session, entry);
+    await entry.adapter;
+    return entry;
   }
+
+  const adapterFor = async (conn, session) => (await entryFor(conn, session)).adapter;
+  const sessionOf = (v) => String(v ?? "").slice(0, 100);
 
   async function findConnection(id) {
     const conn = (await loadConnections()).find((c) => c.id === id);
@@ -363,7 +421,7 @@ export function activate({ router, getSettings, secrets, log, storage }) {
   router.get("/schema", async (req, res) => {
     try {
       const conn = await findConnection(String(req.query.id));
-      const adapter = await adapterFor(conn);
+      const adapter = await adapterFor(conn, sessionOf(req.query.session));
       res.json(await adapter.schema());
     } catch (err) {
       fail(res, err);
@@ -371,18 +429,21 @@ export function activate({ router, getSettings, secrets, log, storage }) {
   });
 
   router.post("/query", async (req, res) => {
-    const { id, queryId, text, spec } = req.body ?? {};
+    const { id, session, queryId, text, spec } = req.body ?? {};
     try {
       const conn = await findConnection(String(id));
-      const adapter = await adapterFor(conn);
+      const entry = await entryFor(conn, sessionOf(session));
+      const adapter = await entry.adapter;
       const limit = await settingNumber("dbClient.rowLimit", 1000, 1, 100_000);
       const timeoutMs = (await settingNumber("dbClient.timeoutSeconds", 30, 1, 3600)) * 1000;
       if (queryId) running.set(String(queryId), adapter);
+      entry.busy++;
       const started = performance.now();
       let result;
       try {
         result = await adapter.query(conn.engine === "mongo" ? (spec ?? {}) : String(text ?? ""), { limit, timeoutMs, readOnly: !conn.writable });
       } finally {
+        entry.busy--;
         if (queryId) running.delete(String(queryId));
       }
       result.timeMs = Math.round(performance.now() - started);
@@ -404,25 +465,51 @@ export function activate({ router, getSettings, secrets, log, storage }) {
     res.status(204).end();
   });
 
-  // One transaction per query run: no other write can land in between.
+  router.post("/release", async (req, res) => {
+    const session = sessionOf(req.body?.session);
+    // The shared session belongs to no tab.
+    if (session) await closeSession(String(req.body?.id ?? ""), session);
+    res.status(204).end();
+  });
+
+  // One transaction per query run: no other write can land in between. Each
+  // run gets its own millisecond, so two finishing together (a burst of Redis
+  // commands) don't share a key and overwrite each other.
+  let lastAt = 0;
   function recordHistory(id, text) {
     if (!text.trim()) return Promise.resolve();
+    const at = (lastAt = Math.max(Date.now(), lastAt + 1));
     return storage
-      .transaction((tx) => addHistory(tx.collection("history"), id, text, Date.now()))
+      .transaction((tx) => addHistory(tx.collection("history"), id, text, at))
       .catch((err) => log?.("could not record history:", err?.message ?? err));
   }
 
   router.get("/history", async (req, res) => {
-    const rows = await storage.collection("history").list({ prefix: `${String(req.query.id)}/` });
-    // Newest first, as before.
-    res.json({ entries: rows.reverse().map((r) => r.value) });
+    try {
+      const rows = await storage.collection("history").list({ prefix: `${String(req.query.id)}/` });
+      // Newest first, as before.
+      res.json({ entries: filterHistory(rows.reverse().map((r) => r.value), req.query.q) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete("/history", async (req, res) => {
+    try {
+      const id = String(req.query.id ?? "");
+      if (!id) throw new QueryError("Which connection?");
+      await storage.transaction((tx) => clearHistory(tx.collection("history"), id));
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
   });
 
   router.get("/redis/keys", async (req, res) => {
     try {
       const conn = await findConnection(String(req.query.id));
       if (conn.engine !== "redis") throw new QueryError("Not a Redis connection");
-      const adapter = await adapterFor(conn);
+      const adapter = await adapterFor(conn, sessionOf(req.query.session));
       res.json(await adapter.keys(String(req.query.pattern || "*"), String(req.query.cursor || "0")));
     } catch (err) {
       fail(res, err);
@@ -433,7 +520,7 @@ export function activate({ router, getSettings, secrets, log, storage }) {
     try {
       const conn = await findConnection(String(req.query.id));
       if (conn.engine !== "redis") throw new QueryError("Not a Redis connection");
-      const adapter = await adapterFor(conn);
+      const adapter = await adapterFor(conn, sessionOf(req.query.session));
       res.json(await adapter.value(String(req.query.key ?? "")));
     } catch (err) {
       fail(res, err);

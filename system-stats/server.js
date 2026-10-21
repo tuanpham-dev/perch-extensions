@@ -5,6 +5,7 @@
 // CPU and memory down per terminal window (see procSample.mjs).
 import { statfs, readFile } from "node:fs/promises";
 import path from "node:path";
+import { readDarwinMemory } from "./memory.mjs";
 import { sampleProcesses, windowFigures } from "./procSample.mjs";
 import {
   cpus,
@@ -45,10 +46,11 @@ function shortenHome(p) {
 // MemAvailable is the kernel's own estimate of what a new workload could
 // claim without swapping — a far better "used" figure than total - free,
 // which counts page cache as used and makes every healthy Linux box look
-// full. /proc is Linux-only, so os.freemem() (which IS total - free) stands
-// in elsewhere, with the same shape and a coarser meaning. Swap comes from
-// the same read; a box without any reports zeroes, and the client drops the
-// row rather than drawing an empty meter.
+// full. /proc is Linux-only; macOS reads vm_stat instead (memory.mjs), and
+// os.freemem() (which IS total - free) stands in anywhere else, with the
+// same shape and a coarser meaning. Swap comes from the same read; a box
+// without any reports zeroes, and the client drops the row rather than
+// drawing an empty meter.
 async function readMemory() {
   try {
     const meminfo = await readFile("/proc/meminfo", "utf8");
@@ -70,6 +72,10 @@ async function readMemory() {
     }
   } catch {
     // Not Linux, or /proc unreadable — fall through.
+  }
+  if (process.platform === "darwin") {
+    const darwin = await readDarwinMemory(totalmem());
+    if (darwin) return darwin;
   }
   return {
     memTotalBytes: totalmem(),
@@ -217,35 +223,62 @@ function basename(p) {
   return trimmed.slice(Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\")) + 1) || trimmed;
 }
 
+// Each terminal window's shell pid, by window id. A window's shell lives as
+// long as the window, so this only changes when windows open or close - which
+// host.sessions.onChange reports (Perch 0.9.3) - and is rebuilt then instead
+// of asking every session for its panes on every poll. Also rebuilt when a
+// listing names a window this has never seen, which covers the moment between
+// a window opening and the debounced change arriving.
+let windowPids = null; // Map(windowId -> pid), or null until (re)built
+
+export function forgetWindowPids() {
+  windowPids = null;
+}
+
+async function buildWindowPids(host, sessions) {
+  const pids = new Map();
+  await Promise.all(
+    sessions.map(async (session) => {
+      try {
+        for (const pane of await host.sessions.listPanes(session.name)) {
+          // 0 for a window with no pid to read, so it isn't taken for a new one.
+          pids.set(pane.id, Number.isFinite(pane.pid) && pane.pid > 0 ? pane.pid : 0);
+        }
+      } catch {
+        // closed between list and listPanes
+      }
+    }),
+  );
+  return pids;
+}
+
 // CPU and memory per terminal window, across every session, highest CPU
 // first. { supported: false } when the process table can't be read.
-async function readTerminals(host) {
+export async function readTerminals(host) {
   if (!host?.sessions) return { supported: false, rows: [] };
   const sample = await sampleProcesses();
   if (!sample || sample.size === 0) return { supported: false, rows: [] };
   const at = Date.now();
   const previous = lastSample;
   lastSample = { at, sample };
-  const sessions = await host.sessions.list();
+  // perch-view-* sessions are mirrors of real windows; counting them would
+  // list every viewed window twice.
+  const sessions = (await host.sessions.list()).filter((session) => !session.name.startsWith("perch-view-"));
+  const unknown = (win) => !windowPids?.has(win.id);
+  if (!windowPids || sessions.some((session) => (session.windows ?? []).some(unknown))) {
+    windowPids = await buildWindowPids(host, sessions);
+  }
   const rows = [];
   for (const session of sessions) {
-    // perch-view-* sessions are mirrors of real windows; counting them would
-    // list every viewed window twice.
-    if (session.name.startsWith("perch-view-")) continue;
-    let panes;
-    try {
-      panes = await host.sessions.listPanes(session.name);
-    } catch {
-      continue; // closed between list and listPanes
-    }
-    for (const pane of panes) {
-      if (!Number.isFinite(pane.pid) || pane.pid <= 0) continue;
-      const { cpuPercent, rssBytes } = windowFigures(pane.pid, sample, previous?.sample, at - (previous?.at ?? at));
+    for (const win of session.windows ?? []) {
+      const pid = windowPids.get(win.id);
+      if (!pid) continue;
+      const { cpuPercent, rssBytes } = windowFigures(pid, sample, previous?.sample, at - (previous?.at ?? at));
       rows.push({
         sessionName: session.name,
         project: basename(session.path) || session.name,
-        windowIndex: pane.windowIndex,
-        windowName: pane.title || pane.command,
+        windowIndex: win.index,
+        windowName: win.name || win.command,
         cpuPercent,
         rssBytes,
       });
@@ -256,6 +289,11 @@ async function readTerminals(host) {
 }
 
 export function activate({ router, host }) {
+  // Windows opening and closing change which shells there are to measure.
+  // Dropped for us when this server hook unmounts.
+  forgetWindowPids();
+  host?.sessions?.onChange?.(() => forgetWindowPids());
+
   // CPU and memory per terminal window, for the popover's Terminals table.
   router.get("/terminals", async (_req, res) => {
     try {

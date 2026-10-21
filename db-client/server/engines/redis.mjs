@@ -1,5 +1,7 @@
 // Redis through `redis`. Read-only connections run only the commands in
 // ../readOnly.mjs's allowlist; the key browser and value views use only those.
+// A blocking command (BLPOP, XREAD BLOCK, SUBSCRIBE…) runs on a client of its
+// own, opened for it and closed after, so it holds up nothing else.
 import { createClient } from "redis";
 import { redisCommandAllowed } from "../readOnly.mjs";
 import { QueryError, ReadOnlyError, cellValue, connectionMessage, withDeadline } from "./common.mjs";
@@ -36,6 +38,30 @@ export function commandWords(line) {
   return words;
 }
 
+// Commands that wait on the server: always, or with a BLOCK argument.
+const BLOCKING = new Set(["BLPOP", "BRPOP", "BRPOPLPUSH", "BLMOVE", "BLMPOP", "BZPOPMIN", "BZPOPMAX", "BZMPOP", "WAIT", "WAITAOF"]);
+// Commands that turn a connection into a listener; the console collects what
+// they hear until the row limit, the timeout or Cancel.
+const LISTENING = new Set(["SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "MONITOR"]);
+
+export function isBlockingCommand(args) {
+  const name = String(args[0] ?? "").toUpperCase();
+  if (BLOCKING.has(name) || LISTENING.has(name)) return true;
+  return (name === "XREAD" || name === "XREADGROUP") && args.some((a) => String(a).toUpperCase() === "BLOCK");
+}
+
+// A reply with at most `limit` items at its top level (a long LRANGE 0 -1 or
+// HGETALL), and whether some were left out.
+export function capReply(reply, limit) {
+  if (Array.isArray(reply) && reply.length > limit) return { reply: reply.slice(0, limit), truncated: true, rowCount: reply.length };
+  if (reply instanceof Map && reply.size > limit) return { reply: new Map([...reply].slice(0, limit)), truncated: true, rowCount: reply.size };
+  if (reply && typeof reply === "object" && !Array.isArray(reply) && !(reply instanceof Map) && !Buffer.isBuffer(reply)) {
+    const entries = Object.entries(reply);
+    if (entries.length > limit) return { reply: Object.fromEntries(entries.slice(0, limit)), truncated: true, rowCount: entries.length };
+  }
+  return { reply, truncated: false };
+}
+
 const plain = (reply) => {
   if (Array.isArray(reply)) return reply.map(plain);
   if (reply instanceof Map) return Object.fromEntries([...reply].map(([k, v]) => [String(k), plain(v)]));
@@ -64,21 +90,86 @@ export async function connectRedis(cfg, password) {
 
   const send = (args) => client.sendCommand(args.map(String));
 
+  // The blocking commands in flight, each on its own client: id -> stop().
+  const blocking = new Map();
+  let blockingSeq = 0;
+
+  // A blocking command on a client of its own. A plain blocking command
+  // resolves with its reply; Cancel or the timeout hangs up that client. A
+  // listener resolves with what it heard, when it has `limit` messages, at
+  // the timeout or on Cancel.
+  async function runBlocking(args, { limit, timeoutMs }) {
+    const own = client.duplicate();
+    own.on("error", () => {});
+    try {
+      await own.connect();
+    } catch (err) {
+      throw new QueryError(connectionMessage(err, where), 502);
+    }
+    const id = ++blockingSeq;
+    const name = String(args[0]).toUpperCase();
+    try {
+      if (!LISTENING.has(name)) {
+        let cancelled = false;
+        blocking.set(id, () => {
+          cancelled = true;
+          own.destroy();
+        });
+        try {
+          return { reply: await withDeadline(own.sendCommand(args.map(String)), timeoutMs, () => own.destroy()), truncated: false };
+        } catch (err) {
+          if (cancelled) throw new QueryError("Cancelled", 409);
+          throw err;
+        }
+      }
+      const heard = [];
+      let done;
+      const finished = new Promise((resolve) => (done = resolve));
+      const hear = (entry) => {
+        if (heard.length < limit) heard.push(entry);
+        if (heard.length >= limit) done();
+      };
+      blocking.set(id, () => done());
+      const timer = setTimeout(() => done(), timeoutMs);
+      try {
+        const targets = args.slice(1).map(String);
+        if (name === "MONITOR") await own.monitor((line) => hear(line));
+        else if (!targets.length) throw new QueryError(`${name} needs at least one channel`);
+        else if (name === "SUBSCRIBE") await own.subscribe(targets, (message, channel) => hear({ channel, message }));
+        else if (name === "SSUBSCRIBE") await own.sSubscribe(targets, (message, channel) => hear({ channel, message }));
+        else await own.pSubscribe(targets, (message, channel) => hear({ channel, message }));
+        await finished;
+      } finally {
+        clearTimeout(timer);
+      }
+      return { reply: heard, truncated: heard.length >= limit, notes: [`Listened ${heard.length >= limit ? `until ${limit} messages` : "until stopped"}`] };
+    } finally {
+      blocking.delete(id);
+      own.destroy();
+    }
+  }
+
   return {
     engine: "redis",
+    alive: () => client.isReady,
     // The console: one command line.
-    async query(text, { timeoutMs, readOnly }) {
+    async query(text, { limit, timeoutMs, readOnly }) {
       const args = commandWords(text.trim());
       if (!args.length) throw new QueryError("Type a command, such as GET mykey");
       if (readOnly && !redisCommandAllowed(args)) throw new ReadOnlyError();
       try {
-        const reply = await withDeadline(send(args), timeoutMs);
-        return { kind: "redis", reply: plain(reply) };
+        const out = isBlockingCommand(args) ? await runBlocking(args, { limit, timeoutMs }) : { reply: await withDeadline(send(args), timeoutMs) };
+        // Redis sends a reply whole, so the cap is on what comes back here.
+        const capped = out.truncated === undefined ? capReply(out.reply, limit) : out;
+        return { kind: "redis", reply: plain(capped.reply), truncated: capped.truncated, rowCount: capped.rowCount, notes: out.notes ?? [] };
       } catch (err) {
         throw err instanceof QueryError ? err : new QueryError(err.message);
       }
     },
-    async cancel() {},
+    // Only a blocking command can be stopped: the others are one round trip.
+    async cancel() {
+      for (const stop of [...blocking.values()]) stop();
+    },
     // Keys matching a pattern, with their types.
     async keys(pattern = "*", cursor = "0") {
       const keys = [];
@@ -131,6 +222,7 @@ export async function connectRedis(cfg, password) {
       return "";
     },
     async close() {
+      for (const stop of [...blocking.values()]) stop();
       await client.quit().catch(() => client.disconnect().catch(() => {}));
     },
   };

@@ -27,6 +27,7 @@
     "mongodb": "^7.7.0",
     "mysql2": "^3.24.5",
     "pg": "^8.23.1",
+    "pg-cursor": "^2.22.1",
     "react-markdown": "^10.1.0",
     "redis": "^6.3.0",
     "rehype-sanitize": "^6.0.0",

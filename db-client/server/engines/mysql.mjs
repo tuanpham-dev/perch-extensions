@@ -1,8 +1,12 @@
 // MySQL and MariaDB through `mysql2`. A read-only connection runs each query
 // inside START TRANSACTION READ ONLY … ROLLBACK and refuses statements that
-// would end that transaction (see ../sqlText.mjs).
+// would end that transaction (see ../sqlText.mjs). Rows are read as they
+// stream in and only the row limit plus one is kept: past that a result's
+// rows are dropped as they arrive, and when it's the script's last result
+// the connection is closed so the server stops sending (the pool opens a
+// fresh one on the next query).
 import mysql from "mysql2/promise";
-import { readOnlyViolation } from "../sqlText.mjs";
+import { readOnlyViolation, splitStatements } from "../sqlText.mjs";
 import { QueryError, ReadOnlyError, connectionMessage, rowsResult, withDeadline } from "./common.mjs";
 
 const TYPES = {
@@ -35,7 +39,11 @@ export async function connectMysql(cfg, password) {
   } catch (err) {
     throw new QueryError(connectionMessage(err, where), 502);
   }
-  conn.on("error", () => {});
+  // A dropped connection marks this adapter dead; the pool replaces it.
+  let dead = false;
+  conn.on("error", () => (dead = true));
+  conn.on("end", () => (dead = true));
+  const core = conn.connection;
 
   async function cancel() {
     const killer = await mysql.createConnection({ ...options, multipleStatements: false });
@@ -46,40 +54,80 @@ export async function connectMysql(cfg, password) {
     }
   }
 
+  // Runs a script on the driver's row events. Every result first sends its
+  // columns ("fields", undefined for one without rows), then its rows or its
+  // OK packet ("result"). Resolves with the last result that had columns
+  // (at most limit + 1 of its rows) and a note per statement without rows.
+  function stream(text, limit) {
+    const statements = splitStatements(text, "mysql").length;
+    return new Promise((resolve, reject) => {
+      const q = core.query(text);
+      let index = -1;
+      let current = null;
+      let last = null;
+      const notes = [];
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve({ last, notes });
+      };
+      q.on("fields", (fields) => {
+        index++;
+        current = fields ? { fields, rows: [] } : null;
+        if (current) last = current;
+      });
+      q.on("result", (row) => {
+        if (Array.isArray(row)) {
+          if (!current || current.rows.length > limit) return;
+          current.rows.push(row);
+          // Past the limit on the script's last result: nothing after it to
+          // wait for, so hang up instead of reading the rest.
+          if (current.rows.length > limit && index >= statements - 1) {
+            dead = true;
+            core.stream.destroy();
+            finish();
+          }
+        } else if (row && typeof row === "object" && "affectedRows" in row) {
+          notes.push(`${row.affectedRows} rows affected`);
+        }
+      });
+      q.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      });
+      q.on("end", finish);
+    });
+  }
+
   return {
     engine: "mysql",
+    alive: () => !dead,
     async query(text, { limit, timeoutMs, readOnly }) {
       const refused = readOnly ? readOnlyViolation(text, "mysql") : null;
       if (refused) throw new ReadOnlyError(refused);
       const run = async () => {
         if (readOnly) await conn.query("START TRANSACTION READ ONLY");
         try {
-          return await conn.query(text);
+          return await stream(text, limit);
         } finally {
-          if (readOnly) await conn.query("ROLLBACK").catch(() => {});
+          // After a hang-up the server rolls back by itself.
+          if (readOnly && !dead) await conn.query("ROLLBACK").catch(() => {});
         }
       };
-      let results;
-      let fields;
+      let out;
       try {
-        [results, fields] = await withDeadline(run(), timeoutMs, cancel);
+        out = await withDeadline(run(), timeoutMs, cancel);
       } catch (err) {
         if (err?.errno === 1792 || err?.code === "ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION") throw new ReadOnlyError();
         if (err?.errno === 1317) throw new QueryError("Cancelled", 409);
         throw err instanceof QueryError ? err : new QueryError(err.message);
       }
-      // One statement gives (rows, fields); several give a list of each.
-      const multi = Array.isArray(fields) && fields.length > 0 && (Array.isArray(fields[0]) || fields[0] === undefined);
-      const sets = multi ? results.map((r, i) => [r, fields[i]]) : [[results, fields]];
-      const notes = [];
-      let last = null;
-      for (const [r, f] of sets) {
-        if (Array.isArray(r) && Array.isArray(f)) last = [r, f];
-        else if (r && typeof r === "object" && "affectedRows" in r) notes.push(`${r.affectedRows} rows affected`);
-      }
+      const { last, notes } = out;
       if (!last) return { kind: "rows", columns: [], rows: [], truncated: false, rowCount: 0, notes };
-      const columns = last[1].map((c) => ({ name: c.name, type: TYPES[c.columnType] ?? `type ${c.columnType}` }));
-      return rowsResult(columns, last[0], limit, notes);
+      const columns = last.fields.map((c) => ({ name: c.name, type: TYPES[c.columnType] ?? `type ${c.columnType}` }));
+      return rowsResult(columns, last.rows, limit, notes);
     },
     cancel,
     async schema() {

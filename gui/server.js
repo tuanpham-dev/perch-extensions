@@ -8,9 +8,9 @@
 // runs it (the bundled daemon or the tmux backend); the only binary this file
 // runs itself is `xpra`.
 import { execFile } from "node:child_process";
-import { mkdir, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
+import { ensurePrivateDir, pickRuntimeDir } from "./runtimeDir.mjs";
 
 const SESSION_NAME = "gui-apps";
 const XPRA_TIMEOUT = 5000;
@@ -20,21 +20,26 @@ const START_POLL_INTERVAL_MS = 250;
 const MAX_PORT_SCAN = 200;
 const MAX_COMMAND_LENGTH = 500;
 
-// A short, fixed runtime dir rather than trusting $XDG_RUNTIME_DIR / its
-// /tmp fallback — xpra's control socket path lives under it, and a long
-// path (e.g. a deeply nested project dir some other tool set XDG_RUNTIME_DIR
-// to) overflows AF_UNIX's ~108-char limit and fails to bind, observed live
-// while developing this extension.
-const RUNTIME_DIR = `/tmp/perch-gui-${process.getuid()}`;
+// The xpra commands this file runs itself (version, codec and stop checks),
+// while they run, so deactivate() can end exactly these and nothing else.
+const children = new Set();
 
 function run(bin, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { encoding: "utf8", timeout: XPRA_TIMEOUT, ...opts }, (err, stdout, stderr) => {
-      if (err) reject(Object.assign(new Error(stderr.trim() || err.message), { code: err.code }));
+    const child = execFile(bin, args, { encoding: "utf8", timeout: XPRA_TIMEOUT, ...opts }, (err, stdout, stderr) => {
+      children.delete(child);
+      if (err) reject(Object.assign(new Error(stderr.trim() || err.message), { code: err.code, stdout }));
       else resolve(stdout);
     });
+    children.add(child);
   });
 }
+
+// The display this extension started (or found still running from an
+// earlier run of this server), for deactivate() to stop. Module-level: a
+// disable and re-enable within one server process reuses this module.
+let launched = null;
+let stopLaunched = null;
 
 // Single-quotes one word for the session's shell, so the xpra line typed into
 // it survives spaces and shell metacharacters in any argument.
@@ -145,6 +150,9 @@ export function activate({ router, log, getSettings, host }) {
         const settings = await getSettings();
         const display = state?.display ?? (typeof settings["gui.display"] === "string" ? settings["gui.display"] : ":100");
         const mode = state?.mode ?? (settings["gui.mode"] === "desktop" ? "desktop" : "seamless");
+        // A display left running by an earlier run of this server is still
+        // this extension's: disabling it stops that one too.
+        launched ??= { display, runtimeDir: state?.runtimeDir ?? null };
         return { running: true, port, display, mode };
       }
     }
@@ -157,28 +165,28 @@ export function activate({ router, log, getSettings, host }) {
     return [];
   }
 
-  // xpra treats a runtime dir it doesn't own with exactly 0700 permissions as
-  // possibly-unsafe and falls into a slow "socket probing" wait before it'll
-  // bind — observed live to blow well past an 8s start budget. Recreating the
-  // dir fresh with the right mode every time avoids that path entirely rather
-  // than trying to out-wait it.
+  // Private to this user (see runtimeDir.mjs). Checked on every start rather
+  // than wiped and recreated: removing a folder in /tmp that turned out to
+  // be someone else's is exactly what the check is there to prevent.
   async function ensureRuntimeDir() {
-    await rm(RUNTIME_DIR, { recursive: true, force: true }).catch(() => {});
-    await mkdir(RUNTIME_DIR, { recursive: true, mode: 0o700 });
+    return ensurePrivateDir(await pickRuntimeDir());
   }
 
-  // Shared by /stop and /start's timeout-failure path — `xpra stop` tears down
-  // its Xvfb child cleanly; killing the session alone was observed to leave it
-  // orphaned.
-  async function stopEverything(display) {
+  // Shared by /stop, /start's timeout-failure path and deactivate() — `xpra
+  // stop` tears down its Xvfb child cleanly; killing the session alone was
+  // observed to leave it orphaned. Both name only what this extension
+  // started: its display, through its own socket folder, and its own session.
+  async function stopEverything(display, runtimeDir) {
     if (display) {
       await run("xpra", ["stop", display], {
-        env: { ...process.env, XDG_RUNTIME_DIR: RUNTIME_DIR },
+        env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir ?? (await pickRuntimeDir()) },
       }).catch(() => {});
     }
     await host.sessions.kill(SESSION_NAME).catch(() => {});
     state = null;
+    launched = null;
   }
+  stopLaunched = () => (launched ? stopEverything(launched.display, launched.runtimeDir) : Promise.resolve());
 
   router.get("/status", async (_req, res) => {
     try {
@@ -222,7 +230,13 @@ export function activate({ router, log, getSettings, host }) {
       // Any leftover session (e.g. one whose xpra process died without
       // cleanly tearing down the session side) is cleared before relaunching.
       await host.sessions.kill(SESSION_NAME).catch(() => {});
-      await ensureRuntimeDir();
+      let runtimeDir;
+      try {
+        runtimeDir = await ensureRuntimeDir();
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
 
       const xpraArgs = [
         // Seamless mode composites individual app windows (xpra is their
@@ -275,16 +289,17 @@ export function activate({ router, log, getSettings, host }) {
       const line = [
         "exec",
         "env",
-        `XDG_RUNTIME_DIR=${shellQuote(RUNTIME_DIR)}`,
+        `XDG_RUNTIME_DIR=${shellQuote(runtimeDir)}`,
         `DISPLAY=${shellQuote(display)}`,
         "xpra",
         ...xpraArgs.map(shellQuote),
       ].join(" ");
       await host.sessions.sendText(SESSION_NAME, line, true);
-      state = { port, display, mode };
+      state = { port, display, mode, runtimeDir };
+      launched = { display, runtimeDir };
 
       if (!(await waitForPort(port))) {
-        await stopEverything(display);
+        await stopEverything(display, runtimeDir);
         log(`xpra failed to start on ${display}:${port}; its output is in the ${SESSION_NAME} session`);
         res.status(502).json({
           error: `xpra did not start in time; open the ${SESSION_NAME} session to read its output.`,
@@ -300,7 +315,7 @@ export function activate({ router, log, getSettings, host }) {
   router.post("/stop", async (_req, res) => {
     try {
       const info = await getRunningInfo();
-      await stopEverything(info.display);
+      await stopEverything(info.display, state?.runtimeDir);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -334,4 +349,15 @@ export function activate({ router, log, getSettings, host }) {
       res.status(500).json({ error: err.message });
     }
   });
+}
+
+// Disable or uninstall: stops the display this extension started and any
+// xpra command of its own still running - by its own handles, never by a
+// process-name match, so another user's (or another tool's) xpra is safe.
+export async function deactivate() {
+  for (const child of children) child.kill();
+  children.clear();
+  const stop = stopLaunched;
+  stopLaunched = null;
+  await stop?.();
 }

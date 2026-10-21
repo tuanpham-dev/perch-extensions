@@ -22,7 +22,7 @@ what the state machine actually allows.
 | INBOX | Messages from workers, newest first: `done` reports, `question`s (an `ask`, or an agent waiting on a permission prompt), `escalation`s (a lost worker, or one that ended its turn without finishing) and notes. Acknowledge one or all; jump to the worker's session. |
 | GATES | Open decisions. One button per option the worker offered, or type an answer. Resolving a gate a worker opened sends the answer to that worker and unblocks its task. |
 | TASKS | Runs and their tasks: status, dependencies, the live worker (agent, elapsed time, what it is waiting on), and one button per allowed action - Start worker, Stop worker, Retry, Complete, Fail, Hold for decision, Delete. Under a finished task, what its worker left behind - its session and a worktree Agent Tasks created - with Open, Close session and Remove worktree. A run's Clean up button does the same for every finished worker in it. |
-| ARCHIVED RUNS | Loaded on demand; Restore brings a run back. |
+| ARCHIVED RUNS | Loaded on demand. Search by objective, repository or task title; Restore brings a run back, Delete removes it for good (after asking). |
 
 Task statuses: `pending` (waiting on dependencies), `ready`, `dispatched` (a worker is on it),
 `blocked` (an open gate or a failed dependency), `completed`, `failed`.
@@ -50,8 +50,10 @@ uncommitted or untracked files asks a second time before it is forced out.
    The task stays open, the worker shows as *stopped without finishing*, and one escalation lands
    in the inbox. Answer it in the worker's pane (it clears as soon as the worker uses
    `agent-task` again), or mark the task complete or failed yourself.
-3. **Neither.** A liveness sweep every 15 seconds marks a worker **lost** as soon as its window
-   is gone, or when it has shown no sign of life (a heartbeat, a check, a message) for
+3. **Neither.** A liveness sweep marks a worker **lost** as soon as its window
+   is gone (it runs whenever Perch reports a session or window change), or when it has shown no
+   sign of life (a heartbeat, a check, a message, or a tool-start or tool-end hook once per-tool-call
+   hooks are on in **Settings → AI Providers**) for
    `agentTasks.heartbeatTimeoutSeconds`. A worker waiting on you - an open question, a permission
    prompt, a turn that ended early - is never timed out, only a gone pane counts. The task goes
    back to ready and an escalation lands in the inbox. Nothing is retried automatically.
@@ -142,7 +144,7 @@ Perch's state folder: `~/.local/state/perch/x/perch.agent-tasks` by default, or 
 | `<runtime>/control.sock` | The control socket. |
 | `<runtime>/bin/agent-task` | The CLI. |
 
-Needs Perch 0.9 or newer. Version 1.1 starts empty: runs saved by earlier versions (in
+Needs Perch 0.9.3 or newer. Version 1.1 starts empty: runs saved by earlier versions (in
 `agent-tasks/store.json` and `archive.json` under Perch's config folder) aren't carried over, and
 those files are left as they were.
 

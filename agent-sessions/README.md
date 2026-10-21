@@ -18,6 +18,8 @@ Search narrows the list by title, and the agent menu narrows it to one agent. Se
 
 **Resume** opens a new terminal in the conversation's folder, named after it, and runs the agent's resume command there (`claude --resume <id>`, `codex resume <id>`), with its skip-permissions flag when **Agent permissions** is Yolo. That command is remembered by the terminal, so a restart reopens the same conversation. For a conversation that's already open, the button reads **Go to Window** and takes you there instead. Double-clicking a row does the same as the button.
 
+**Keyboard:** the arrow keys (and Home/End) move through the list, from the search box too, and the preview follows; **Enter** resumes the selected conversation (or goes to its window). On a narrow screen, where the preview replaces the list, the arrows move between rows and Enter opens the preview.
+
 The tab refreshes when you come back to it; the refresh button does it on demand.
 
 ## Which agents
