@@ -2,7 +2,7 @@
   "name": "vscode-icons",
   "private": true,
   "publisher": "perch",
-  "version": "12.19.0",
+  "version": "12.19.1",
   "displayName": "VSCode Icons",
   "description": "vscode-icons/vscode-icons file-icon theme (bundled - MIT, see LICENSE.txt).",
   "icon": "./icon.png",

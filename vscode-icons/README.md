@@ -8,7 +8,7 @@ The **vscode-icons** file-icon theme — SVG icons for common file types, langua
 
 ## Source
 
-[vscode-icons/vscode-icons](https://github.com/vscode-icons/vscode-icons), MIT-licensed; see `LICENSE.txt`. Icon theme JSON and ~1,550 SVG icons vendored unmodified (path separators normalized to `/`).
+[vscode-icons/vscode-icons](https://github.com/vscode-icons/vscode-icons), MIT-licensed; see `LICENSE.txt`. Icon theme JSON and 1,553 SVG icons vendored unmodified, except that path separators are normalized to `/` and icon paths are rewritten from `../../icons/` to `../icons/` so they stay inside the extension.
 
 ## Install
 

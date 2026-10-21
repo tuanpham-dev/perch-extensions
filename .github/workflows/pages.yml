@@ -40,6 +40,7 @@ jobs:
       # good deployment serving instead.
       - run: npm run build
       - run: npm run check
+      - run: npm test
 
       # pack runs `npm run build` first (esbuild-bundles code extensions),
       # then zips each extension into dist/<name>-<version>.perch and writes

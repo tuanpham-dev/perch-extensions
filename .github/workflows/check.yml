@@ -38,6 +38,7 @@ jobs:
       # the esbuild bundle still compiles.
       - run: npm run build
       - run: npm run check
+      - run: npm test
 
       # An extension changed without a version bump republishes under its old
       # version, and clients cache by version — so the update would silently

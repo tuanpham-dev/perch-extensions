@@ -16,6 +16,12 @@ Clicking an item opens its agent's view (the model item opens the view for the a
 
 On a phone's compact status bar the reset countdowns drop out and the percentages stay.
 
+## Settings
+
+- `agentUsage.showClaude`, `agentUsage.showCodex`, `agentUsage.showModel` (all on by default): show or hide each status-bar item.
+- `agentUsage.blockHours` (default 5): how many hours one usage block covers in the views. Claude's own limit window is 5 hours.
+- `agentUsage.contextWindows`: JSON mapping a model id to its window in tokens, for a model whose window differs from the default.
+
 ## What each agent reports
 
 | | Tokens | Cost | Limits |
