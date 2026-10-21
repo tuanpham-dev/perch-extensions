@@ -2,7 +2,7 @@
 // inside START TRANSACTION READ ONLY … ROLLBACK and refuses statements that
 // would end that transaction (see ../sqlText.mjs).
 import mysql from "mysql2/promise";
-import { txControlIn } from "../sqlText.mjs";
+import { readOnlyViolation } from "../sqlText.mjs";
 import { QueryError, ReadOnlyError, connectionMessage, rowsResult, withDeadline } from "./common.mjs";
 
 const TYPES = {
@@ -49,7 +49,8 @@ export async function connectMysql(cfg, password) {
   return {
     engine: "mysql",
     async query(text, { limit, timeoutMs, readOnly }) {
-      if (readOnly && txControlIn(text)) throw new ReadOnlyError();
+      const refused = readOnly ? readOnlyViolation(text, "mysql") : null;
+      if (refused) throw new ReadOnlyError(refused);
       const run = async () => {
         if (readOnly) await conn.query("START TRANSACTION READ ONLY");
         try {

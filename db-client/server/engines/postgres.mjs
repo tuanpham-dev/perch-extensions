@@ -2,7 +2,7 @@
 // BEGIN READ ONLY … ROLLBACK, and refuses statements that would end that
 // transaction (see ../sqlText.mjs); the server enforces the rest.
 import pg from "pg";
-import { txControlIn } from "../sqlText.mjs";
+import { readOnlyViolation } from "../sqlText.mjs";
 import { QueryError, ReadOnlyError, connectionMessage, rowsResult, withDeadline } from "./common.mjs";
 
 const TYPES = {
@@ -47,7 +47,8 @@ export async function connectPostgres(cfg, password) {
   return {
     engine: "postgres",
     async query(text, { limit, timeoutMs, readOnly }) {
-      if (readOnly && txControlIn(text)) throw new ReadOnlyError();
+      const refused = readOnly ? readOnlyViolation(text, "postgres") : null;
+      if (refused) throw new ReadOnlyError(refused);
       const run = async () => {
         if (readOnly) await client.query("BEGIN READ ONLY");
         try {

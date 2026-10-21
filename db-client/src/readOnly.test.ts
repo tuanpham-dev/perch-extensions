@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { pipelineWrites, redisCommandAllowed } from "../server/readOnly.mjs";
-import { blankLiterals, splitStatements, txControlIn } from "../server/sqlText.mjs";
+import { blankLiterals, readOnlyViolation, splitStatements, txControlIn } from "../server/sqlText.mjs";
 import { parseConnectionUrl } from "../server/index.mjs";
 
 describe("read-only rules", () => {
@@ -63,5 +63,38 @@ describe("connection URLs", () => {
     assert.ok(!mongo.fields.url.includes(":p@"));
     assert.equal(parseConnectionUrl("sqlite:///tmp/app.db").fields.file, "/tmp/app.db");
     assert.throws(() => parseConnectionUrl("ftp://x"), /Unsupported database type: ftp/);
+  });
+});
+
+describe("read-only checks per engine", () => {
+  it("reads Postgres strings by Postgres rules, so a backslash can't hide a COMMIT", () => {
+    assert.match(String(readOnlyViolation("SELECT '\\'; COMMIT; DELETE FROM users -- '", "postgres")), /COMMIT/);
+    assert.match(String(readOnlyViolation("SELECT 1 # 2; COMMIT", "postgres")), /COMMIT/);
+    assert.equal(readOnlyViolation("SELECT E'it\\'s; commit'", "postgres"), null);
+    assert.equal(readOnlyViolation("SELECT $x$; commit$x$, 'a''b' /* /* nested */ commit */", "postgres"), null);
+  });
+
+  it("reads MySQL comments by MySQL rules", () => {
+    assert.match(String(readOnlyViolation("SELECT 1--1; COMMIT", "mysql")), /COMMIT/);
+    assert.match(String(readOnlyViolation("/*!COMMIT*/; DELETE FROM t", "mysql")), /COMMIT/);
+    assert.equal(readOnlyViolation("SELECT 'a\\'; commit' -- hi\n", "mysql"), null);
+    assert.equal(readOnlyViolation("SELECT 1 # commit", "mysql"), null);
+  });
+
+  it("allows reads only", () => {
+    for (const ok of ["select 1", "WITH a AS (select 1) select * from a", "show tables", "explain select 1", "(select 1) union (select 2)", "set search_path = app"]) {
+      assert.equal(readOnlyViolation(ok, "postgres"), null, ok);
+    }
+    assert.match(String(readOnlyViolation("DROP TABLE users", "mysql")), /DROP isn't a read/);
+    assert.match(String(readOnlyViolation("call cleanup()", "mysql")), /CALL/);
+    assert.match(String(readOnlyViolation("COPY t TO PROGRAM 'rm -rf /'", "postgres")), /COPY isn't a read/);
+  });
+
+  it("refuses what reaches past the read-only transaction", () => {
+    assert.match(String(readOnlyViolation("select dblink_exec('host=x', 'delete from t')", "postgres")), /DBLINK_EXEC/);
+    assert.match(String(readOnlyViolation("select lo_export(1, '/tmp/x')", "postgres")), /LO_EXPORT/);
+    assert.match(String(readOnlyViolation("select * from t into outfile '/tmp/x'", "mysql")), /INTO OUTFILE/);
+    assert.match(String(readOnlyViolation("set global read_only = 0", "mysql")), /SET GLOBAL/);
+    assert.equal(readOnlyViolation("select copy, dblink from t", "postgres"), null);
   });
 });

@@ -11,8 +11,9 @@ export class QueryError extends Error {
 }
 
 export class ReadOnlyError extends QueryError {
-  constructor() {
-    super(READ_ONLY_MESSAGE, 403);
+  // `reason`: what in the query was refused, shown after the usual message.
+  constructor(reason) {
+    super(reason ? `${READ_ONLY_MESSAGE} (${reason})` : READ_ONLY_MESSAGE, 403);
   }
 }
 
