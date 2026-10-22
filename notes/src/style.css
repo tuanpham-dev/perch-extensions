@@ -727,3 +727,16 @@
 .notes-row {
   border-left: none;
 }
+
+/* The right-click menu on a note's text: drawn at the pointer, above the
+   cards and the app. */
+.notes-context-menu {
+  position: fixed;
+  z-index: 10000;
+}
+
+.notes-context-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}

@@ -9,6 +9,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { BodySaver } from "./bodySaver";
+import { MARKDOWN_COMPONENTS, textItems, useContextMenu } from "./NoteLink";
 import { call, host } from "./host";
 import {
   clearPendingCardEdit,
@@ -36,14 +37,6 @@ interface FloatData {
 
 const SAVE_DELAY_MS = 800;
 
-// Links open in a new tab, and clicking one doesn't start editing the note.
-const MARKDOWN_COMPONENTS = {
-  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
-      {children}
-    </a>
-  ),
-};
 const MIN_W = 160;
 const MIN_H = 100;
 // Below this the area is a small grid cell: the chip alone, no cards.
@@ -113,6 +106,7 @@ function Card({
   const [editing, setEditing] = useState(autoEdit);
   const [text, setText] = useState(note.body);
   const [menu, setMenu] = useState<"color" | "more" | null>(null);
+  const contextMenu = useContextMenu();
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   const saver = useRef<BodySaver | null>(null);
@@ -324,7 +318,21 @@ function Card({
         ) : (
           // A double-click edits; a single click is free for selecting text
           // and following links.
-          <div className="fn-rendered" onDoubleClick={() => setEditing(true)} title="Double-click to edit">
+          <div
+            className="fn-rendered"
+            onDoubleClick={() => setEditing(true)}
+            onContextMenu={(e) =>
+              contextMenu.open(e, [
+                ...textItems(e.target, e.currentTarget),
+                { label: "", separator: true },
+                { label: "Edit", icon: "edit", onClick: () => setEditing(true) },
+                { label: "Show in NOTES", icon: "list-flat", onClick: () => host.app?.revealSidebarPanel?.("notes") },
+                { label: "", separator: true },
+                { label: "Delete…", icon: "trash", danger: true, onClick: () => void remove() },
+              ])
+            }
+            title="Double-click to edit"
+          >
             {text.trim() ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={MARKDOWN_COMPONENTS}>
                 {text}
@@ -335,6 +343,7 @@ function Card({
           </div>
         )}
         {error && <div className="fn-error">{error}</div>}
+        {contextMenu.element}
       </div>
       <span className="fn-grip" onPointerDown={(e) => startGesture(e, "resize")} title="Resize" aria-hidden="true">
         {/* The usual corner grip: two diagonal strokes in the bottom-right

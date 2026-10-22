@@ -23,6 +23,7 @@ export interface AppApi {
   openPreview?(path: string): void;
   pickItem?(opts: { title: string; items: PickItem[]; placeholder?: string }): Promise<string | null>;
   confirmDialog?(message: string, confirmLabel?: string): Promise<boolean>;
+  openUrlInApp?(url: string): boolean;
 }
 
 // The host's change feed for this extension's records (ctx.storage, Perch

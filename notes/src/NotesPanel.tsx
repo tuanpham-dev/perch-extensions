@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { host } from "./host";
 import { plainTitle } from "./plainTitle";
 import { BodySaver } from "./bodySaver";
+import { MARKDOWN_COMPONENTS, textItems, useContextMenu } from "./NoteLink";
 import { cardsMenu, useActiveFloat, type MenuItem as NotesMenuItem } from "./activeFloat";
 import {
   addNote,
@@ -23,14 +24,6 @@ import {
 
 const SAVE_DELAY_MS = 800;
 
-// Links open in a new tab, and clicking one doesn't start editing the note.
-const MARKDOWN_COMPONENTS = {
-  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
-      {children}
-    </a>
-  ),
-};
 
 function relativeTime(ms: number): string {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -105,6 +98,7 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
   const saver = useRef<BodySaver | null>(null);
   saver.current ??= new BodySaver((body) => saveBody(note.id, body), note.body);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
+  const contextMenu = useContextMenu();
 
   // A note the panel was asked to show (new, or from a badge): open it.
   useEffect(() => {
@@ -238,7 +232,18 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
               rows={Math.min(16, Math.max(4, text.split("\n").length + 1))}
             />
           ) : (
-            <div className="notes-preview" onDoubleClick={() => setEditing(true)} title="Double-click to edit">
+            <div
+              className="notes-preview"
+              onDoubleClick={() => setEditing(true)}
+              onContextMenu={(e) =>
+                contextMenu.open(e, [
+                  ...textItems(e.target, e.currentTarget),
+                  { label: "", separator: true },
+                  { label: "Edit", icon: "edit", onClick: () => setEditing(true) },
+                ])
+              }
+              title="Double-click to edit"
+            >
               {text.trim() ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={MARKDOWN_COMPONENTS}>
                   {text}
@@ -249,6 +254,7 @@ function NoteItem({ note, projectRoot, label }: { note: Note; projectRoot: strin
             </div>
           )}
           {error && <div className="notes-error">Couldn't save: {error}</div>}
+          {contextMenu.element}
         </div>
       )}
     </div>
