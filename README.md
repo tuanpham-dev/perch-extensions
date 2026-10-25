@@ -7,6 +7,7 @@ Optional [Perch](https://github.com/tuanpham-dev/perch) extensions, packaged as 
 | Extension | Type | Source | License |
 |---|---|---|---|
 | Agent Usage Monitor | a status-bar item per coding agent: limit meters with reset times, token blocks per window with burn rate, and real spend where the agent reports it (Claude Code today and 7 days; Codex reports no cost), plus an item showing the model running in the active terminal and how full its context window is | first-party (Perch) | MIT |
+| Keep Awake | a status-bar switch that keeps the computer running Perch from sleeping: always, or while an AI agent is working and for 30 minutes after; can keep this device's screen on too | first-party (Perch) | MIT |
 | System Stats | memory in use in the status bar; its popover shows a 2-minute CPU chart plus memory, swap, disk and network usage, and CPU and memory for each terminal window | first-party (Perch) | MIT |
 | Agent Sessions | a project's past agent conversations (Claude Code, Codex, and any agent whose extension provides a reader) in one tab, across its worktrees: search, filter, preview the last messages, and Resume in a new terminal; also in Ctrl+P | first-party (Perch) | MIT |
 | Notes | private Markdown sticky notes on a project, a terminal or a file, in a NOTES section with badges on the terminals and files that have them; kept on the Perch server, never in the repo, and follow files renamed in FILES | first-party (Perch) | MIT |

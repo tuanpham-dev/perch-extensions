@@ -1,0 +1,14 @@
+{
+  "name": "keep-awake",
+  "private": true,
+  "publisher": "perch",
+  "version": "1.0.0",
+  "displayName": "Keep Awake",
+  "description": "A status bar switch that keeps the computer running Perch from sleeping: always, or while an AI agent is working and for 30 minutes after. Can keep this device's screen on too.",
+  "icon": "./icon.svg",
+  "perch": {
+    "minPerch": "0.9.0",
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  }
+}
