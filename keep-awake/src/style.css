@@ -1,5 +1,5 @@
 /* Keep Awake's popover: a header, one row per choice with what it does
-   under its name, then this screen's own switch. */
+   under its name, then where it applies. */
 .keep-awake-popover {
   display: flex;
   flex-direction: column;
@@ -31,8 +31,7 @@
   font-size: 12px;
 }
 
-.keep-awake-choice,
-.keep-awake-screen {
+.keep-awake-choice {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -47,8 +46,7 @@
   cursor: pointer;
 }
 
-.keep-awake-choice:hover,
-.keep-awake-screen:hover {
+.keep-awake-choice:hover {
   background: var(--list-hover-bg);
 }
 
@@ -84,15 +82,10 @@
   font-size: 12px;
 }
 
-.keep-awake-screen {
+.keep-awake-footer {
   margin-top: 4px;
-  padding-top: 8px;
+  padding: 8px 8px 4px;
   border-top: 1px solid var(--border);
-  border-radius: 0;
-}
-
-.keep-awake-screen input {
-  width: 16px;
-  margin: 2px 0 0;
-  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 12px;
 }

@@ -1,21 +1,17 @@
-// keep-awake client: a status bar item whose popover picks how the server's
-// computer is kept awake (server.js does the keeping), and, per device, keeps
-// this screen on too while it is. One poller feeds the item and the popover.
+// keep-awake client: a status bar item whose popover picks how this device
+// is kept awake, per device. A page can't stop its computer sleeping
+// outright, but a screen wake lock does: while the screen is kept on the
+// computer doesn't idle into sleep. Browsers only grant it while the page is
+// the tab in front, so it's taken again whenever Perch is back in front. For
+// "Agent", server.js says whether an agent is working.
 import { useEffect, useState, type ReactNode } from "react";
 import "./style.css";
 import { injectStylesheet } from "./injectStylesheet";
+import { wantsAwake } from "../activity.mjs";
 
 type Mode = "on" | "agent" | "off";
 
-interface KeepAwakeState {
-  mode: Mode;
-  // Holding the computer awake right now.
-  active: boolean;
-  // Why it couldn't (no systemd-inhibit, say), and a caveat when it holds
-  // less than it would like (Linux outside a desktop session).
-  error: string | null;
-  note: string | null;
-  hostname: string;
+interface Activity {
   working: number;
   idleForMs: number | null;
 }
@@ -26,46 +22,111 @@ const CHOICES: { mode: Mode; label: string; detail: string }[] = [
   { mode: "off", label: "Off", detail: "Allow normal system sleep behavior" },
 ];
 
+const MODES: Mode[] = ["on", "agent", "off"];
 const POLL_MS = 10_000;
-const SCREEN_KEY = "perch.keep-awake.screen";
+const MODE_KEY = "perch.keep-awake.mode";
 
-// ---- The state, polled once for everyone ----
+// ---- State, shared by the item and the popover ----
 
 let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | null = null;
-let current: KeepAwakeState | null = null;
+let mode: Mode = loadMode();
+let activity: Activity | null = null;
+let lock: WakeLockSentinel | null = null;
+let requesting = false;
+// Why the last request for a lock was refused (battery saver, say).
+let refused: string | null = null;
 const listeners = new Set<() => void>();
 let timer: number | undefined;
 
-function publish(next: KeepAwakeState | null) {
-  current = next;
-  for (const fn of listeners) fn();
-}
-
-async function poll() {
-  if (!serverFetch || document.hidden) return;
+function loadMode(): Mode {
   try {
-    const res = await serverFetch("/state");
-    if (res.ok) publish((await res.json()) as KeepAwakeState);
+    const stored = localStorage.getItem(MODE_KEY);
+    return MODES.includes(stored as Mode) ? (stored as Mode) : "off";
   } catch {
-    // The server went away for a moment: keep showing what it last said.
+    return "off";
   }
 }
 
-async function setMode(mode: Mode) {
-  if (!serverFetch) return;
-  const res = await serverFetch("/mode", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ mode }),
-  });
-  if (res.ok) publish((await res.json()) as KeepAwakeState);
+function changed() {
+  for (const fn of listeners) fn();
+}
+
+function supported(): boolean {
+  return "wakeLock" in navigator;
+}
+
+function wanted(): boolean {
+  return wantsAwake(mode, activity ?? { working: 0, idleForMs: null });
+}
+
+function apply() {
+  const want = wanted() && !document.hidden;
+  if (want && !lock && !requesting && supported()) {
+    requesting = true;
+    navigator.wakeLock.request("screen").then(
+      (sentinel) => {
+        requesting = false;
+        refused = null;
+        lock = sentinel;
+        sentinel.addEventListener("release", () => {
+          if (lock === sentinel) lock = null;
+          changed();
+        });
+        // Wanted no longer by the time it arrived.
+        if (!wanted() || document.hidden) release();
+        changed();
+      },
+      (err: unknown) => {
+        requesting = false;
+        refused = err instanceof Error ? err.message : String(err);
+        changed();
+      },
+    );
+  } else if (!want && lock) {
+    release();
+  }
+}
+
+function release() {
+  const held = lock;
+  lock = null;
+  void held?.release();
+}
+
+async function poll() {
+  if (!serverFetch || mode !== "agent" || document.hidden) return;
+  try {
+    const res = await serverFetch("/state");
+    if (res.ok) {
+      activity = (await res.json()) as Activity;
+      apply();
+      changed();
+    }
+  } catch {
+    // The server went away for a moment: keep going on what it last said.
+  }
+}
+
+function setMode(next: Mode) {
+  mode = next;
+  refused = null;
+  try {
+    localStorage.setItem(MODE_KEY, next);
+  } catch {
+    // private window: it lasts until the page closes
+  }
+  apply();
+  changed();
+  void poll();
 }
 
 const onVisible = () => {
-  if (!document.hidden) void poll();
+  apply();
+  changed();
+  void poll();
 };
 
-function useKeepAwake(): KeepAwakeState | null {
+function useKeepAwake(): void {
   const [, rerender] = useState(0);
   useEffect(() => {
     const fn = () => rerender((n) => n + 1);
@@ -74,68 +135,6 @@ function useKeepAwake(): KeepAwakeState | null {
       listeners.delete(fn);
     };
   }, []);
-  return current;
-}
-
-// ---- This screen, per device ----
-// A page can't keep its own computer from sleeping, only its screen on, and
-// only while it's the tab in front: the lock goes when the tab is hidden and
-// is taken again when it's back.
-
-function loadScreen(): boolean {
-  try {
-    return localStorage.getItem(SCREEN_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-let screenWanted = loadScreen();
-let lock: WakeLockSentinel | null = null;
-let requesting = false;
-
-function wakeLockSupported(): boolean {
-  return "wakeLock" in navigator;
-}
-
-function applyScreen() {
-  const want = screenWanted && current?.active === true && !document.hidden;
-  if (want && !lock && !requesting && wakeLockSupported()) {
-    requesting = true;
-    navigator.wakeLock.request("screen").then(
-      (sentinel) => {
-        requesting = false;
-        lock = sentinel;
-        sentinel.addEventListener("release", () => {
-          if (lock === sentinel) lock = null;
-        });
-        // Wanted no longer by the time it arrived.
-        if (!(screenWanted && current?.active)) releaseScreen();
-      },
-      () => {
-        requesting = false;
-      },
-    );
-  } else if (!want && lock) {
-    releaseScreen();
-  }
-}
-
-function releaseScreen() {
-  const held = lock;
-  lock = null;
-  void held?.release();
-}
-
-function setScreen(on: boolean) {
-  screenWanted = on;
-  try {
-    localStorage.setItem(SCREEN_KEY, on ? "1" : "0");
-  } catch {
-    // private window: it lasts until the page closes
-  }
-  applyScreen();
-  for (const fn of listeners) fn();
 }
 
 // ---- The popover ----
@@ -144,27 +143,26 @@ function Codicon({ name }: { name: string }) {
   return <span className={`codicon codicon-${name}`} aria-hidden="true" />;
 }
 
-function statusLine(state: KeepAwakeState): string {
-  if (state.error) return state.error;
-  if (!state.active) return `${state.hostname} can sleep as usual`;
-  return `Keeping ${state.hostname} awake${state.note ? ` (${state.note})` : ""}`;
+function statusLine(): string {
+  if (mode === "off") return "This computer can sleep as usual";
+  if (!supported()) {
+    return window.isSecureContext
+      ? "This browser can't keep the computer awake"
+      : "Needs a secure page (https:// or localhost) to keep this computer awake";
+  }
+  if (!wanted()) return activity ? "No agent working, this computer can sleep as usual" : "Checking on agents…";
+  if (refused) return `The browser refused: ${refused}`;
+  if (lock) return "Keeping this computer awake";
+  return "Paused while Perch isn't the tab in front";
 }
 
 function KeepAwakePopover() {
-  const state = useKeepAwake();
-  const [busy, setBusy] = useState(false);
-  if (!state) return <div className="keep-awake-popover keep-awake-empty">Reading…</div>;
-  const choose = (mode: Mode) => {
-    setBusy(true);
-    setMode(mode)
-      .catch(() => {})
-      .finally(() => setBusy(false));
-  };
+  useKeepAwake();
   return (
     <div className="keep-awake-popover">
       <div className="keep-awake-header">
         <span className="keep-awake-title">Keep Awake</span>
-        <span className="keep-awake-now">{statusLine(state)}</span>
+        <span className="keep-awake-now">{statusLine()}</span>
       </div>
       <div role="radiogroup" aria-label="Keep Awake">
         {CHOICES.map((c) => (
@@ -172,12 +170,11 @@ function KeepAwakePopover() {
             key={c.mode}
             type="button"
             role="radio"
-            aria-checked={state.mode === c.mode}
-            disabled={busy}
-            className={`keep-awake-choice${state.mode === c.mode ? " selected" : ""}`}
-            onClick={() => choose(c.mode)}
+            aria-checked={mode === c.mode}
+            className={`keep-awake-choice${mode === c.mode ? " selected" : ""}`}
+            onClick={() => setMode(c.mode)}
           >
-            <span className="keep-awake-check">{state.mode === c.mode && <Codicon name="check" />}</span>
+            <span className="keep-awake-check">{mode === c.mode && <Codicon name="check" />}</span>
             <span className="keep-awake-text">
               <span className="keep-awake-label">{c.label}</span>
               <span className="keep-awake-detail">{c.detail}</span>
@@ -185,15 +182,7 @@ function KeepAwakePopover() {
           </button>
         ))}
       </div>
-      {wakeLockSupported() && (
-        <label className="keep-awake-screen">
-          <input type="checkbox" checked={screenWanted} onChange={(e) => setScreen(e.target.checked)} />
-          <span className="keep-awake-text">
-            <span>Keep this screen on too</span>
-            <span className="keep-awake-detail">While it's kept awake and Perch is in front, on this device</span>
-          </span>
-        </label>
-      )}
+      <div className="keep-awake-footer">On this device only, while Perch is the tab or window in front</div>
     </div>
   );
 }
@@ -206,12 +195,12 @@ interface StatusItemContext {
 }
 
 function KeepAwakeItem({ context }: { context: StatusItemContext }) {
-  const state = useKeepAwake();
-  const label = CHOICES.find((c) => c.mode === state?.mode)?.label ?? "Off";
-  const title = state ? `Keep Awake: ${label} - ${statusLine(state)}` : "Keep Awake";
+  useKeepAwake();
+  const label = CHOICES.find((c) => c.mode === mode)?.label ?? "Off";
+  const title = `Keep Awake: ${label} - ${statusLine()}`;
   return (
     <button
-      className={`status-bar-item${state?.active ? " active" : ""}`}
+      className={`status-bar-item${lock ? " active" : ""}`}
       data-menu-trigger="true"
       aria-haspopup="dialog"
       title={title}
@@ -239,15 +228,13 @@ interface ExtensionContext {
 }
 
 let removeStylesheet: (() => void) | null = null;
-const screenListener = () => applyScreen();
 
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerStatusBarItem({ id: "keep-awake", title: "Keep Awake", placement: "right", component: KeepAwakeItem });
-  listeners.add(screenListener);
   document.addEventListener("visibilitychange", onVisible);
-  document.addEventListener("visibilitychange", screenListener);
+  apply();
   void poll();
   timer = window.setInterval(() => void poll(), POLL_MS);
 }
@@ -256,11 +243,10 @@ export function deactivate(): void {
   window.clearInterval(timer);
   timer = undefined;
   document.removeEventListener("visibilitychange", onVisible);
-  document.removeEventListener("visibilitychange", screenListener);
   listeners.clear();
-  releaseScreen();
+  release();
   removeStylesheet?.();
   removeStylesheet = null;
   serverFetch = null;
-  current = null;
+  activity = null;
 }
