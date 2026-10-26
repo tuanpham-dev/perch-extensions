@@ -195,6 +195,17 @@ function Codicon({ name }: { name: string }) {
   return <span className={`codicon codicon-${name}`} aria-hidden="true" />;
 }
 
+// A mug with steam rising, drawn at the status bar's icon size.
+function MugIcon() {
+  return (
+    <svg className="keep-awake-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 7h8v4.5A2.5 2.5 0 0 1 8.5 14h-3A2.5 2.5 0 0 1 3 11.5z" />
+      <path d="M11 8h1a2 2 0 0 1 0 4h-1" />
+      <path d="M5.5 2.5c-.6.7-.6 1.3 0 2s.6 1.3 0 2M8.5 2.5c-.6.7-.6 1.3 0 2s.6 1.3 0 2" />
+    </svg>
+  );
+}
+
 function statusLine(): string {
   if (mode === "off") return "This computer can sleep as usual";
   if (invoke) {
@@ -258,7 +269,9 @@ function KeepAwakeItem({ context }: { context: StatusItemContext }) {
   const title = `Keep Awake: ${label} - ${statusLine()}`;
   return (
     <button
-      className={`status-bar-item${lock || nativeHeld ? " active" : ""}`}
+      // Its own "awake" rather than the host's "active", which underlines:
+      // the cup turns the accent color instead.
+      className={`status-bar-item keep-awake-item${lock || nativeHeld ? " awake" : ""}`}
       data-menu-trigger="true"
       aria-haspopup="dialog"
       title={title}
@@ -266,7 +279,7 @@ function KeepAwakeItem({ context }: { context: StatusItemContext }) {
       // openPopover toggles: the host keys it on this item's id.
       onClick={(e) => context.openPopover(e.currentTarget.getBoundingClientRect(), <KeepAwakePopover />)}
     >
-      <Codicon name="coffee" />
+      <MugIcon />
     </button>
   );
 }

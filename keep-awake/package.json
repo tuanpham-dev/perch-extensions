@@ -2,7 +2,7 @@
   "name": "keep-awake",
   "private": true,
   "publisher": "perch",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "displayName": "Keep Awake",
   "description": "A status bar switch that keeps the computer you're using Perch on from going to sleep: always, or while an AI agent is working and for 30 minutes after. Works in the browser and the installed app (PWA).",
   "icon": "./icon.svg",

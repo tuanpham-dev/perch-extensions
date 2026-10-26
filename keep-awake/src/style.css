@@ -89,3 +89,16 @@
   color: var(--fg-inactive);
   font-size: 12px;
 }
+
+/* The status bar item: the mug turns the accent color while it keeps the
+   computer awake, hovered or not. */
+.keep-awake-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.keep-awake-item.awake,
+.keep-awake-item.awake:hover:not(:disabled) {
+  color: var(--fg-accent);
+}
