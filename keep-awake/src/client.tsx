@@ -1,8 +1,10 @@
 // keep-awake client: a status bar item whose popover picks how this device
-// is kept awake, per device. A page can't stop its computer sleeping
-// outright, but a screen wake lock does: while the screen is kept on the
-// computer doesn't idle into sleep. Browsers only grant it while the page is
-// the tab in front, so it's taken again whenever Perch is back in front. For
+// is kept awake, per device. In Perch's desktop app the app holds the OS's
+// own lock (its keep_awake command), window in front or not. In a browser
+// or installed app (PWA) a page can't stop its computer sleeping outright,
+// but a screen wake lock does: while the screen is kept on the computer
+// doesn't idle into sleep. Browsers only grant it while the page is the tab
+// in front, so it's taken again whenever Perch is back in front. For
 // "Agent", server.js says whether an agent is working.
 import { useEffect, useState, type ReactNode } from "react";
 import "./style.css";
@@ -38,6 +40,50 @@ let refused: string | null = null;
 const listeners = new Set<() => void>();
 let timer: number | undefined;
 
+// ---- The desktop app's lock ----
+
+type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+
+interface DesktopGlobals {
+  __TAURI_INTERNALS__?: { invoke?: Invoke };
+  __PERCH_DESKTOP__?: unknown;
+}
+
+// Null in a browser, and once the app turned out not to have the command
+// (one older than Keep Awake) or couldn't hold: the wake lock then.
+let invoke: Invoke | null = desktopInvoke();
+let nativeHeld = false;
+// What the app was last asked for, so a quick On, Off, On isn't reordered.
+let nativeAsked = false;
+let nativeQueue: Promise<void> = Promise.resolve();
+
+function desktopInvoke(): Invoke | null {
+  const g = window as unknown as DesktopGlobals;
+  const fn = g.__TAURI_INTERNALS__?.invoke;
+  return g.__PERCH_DESKTOP__ && typeof fn === "function" ? fn : null;
+}
+
+function askNative(on: boolean) {
+  const call = invoke;
+  if (!call || on === nativeAsked) return;
+  nativeAsked = on;
+  nativeQueue = nativeQueue.then(() =>
+    call("keep_awake", { on }).then(
+      () => {
+        nativeHeld = on;
+        changed();
+      },
+      (err: unknown) => {
+        invoke = null;
+        nativeHeld = false;
+        refused = err instanceof Error ? err.message : String(err);
+        apply();
+        changed();
+      },
+    ),
+  );
+}
+
 function loadMode(): Mode {
   try {
     const stored = localStorage.getItem(MODE_KEY);
@@ -60,6 +106,10 @@ function wanted(): boolean {
 }
 
 function apply() {
+  if (invoke) {
+    askNative(wanted());
+    return;
+  }
   const want = wanted() && !document.hidden;
   if (want && !lock && !requesting && supported()) {
     requesting = true;
@@ -94,7 +144,9 @@ function release() {
 }
 
 async function poll() {
-  if (!serverFetch || mode !== "agent" || document.hidden) return;
+  // The desktop app holds with its window in the background too, so it
+  // keeps asking then.
+  if (!serverFetch || mode !== "agent" || (document.hidden && !invoke)) return;
   try {
     const res = await serverFetch("/state");
     if (res.ok) {
@@ -145,6 +197,10 @@ function Codicon({ name }: { name: string }) {
 
 function statusLine(): string {
   if (mode === "off") return "This computer can sleep as usual";
+  if (invoke) {
+    if (!wanted()) return activity ? "No agent working, this computer can sleep as usual" : "Checking on agents…";
+    return nativeHeld ? "Keeping this computer awake" : "Starting…";
+  }
   if (!supported()) {
     return window.isSecureContext
       ? "This browser can't keep the computer awake"
@@ -182,7 +238,9 @@ function KeepAwakePopover() {
           </button>
         ))}
       </div>
-      <div className="keep-awake-footer">On this device only, while Perch is the tab or window in front</div>
+      <div className="keep-awake-footer">
+        {invoke ? "On this computer, while this Perch window is open" : "On this device only, while Perch is the tab or window in front"}
+      </div>
     </div>
   );
 }
@@ -200,7 +258,7 @@ function KeepAwakeItem({ context }: { context: StatusItemContext }) {
   const title = `Keep Awake: ${label} - ${statusLine()}`;
   return (
     <button
-      className={`status-bar-item${lock ? " active" : ""}`}
+      className={`status-bar-item${lock || nativeHeld ? " active" : ""}`}
       data-menu-trigger="true"
       aria-haspopup="dialog"
       title={title}
@@ -245,6 +303,7 @@ export function deactivate(): void {
   document.removeEventListener("visibilitychange", onVisible);
   listeners.clear();
   release();
+  askNative(false);
   removeStylesheet?.();
   removeStylesheet = null;
   serverFetch = null;
