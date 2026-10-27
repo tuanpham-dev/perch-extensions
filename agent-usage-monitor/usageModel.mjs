@@ -12,12 +12,16 @@
 // catches either case; an entry missing one of the two id fields is kept
 // as-is rather than risking under-counting). A malformed/truncated line
 // (mid-write) or a non-assistant/no-usage entry just contributes nothing.
-export function parseUsageLines(jsonlText) {
-  const seen = new Set();
+// `seen` carries the dedupe across calls, for a transcript read as it grows.
+export function parseUsageLines(jsonlText, seen = new Set()) {
   const out = [];
   for (const raw of jsonlText.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
+    // Most of a transcript is tool output and user turns, some lines MBs
+    // long; only a line naming both can be an assistant turn with usage, and
+    // checking that is far cheaper than parsing it.
+    if (!line.includes('"assistant"') || !line.includes('"usage"')) continue;
     let obj;
     try {
       obj = JSON.parse(line);

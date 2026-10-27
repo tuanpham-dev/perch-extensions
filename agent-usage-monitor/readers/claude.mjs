@@ -13,12 +13,14 @@
 //       terminal window (see ../claudePanes.mjs)
 //
 // Only transcripts touched inside the window on screen are parsed line by
-// line; everything else is read as a tail for its cost line. Nothing here
-// writes.
+// line, and each only for what was appended since the last refresh (see
+// ../appendedLines.mjs); everything else is read as a tail for its cost line,
+// again only once it changes. Nothing here writes.
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { blocksFor, parseUsageLines } from "../usageModel.mjs";
+import { readAppendedLines } from "../appendedLines.mjs";
 import { readCostState, readTail, spendFrom } from "../costState.mjs";
 import { readWindows } from "./claudeConfig.mjs";
 import { refreshFromCli } from "./claudeCli.mjs";
@@ -59,7 +61,7 @@ export async function available() {
 }
 
 // Every transcript, parent sessions and subagent runs alike, with the mtime
-// the window filter needs.
+// the window filter needs and the size the incremental reads go by.
 async function listTranscripts() {
   const out = [];
   let projects;
@@ -83,8 +85,8 @@ async function listTranscripts() {
           children.map(async (child) => {
             const full = path.join(projectDir, child.name);
             if (child.isFile() && child.name.endsWith(".jsonl")) {
-              const mtime = await mtimeOf(full);
-              if (mtime !== null) out.push({ file: full, mtime });
+              const info = await statOf(full);
+              if (info) out.push({ file: full, ...info });
               return;
             }
             if (!child.isDirectory()) return;
@@ -100,8 +102,8 @@ async function listTranscripts() {
                 .filter((name) => name.endsWith(".jsonl"))
                 .map(async (name) => {
                   const file = path.join(subagents, name);
-                  const mtime = await mtimeOf(file);
-                  if (mtime !== null) out.push({ file, mtime });
+                  const info = await statOf(file);
+                  if (info) out.push({ file, ...info });
                 }),
             );
           }),
@@ -111,12 +113,51 @@ async function listTranscripts() {
   return out;
 }
 
-async function mtimeOf(file) {
+async function statOf(file) {
   try {
-    return (await stat(file)).mtimeMs;
+    const { mtimeMs, size } = await stat(file);
+    return { mtime: mtimeMs, size };
   } catch {
     return null; // vanished between listing and stat
   }
+}
+
+async function mtimeOf(file) {
+  return (await statOf(file))?.mtime ?? null;
+}
+
+// Per transcript: how far it has been read, the usage entries found so far,
+// and the dedupe keys behind them. Dropped once a file leaves the window.
+const parsed = new Map();
+
+async function entriesOf({ file, size }) {
+  let state = parsed.get(file);
+  // Smaller than what was read: the file was replaced, so start over.
+  if (!state || size < state.offset) {
+    state = { offset: 0, entries: [], seen: new Set() };
+    parsed.set(file, state);
+  }
+  const offset = await readAppendedLines(file, state.offset, size, (text) => {
+    for (const entry of parseUsageLines(text, state.seen)) state.entries.push(entry);
+  });
+  if (offset === null) return null;
+  state.offset = offset;
+  return state.entries;
+}
+
+// Each transcript's cost-state record, read again only once the file changed.
+const costs = new Map();
+
+async function costOf({ file, mtime, size }) {
+  const cached = costs.get(file);
+  if (cached && cached.mtime === mtime && cached.size === size) return cached.record;
+  const record = await readCostState(file);
+  costs.set(file, { mtime, size, record });
+  return record;
+}
+
+function forgetAllBut(cache, files) {
+  for (const file of cache.keys()) if (!files.has(file)) cache.delete(file);
 }
 
 // The percentages and reset times Claude Code records for itself. A window
@@ -161,33 +202,45 @@ async function readStatuslineLimits(now) {
   return limits;
 }
 
+// One pass over the transcripts at a time: two refreshes reading the same
+// file into the same state at once would each add the other's lines.
+let reading = null;
+
+function readTranscripts(windowStart) {
+  reading ??= (async () => {
+    const transcripts = await listTranscripts();
+    const recent = transcripts.filter((t) => t.mtime >= windowStart);
+    forgetAllBut(parsed, new Set(recent.map((t) => t.file)));
+    forgetAllBut(costs, new Set(transcripts.map((t) => t.file)));
+    // One file after another: the reads yield between chunks, and running
+    // them all at once would only hold every file's chunk in memory together.
+    const entries = [];
+    let unreadable = 0;
+    for (const transcript of recent) {
+      const found = await entriesOf(transcript);
+      if (found === null) unreadable += 1;
+      else for (const entry of found) entries.push(entry);
+    }
+    // Dated by last activity, not by when the session opened — see spendFrom.
+    const costRecords = await Promise.all(
+      transcripts.map(async (t) => {
+        const record = await costOf(t);
+        return record ? { ...record, at: t.mtime } : null;
+      }),
+    );
+    return { entries, unreadable, costRecords: costRecords.filter(Boolean) };
+  })().finally(() => {
+    reading = null;
+  });
+  return reading;
+}
+
 export async function usage({ now, blockMs }) {
   const notes = [];
-  const transcripts = await listTranscripts();
   const windowStart = now - BLOCKS_SHOWN * blockMs;
-
-  const recent = transcripts.filter((t) => t.mtime >= windowStart);
-  const entries = [];
-  let unreadable = 0;
-  await Promise.all(
-    recent.map(async ({ file }) => {
-      try {
-        entries.push(...parseUsageLines(await readFile(file, "utf8")));
-      } catch {
-        unreadable += 1;
-      }
-    }),
-  );
+  const { entries, unreadable, costRecords } = await readTranscripts(windowStart);
   if (unreadable > 0) notes.push(`${unreadable} transcript(s) could not be read`);
-
-  // Dated by last activity, not by when the session opened — see spendFrom.
-  const costRecords = await Promise.all(
-    transcripts.map(async ({ file, mtime }) => {
-      const record = await readCostState(file);
-      return record ? { ...record, at: mtime } : null;
-    }),
-  );
-  const spend = spendFrom(costRecords.filter(Boolean), now);
+  const spend = spendFrom(costRecords, now);
   const limits = await readLimits(now);
 
   const blocks = blocksFor(entries, now, blockMs)
