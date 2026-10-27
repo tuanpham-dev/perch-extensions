@@ -10,7 +10,7 @@ The cup is highlighted while the computer is being kept awake, and the popover s
 
 **Which computer:** the device you're looking from. The machine running the Perch server is always on anyway; it's your laptop that would doze off while an agent works. The choice is per device, so a phone and a laptop can each have their own.
 
-**How, in Perch's desktop app:** the app holds the OS's own lock: `caffeinate -i` on macOS, `systemd-inhibit` on Linux, `SetThreadExecutionState` on Windows. It holds whether the Perch window is in front or not, until you turn it off or close the window. The screen can still turn off; the computer stays up. This needs the desktop app 0.10.3 or later; older ones use the browser's way below.
+**How, in Perch's desktop app:** the app holds the OS's own lock: `caffeinate -d -i` on macOS, `systemd-inhibit` on Linux, `SetThreadExecutionState` on Windows. It holds whether the Perch window is in front or not, until you turn it off or close the window. On macOS and Windows the screen stays on too, so the session doesn't lock (desktop app 0.10.5 or later; older ones keep only the computer up). This needs the desktop app 0.10.3 or later; older ones use the browser's way below.
 
 **How, in a browser or installed app (PWA):** a screen wake lock. A web page can't stop its computer from sleeping outright, but it can keep the screen on, and a computer whose screen is kept on doesn't idle into sleep. Browsers set two limits on it:
 
