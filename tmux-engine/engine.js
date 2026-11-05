@@ -518,7 +518,9 @@ export function createTmuxEngine({ env = process.env, socketName = "", configFil
     if (name) args.push("-s", name);
     if (cwd) args.push("-c", cwd);
     args.push(...paneEnvArgs);
-    const [id, created, paneId] = (await tmux(args)).trim().split(SPLIT);
+    const out = (await tmux(args)).trim();
+    const [id, created, paneId] = out.split(SPLIT);
+    if (!paneId) throw new Error(`tmux new-session printed ${JSON.stringify(out)}, not an id, name and pane`);
     if (command) await sendText(paneId, `${command}\r`, true);
     emit({ event: "sessions-changed" });
     return { id, name: created, windowId: windowIdOf(paneId) };
