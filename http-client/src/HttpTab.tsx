@@ -18,6 +18,7 @@ import {
   type ResolveContext,
 } from "./httpFile";
 import { ResponseView, formatSize } from "./ResponseView";
+import { useFileWatch } from "./useFileWatch";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 export const SCRATCH_PREFIX = "http-client://new/";
@@ -162,6 +163,8 @@ export function HttpTab({ filePath, active, toolbarTarget, reloadKey }: { filePa
   useEffect(() => {
     if (active) loadFile();
   }, [active, loadFile]);
+  // The .http file is only read here: pick up an edit made elsewhere as it happens.
+  useFileWatch(filePath, active && !scratch, loadFile);
 
   // The server-side values the file asks for by name ({{$dotenv X}},
   // {{$processEnv Y}}), fetched along with the environments.

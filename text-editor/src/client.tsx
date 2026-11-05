@@ -23,7 +23,8 @@ import type { Pick } from "./diskConflict";
 import { saveEntry } from "./saveFile";
 import { loadMonaco, refreshTheme, unloadMonaco, type ThemeApi } from "./monacoLoader";
 import type { StandaloneEditor } from "./monacoNs";
-import { acquireFile, discardChanges, dismissRestored, disposeAllFiles, isDirty, type FileEntry } from "./models";
+import { acquireFile, applyDiskChange, discardChanges, dismissRestored, disposeAllFiles, isDirty, reloadFromDisk, type FileEntry } from "./models";
+import { useFileWatch } from "./useFileWatch";
 import type { TokenColorRule } from "./shikiTheme";
 import {
   registerDiffRequest,
@@ -132,6 +133,9 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
   // Non-null while the file's unsaved edits were restored from a backup (see
   // models.ts) and the user hasn't kept or discarded them yet.
   const [restored, setRestored] = useState<FileEntry["restored"]>(null);
+  // True while the file changed on disk but this tab holds unsaved edits, so
+  // the change was not applied: the notice offers to take it or keep going.
+  const [diskChanged, setDiskChanged] = useState(false);
   // Bumped when a new editor instance is created, so useVimMode re-attaches —
   // a ref's .current changing is invisible to React's dependency check.
   const [editorEpoch, setEditorEpoch] = useState(0);
@@ -301,9 +305,59 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
     editor.setPosition({ lineNumber: jump, column: 1 });
   }, [filePath, reloadKey]);
 
+  // Reads the file from disk and brings the editor in line with it: silently
+  // when there are no unsaved edits, by raising the notice when there are
+  // (never overwriting someone's typing). Also what the toolbar's Reload runs.
+  const syncFromDisk = useCallback(() => {
+    void fetchFileText(filePath)
+      .then((file) => {
+        const entry = entryRef.current;
+        if (!entry) return;
+        if (file.text === entry.savedText) {
+          // Nothing new (our own save, or only the timestamp moved).
+          if (!isDirty(entry)) setDiskChanged(false);
+          return;
+        }
+        if (isDirty(entry)) setDiskChanged(true);
+        else {
+          applyDiskChange(entry, file);
+          setDiskChanged(false);
+        }
+      })
+      .catch(() => {});
+  }, [filePath]);
+  useFileWatch(filePath, active, syncFromDisk);
+  // The notice only makes sense while there is something to lose.
+  useEffect(() => {
+    if (!dirty) setDiskChanged(false);
+  }, [dirty]);
+  useEffect(() => setDiskChanged(false), [filePath]);
+
+  const takeDiskVersion = () => {
+    void fetchFileText(filePath)
+      .then((file) => {
+        if (entryRef.current) reloadFromDisk(entryRef.current, file);
+        setDiskChanged(false);
+      })
+      .catch(() => {});
+  };
+
   return (
     <div className={`text-editor-host${active ? "" : " hidden"}`}>
       {error && <div className="text-editor-status text-editor-error">{error}</div>}
+      {!error && diskChanged && (
+        <div className="text-editor-restored">
+          <span className="text-editor-restored-text">
+            This file changed on disk, and you have unsaved changes. Saving will ask before overwriting it.
+          </span>
+          <button className="text-editor-text-button" onClick={takeDiskVersion}>
+            Reload (discard mine)
+          </button>
+          <button className="icon-button" title="Keep my changes" onClick={() => setDiskChanged(false)}>
+            <Icon name="close" />
+          </button>
+        </div>
+      )}
       {!error && loading && <div className="text-editor-status">Loading editor…</div>}
       {!error && restored && (
         <div className="text-editor-restored">
@@ -334,6 +388,9 @@ function TextEditorView({ filePath, active, toolbarTarget, setDirty, fontSize, r
         createPortal(
           <>
             {dirty && <span className="text-editor-dirty-dot" title="Unsaved changes" />}
+            <button className="icon-button" title="Reload from Disk" onClick={syncFromDisk}>
+              <Icon name="refresh" />
+            </button>
             {canPreview && (
               <button
                 className="icon-button"

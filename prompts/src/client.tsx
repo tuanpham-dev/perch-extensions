@@ -21,6 +21,7 @@ import { injectStylesheet } from "./injectStylesheet";
 import { fetchFileText, fileExists, makeDir, NotFoundError, saveFileText } from "./fileApi";
 import { checkDiskConflict, type Pick } from "./diskConflict";
 import { createDraftClient, hashText, type DraftClient, type DraftsApi } from "./drafts";
+import { useFileWatch } from "./useFileWatch";
 
 const PROMPT_SUFFIX = ".prompt.md";
 const DRAFT_BASENAME = `Untitled${PROMPT_SUFFIX}`;
@@ -406,6 +407,17 @@ function PromptEditor({ filePath, active, toolbarTarget, openInEditor, setDirty,
     wasActive.current = active;
     if (becameActive && !dirtyRef.current && !draft) void load();
   }, [active, draft, load]);
+
+  // While the tab stays open and clean, an edit made elsewhere (nvim, an agent)
+  // shows up on its own. The text is compared first, so our own save doesn't
+  // trigger a reload, and a dirty tab is never touched (saving asks first).
+  useFileWatch(filePath, active && !draft, () => {
+    void fetchFileText(filePath)
+      .then((text) => {
+        if (text !== diskTextRef.current && !dirtyRef.current) void load();
+      })
+      .catch(() => {});
+  });
 
   const update = (text: string) => {
     setContent(text);

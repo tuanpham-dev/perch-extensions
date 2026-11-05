@@ -177,6 +177,27 @@ export function reloadFromDisk(entry: FileEntry, file: FileText): void {
   void entry.git?.refresh();
 }
 
+/**
+ * An outside edit to a file with no unsaved changes here: shows it without
+ * disturbing the editor. Applied as one edit rather than setValue, so the
+ * cursor, the scroll position and the undo history survive (undo steps back
+ * over the outside change, leaving the file dirty).
+ */
+export function applyDiskChange(entry: FileEntry, file: FileText): void {
+  entry.savedText = file.text;
+  entry.encoding = file.encoding;
+  entry.restored = null;
+  const model = entry.model;
+  if (model && model.getValue() !== file.text) {
+    model.pushStackElement();
+    model.pushEditOperations([], [{ range: model.getFullModelRange(), text: file.text }], () => null);
+    model.pushStackElement();
+  }
+  flushBackup(entry);
+  notify(entry);
+  void entry.git?.refresh();
+}
+
 /** Hides the restored-edits notice, keeping the edits. */
 export function dismissRestored(entry: FileEntry): void {
   entry.restored = null;
