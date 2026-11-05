@@ -24,9 +24,12 @@
 //   engine settings for shell and restore don't apply.
 import { execFile, spawn } from "node:child_process";
 
-const SEP = "\x1f";
-// tmux prints the separator back as the text \037 (older versions: as itself).
-const SPLIT = /\\037|\x1f/;
+// Printable on purpose. tmux prints a control character in -F output as the
+// text \037 (3.2 to 3.5), or as an underscore (newer), so a \x1f separator
+// stopped splitting on a recent tmux and a session could not be created. The
+// legacy forms stay in SPLIT for output from those versions and the test stub.
+const SEP = "~|~";
+const SPLIT = /~\|~|\\037|\x1f/;
 const HISTORY_LINES = 10_000;
 // History lines a tail-first viewer (attach `tail`) gets until it asks for
 // the rest with loadFullHistory.
