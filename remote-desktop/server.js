@@ -11,9 +11,9 @@
 // backend runs it. Ground truth for "running" is what answers on the
 // port's /status, never an in-memory flag.
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { access, chmod, constants as fsConstants, mkdir, rename, rm, stat } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { createWriteStream, existsSync } from "node:fs";
+import { access, chmod, constants as fsConstants, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -40,10 +40,81 @@ const REQUIRED_VERSION = "0.2.0";
 const USER_CONFIG_VERSION = "0.2.1";
 const CODEC_VERSION = "0.2.1";
 const CODECS = ["auto", "h264", "h265", "av1"];
+// rpc-host (remote-pc), picked by pointing remoteDesktop.serverPath at it:
+// the oldest one with the browser gateway, and its private desktop's
+// folders. The runtime folder holds the session's sockets (short paths:
+// unix sockets allow ~108 bytes), the WebSocket token (0600) and the
+// desktop's own config; the state folder keeps paired native clients.
+const RPC_REQUIRED_VERSION = "0.1.0";
+// The user's runtime directory, else a private one in their home (never the
+// shared /tmp: another user could make the folder first).
+const RPC_RUNTIME_BASE =
+  process.getuid && existsSync(`/run/user/${process.getuid()}`) ? `/run/user/${process.getuid()}` : path.join(os.homedir(), ".cache", "perch-remote-desktop", "run");
+
+// One Start or Stop at a time (see the routes).
+let serialTail = Promise.resolve();
+function serial(fn) {
+  const run = serialTail.then(fn, fn);
+  serialTail = run.catch(() => {});
+  return run;
+}
+const rpcRuntimeDir = (port) => path.join(RPC_RUNTIME_BASE, `perch-rd-${port}`);
+
+// The rpc-host whose --runtime-dir is `runtime`, by its command line.
+async function rpcHostPid(runtime) {
+  for (const name of await readdir("/proc").catch(() => [])) {
+    if (!/^\d+$/.test(name)) continue;
+    const cmd = await readFile(`/proc/${name}/cmdline`, "utf8").catch(() => "");
+    const args = cmd.split("\0");
+    const i = args.indexOf("--runtime-dir");
+    // By its arguments, not its name (a renamed binary too).
+    if (i >= 0 && args[i + 1] === runtime && args.includes("run")) return Number(name);
+  }
+  return null;
+}
+
+// Ask rpc-host to stop on its own (SIGTERM), so it ends its desktop
+// session: a host killed outright leaves sway, the session bus and the
+// document portal running, and the portal's mount blocks the folder.
+// Resolves to the pid that would not stop, else null.
+async function stopRpcHost(runtime) {
+  const pid = await rpcHostPid(runtime);
+  if (!pid) return null;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return null;
+  }
+  for (let i = 0; i < 80; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return null;
+    }
+  }
+  return pid;
+}
+
+// Remove a runtime folder; a FUSE mount left inside (the document portal's
+// "doc") is unmounted first when removal fails on it.
+async function removeRuntime(runtime) {
+  try {
+    await rm(runtime, { recursive: true, force: true });
+  } catch (err) {
+    if (err?.code !== "EBUSY") throw err;
+    for (const f of ["fusermount3", "fusermount"]) {
+      if (await run(f, ["-u", "-z", path.join(runtime, "doc")]).then(() => true, () => false)) break;
+    }
+    await rm(runtime, { recursive: true, force: true });
+  }
+}
+const RPC_STATE_DIR = path.join(os.homedir(), ".local", "state", "perch-remote-desktop", "rpc-host");
+const RPC_LOG_LEVEL = process.env.PERCH_REMOTE_DESKTOP_RPC_LOG || "info";
 // Where releases come from; PERCH_REMOTE_DESKTOP_RELEASE_API points the
 // download at another server (a test, a mirror).
 const RELEASE_API =
-  process.env.PERCH_REMOTE_DESKTOP_RELEASE_API || "https://api.github.com/repos/tuanpham-dev/quick-remote/releases/latest";
+  process.env.PERCH_REMOTE_DESKTOP_RELEASE_API || "https://api.github.com/repos/tuanpham-dev/remote-pc-releases/releases/latest";
 const DOWNLOAD_DIR = path.join(os.homedir(), ".local", "share", "perch-remote-desktop");
 // The running host's log (truncated on each Start) and what it logs: the
 // rate controller's decisions are kept, since "why is it slow" is the
@@ -67,6 +138,9 @@ const DEFAULTS = {
   dpi: 96,
   codec: "auto",
   serverPath: "",
+  // rpc-host: the UDP port native clients connect to (0: this machine only).
+  udpPort: 0,
+  followerFps: 15,
 };
 
 // Environment for a toolkit started at the desktop's current scale: GTK
@@ -127,12 +201,24 @@ async function pickPort(preferred) {
   throw new Error(`no free port found starting from ${preferred}`);
 }
 
+// rpc-host wants its per-Start token on every request; it lives in the
+// session's runtime folder (0600), so a restarted server still finds it.
+async function rpcToken(port) {
+  try {
+    return (await readFile(path.join(rpcRuntimeDir(port), "ws-token"), "utf8")).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 // The host's own status line: null when nothing answers there.
 async function probeStatus(port) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), STATUS_TIMEOUT_MS);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/status`, { signal: ctl.signal });
+    const token = await rpcToken(port);
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const res = await fetch(`http://127.0.0.1:${port}/status`, { signal: ctl.signal, headers });
     if (!res.ok) return null;
     const body = await res.json();
     return body && typeof body.viewers === "number" ? body : null;
@@ -183,6 +269,8 @@ function readSettings(raw) {
     dpi: Number(get("dpi", DEFAULTS.dpi)) || DEFAULTS.dpi,
     codec: CODECS.includes(get("codec", DEFAULTS.codec)) ? get("codec", DEFAULTS.codec) : DEFAULTS.codec,
     serverPath: String(raw["remoteDesktop.serverPath"] ?? "").trim(),
+    udpPort: Math.max(0, Math.min(65535, Number(get("udpPort", DEFAULTS.udpPort)) || 0)),
+    followerFps: Math.max(1, Math.min(30, Math.round(Number(get("followerFps", DEFAULTS.followerFps)) || DEFAULTS.followerFps))),
   };
 }
 
@@ -200,9 +288,12 @@ function versionAtLeast(found, required) {
   return true;
 }
 
-const downloadedBinary = () => path.join(DOWNLOAD_DIR, "qr-host");
+// The downloaded rpc-host: its folder (bin/, and lib/ with the patched
+// wlroots it finds next to itself) is unpacked whole.
+const downloadedDir = () => path.join(DOWNLOAD_DIR, "rpc-host");
+const downloadedBinary = () => path.join(downloadedDir(), "bin", "rpc-host");
 
-// Where qr-host is: the setting, then the binary this extension
+// Where the engine is: the setting, then the rpc-host this extension
 // downloaded, then PATH, then cargo's bin dir (the host's PATH often lacks
 // it when Perch runs as a service). Cached per candidate list, since the
 // binary set only changes with a download or reinstall.
@@ -211,13 +302,14 @@ function forgetBinary() {
   binaryCache = { key: null, result: null };
 }
 async function findServerBinary(serverPath) {
-  // A setting left over from the QuicDesk days points at quicdesk-server:
-  // that program is not qr-host, so it is skipped (and reported) rather
-  // than hiding a perfectly good download behind it.
+  // rpc-host by default (the download, PATH, cargo's bin dir); qr-host
+  // only where the setting names it. A setting that names neither (say a
+  // QuicDesk server from long ago) is skipped and reported rather than
+  // hiding a perfectly good download behind it.
   const defaults = [
     ["downloaded", downloadedBinary()],
-    ["path", "qr-host"],
-    ["cargo", path.join(os.homedir(), ".cargo", "bin", "qr-host")],
+    ["path", "rpc-host"],
+    ["cargo", path.join(os.homedir(), ".cargo", "bin", "rpc-host")],
   ];
   const candidates = serverPath ? [["setting", serverPath], ...defaults] : defaults;
   const key = candidates.map((c) => c[1]).join("\n");
@@ -232,18 +324,20 @@ async function findServerBinary(serverPath) {
     } catch {
       continue; // try the next one
     }
-    if (!/^qr-host\b/.test(out.trim())) {
+    const engine = /^rpc-host\b/.test(out.trim()) ? "rpc" : source === "setting" && /^qr-host\b/.test(out.trim()) ? "qr" : null;
+    if (!engine) {
       if (source === "setting") settingIgnored = candidate;
       continue;
     }
     if (source !== "setting" && settingIgnored === null && serverPath) settingIgnored = serverPath;
     const found = parseVersion(out);
     const version = found ? found.join(".") : null;
-    if (found && versionAtLeast(found, required)) {
-      binaryCache = { key, result: { installed: true, path: candidate, source, version, reason: null, settingIgnored } };
+    const need = engine === "rpc" ? parseVersion(RPC_REQUIRED_VERSION) : required;
+    if (found && versionAtLeast(found, need)) {
+      binaryCache = { key, result: { installed: true, path: candidate, source, version, reason: null, settingIgnored, engine } };
       return binaryCache.result;
     }
-    outdated ??= { installed: false, path: candidate, source, version, reason: "outdated", settingIgnored };
+    outdated ??= { installed: false, path: candidate, source, version, reason: "outdated", settingIgnored, engine };
   }
   binaryCache = {
     key,
@@ -254,7 +348,7 @@ async function findServerBinary(serverPath) {
 
 // ---- Downloading a release ----
 
-const ARCH_ASSET = { x64: "qr-host-linux-x64.tar.gz", arm64: "qr-host-linux-arm64.tar.gz" };
+const ARCH_ASSET = { x64: "rpc-host-linux-x86_64.tar.gz" };
 
 const download = { state: "idle", percent: 0, error: null, version: null };
 
@@ -275,7 +369,7 @@ async function fetchText(url, signal) {
 // behind on failure.
 async function downloadEngine(log, signal) {
   const asset = process.platform === "linux" ? ARCH_ASSET[process.arch] : null;
-  if (!asset) throw new Error(`no release build for ${process.platform} ${process.arch}; build qr-host yourself and set its path in Settings`);
+  if (!asset) throw new Error(`no release build for ${process.platform} ${process.arch}; build rpc-host yourself and set its path in Settings`);
   const release = await fetchJson(RELEASE_API, signal);
   download.version = String(release.tag_name ?? "").replace(/^v/, "") || null;
   const assets = Array.isArray(release.assets) ? release.assets : [];
@@ -319,13 +413,16 @@ async function downloadEngine(log, signal) {
       clearTimeout(timer);
     }
     await run("tar", ["xzf", archive, "-C", tmpDir], { timeout: 60000 });
-    const unpacked = path.join(tmpDir, "qr-host");
-    await access(unpacked, fsConstants.R_OK);
-    await chmod(unpacked, 0o755);
+    const unpacked = path.join(tmpDir, "rpc-host");
+    await access(path.join(unpacked, "bin", "rpc-host"), fsConstants.R_OK);
+    await chmod(path.join(unpacked, "bin", "rpc-host"), 0o755);
     await mkdir(DOWNLOAD_DIR, { recursive: true });
-    await rename(unpacked, downloadedBinary());
+    // The old folder goes first (a running host keeps its open files).
+    await rm(downloadedDir(), { recursive: true, force: true });
+    await rename(unpacked, downloadedDir());
+    forgetBinary();
     download.percent = 100;
-    log(`downloaded qr-host ${download.version ?? ""} to ${downloadedBinary()}`);
+    log(`downloaded rpc-host ${download.version ?? ""} to ${downloadedDir()}`);
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -376,6 +473,7 @@ function fromHostStatus(port, status) {
   return {
     running: true,
     port,
+    runningEngine: status.engine === "rpc-host" ? "rpc" : "qr",
     viewers: status.viewers,
     width: Number(status.width) || 0,
     height: Number(status.height) || 0,
@@ -428,21 +526,33 @@ export function activate({ router, log, getSettings, host }) {
   // port.
   async function stopEverything() {
     const { port } = await getRunningInfo();
+    const stuck = port ? await stopRpcHost(rpcRuntimeDir(port)) : null;
+    if (stuck) log(`rpc-host (pid ${stuck}) did not stop within 8 s`);
     await host.sessions.kill(SESSION_NAME).catch(() => {});
     if (port && !(await waitForSilence(port))) {
-      log(`qr-host on ${port} did not exit after its session was killed`);
+      log(`the host on ${port} did not exit after its session was killed`);
     }
+    // rpc-host's runtime folder (sockets, the token) goes with it.
+    if (port) await removeRuntime(rpcRuntimeDir(port)).catch((err) => log(`could not remove ${rpcRuntimeDir(port)}: ${err.message}`));
     lastPort = null;
     if (stopOwnSession === stopEverything) stopOwnSession = null;
   }
 
   async function statusBody(settings, binary, running) {
+    // The running host decides the engine (a setting changed while it runs
+    // takes effect at the next Start). The token goes to this user's own
+    // viewer only, through Perch's authenticated API.
+    const engine = running.running ? running.runningEngine : (binary.engine ?? "qr");
+    const token = running.running && engine === "rpc" ? await rpcToken(running.port) : null;
     return {
+      engine,
+      token,
+      maxKbps: settings.bitrateKbps,
       installed: binary.installed,
       serverPath: binary.path,
       serverReason: binary.reason ?? null,
       engineVersion: binary.version ?? null,
-      requiredVersion: REQUIRED_VERSION,
+      requiredVersion: binary.engine === "qr" ? REQUIRED_VERSION : RPC_REQUIRED_VERSION,
       engineSource: binary.source ?? null,
       settingIgnored: binary.settingIgnored ?? null,
       mode: settings.mode,
@@ -483,7 +593,7 @@ export function activate({ router, log, getSettings, host }) {
       .catch((err) => {
         download.state = "error";
         download.error = err.message;
-        log(`downloading qr-host failed: ${err.message}`);
+        log(`downloading rpc-host failed: ${err.message}`);
       })
       .finally(() => {
         downloadCtl = null;
@@ -495,7 +605,10 @@ export function activate({ router, log, getSettings, host }) {
     res.json({ ...download });
   });
 
-  router.post("/start", async (_req, res) => {
+  // Start and Stop one at a time: two quick Starts (or a Start racing a
+  // Stop) must not launch two hosts or remove a folder a host is using.
+  router.post("/start", (req, res) => serial(() => startRoute(req, res)));
+  async function startRoute(_req, res) {
     try {
       const settings = readSettings(await getSettings());
       const binary = await findServerBinary(settings.serverPath);
@@ -503,12 +616,16 @@ export function activate({ router, log, getSettings, host }) {
         res.status(400).json({
           error:
             binary.reason === "outdated"
-              ? `${binary.path} is qr-host ${binary.version}; this extension needs ${REQUIRED_VERSION} or newer. Update it from the Remote Desktop panel.`
-              : "qr-host was not found. Download it from the Remote Desktop panel (see this extension's README) or set its path in Settings.",
+              ? `${binary.path} is ${binary.engine === "qr" ? "qr-host" : "rpc-host"} ${binary.version}; this extension needs ${binary.engine === "qr" ? REQUIRED_VERSION : RPC_REQUIRED_VERSION} or newer. Update it from the Remote Desktop panel.`
+              : "rpc-host was not found. Download it from the Remote Desktop panel (see this extension's README) or set its path in Settings.",
         });
         return;
       }
       const userConfig = settings.mode === "managed" && settings.useGlobalConfig;
+      if (binary.engine === "rpc") {
+        await startRpc(settings, binary, userConfig, res);
+        return;
+      }
       if (userConfig && !versionAtLeast(parseVersion(binary.version) ?? [0, 0, 0], parseVersion(USER_CONFIG_VERSION))) {
         res.status(400).json({
           error: `Use global config needs qr-host ${USER_CONFIG_VERSION} or newer; ${binary.path} is ${binary.version}. Update it from the Remote Desktop panel, or turn the setting off.`,
@@ -601,16 +718,94 @@ export function activate({ router, log, getSettings, host }) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
-  });
+  }
 
-  router.post("/stop", async (_req, res) => {
-    try {
-      await stopEverything();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
+  // rpc-host: a private desktop in its own runtime folder, its token
+  // written 0600 before the host starts (never on a command line or typed
+  // into the session).
+  async function startRpc(settings, binary, userConfig, res) {
+    const attach = settings.mode !== "managed";
+    if ((await getRunningInfo()).running) {
+      res.status(409).json({ error: "Remote Desktop is already running." });
+      return;
     }
-  });
+    if (await findSession()) await stopEverything();
+    const port = await pickPort(settings.port);
+    const runtime = rpcRuntimeDir(port);
+    // A folder left from before stays: rpc-host ends what still runs in it
+    // (its marker says it's the host's own) before starting anew.
+    await mkdir(RPC_RUNTIME_BASE, { recursive: true, mode: 0o700 });
+    await mkdir(runtime, { recursive: true, mode: 0o700 });
+    // Ours, a real folder (not a link), and private before the token goes in.
+    let st = await lstat(runtime);
+    if (st.isDirectory() && (!process.getuid || st.uid === process.getuid())) {
+      await chmod(runtime, 0o700);
+      st = await lstat(runtime);
+    }
+    if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid()) || (st.mode & 0o077) !== 0) {
+      res.status(500).json({ error: `${runtime} is not a private folder of this user; remove it and Start again.` });
+      return;
+    }
+    await mkdir(RPC_STATE_DIR, { recursive: true, mode: 0o700 });
+    const tokenFile = path.join(runtime, "ws-token");
+    await writeFile(tokenFile, randomBytes(24).toString("hex"), { mode: 0o600 });
+    await chmod(tokenFile, 0o600); // an old file keeps its mode otherwise
+    const args = [
+      "run",
+      "--runtime-dir", runtime,
+      "--state-dir", RPC_STATE_DIR,
+      "--listen", settings.udpPort ? `0.0.0.0:${settings.udpPort}` : "127.0.0.1:0",
+      "--no-mdns",
+      "--no-power-hold",
+      "--input", "virtual",
+      "--ws-listen", `127.0.0.1:${port}`,
+      "--ws-token-file", tokenFile,
+      "--keyboard-layout", settings.keyboardLayout,
+      "--max-kbps", String(settings.bitrateKbps),
+      "--follower-fps", String(settings.followerFps),
+    ];
+    if (attach) {
+      // The desktop already on this machine (X11 or a wlroots compositor;
+      // the Display setting picks one, else rpc-host finds it), its size kept.
+      args.push("--source", "attach");
+      if (settings.display) args.push("--attach", settings.display);
+    } else {
+      args.push("--ui-scale", "2", "--desktop-command", settings.desktopCommand);
+      if (!userConfig) args.push("--fresh-config");
+    }
+    // AV1 isn't an rpc-host codec: auto then.
+    if (settings.codec === "h264" || settings.codec === "h265") args.push("--codec", settings.codec === "h265" ? "hevc" : "h264");
+    await mkdir(DOWNLOAD_DIR, { recursive: true });
+    await host.sessions.create(SESSION_NAME, os.homedir(), true);
+    const line = [
+      ":", ">", shellQuote(HOST_LOG), ";",
+      "env", `RPC_LOG=${shellQuote(RPC_LOG_LEVEL)}`,
+      shellQuote(binary.path), ...args.map(shellQuote),
+      "2>&1", "|", "tee", "-a", shellQuote(HOST_LOG), ";", "exit",
+    ].join(" ");
+    await host.sessions.sendText(SESSION_NAME, line, true);
+    lastPort = port;
+    stopOwnSession = stopEverything;
+    const status = await waitForStatus(port);
+    if (!status) {
+      await stopEverything();
+      log(`rpc-host did not answer on ${port} in time; its output is in the ${SESSION_NAME} session`);
+      res.status(502).json({ error: `Remote Desktop did not start in time; see ${HOST_LOG} or the ${SESSION_NAME} session.` });
+      return;
+    }
+    res.json(await statusBody(settings, binary, fromHostStatus(port, status)));
+  }
+
+  router.post("/stop", (_req, res) =>
+    serial(async () => {
+      try {
+        await stopEverything();
+        res.json({ ok: true });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    }),
+  );
 
   router.post("/launch", async (req, res) => {
     const command = typeof req.body?.command === "string" ? req.body.command.trim() : "";

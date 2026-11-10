@@ -21,6 +21,13 @@ const inputMessage = (e: InputEvent) => wrap(Channel.INPUT, encodeInput(e));
 
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
+/** What the viewer uses of a host connection: the qr engine (Connection,
+ * qr-host) and the rpc engine (rpc/connection.ts, rpc-host) both have it. */
+export type Engine = Pick<
+  Connection,
+  "start" | "stop" | "send" | "sendInput" | "sendDatagram" | "sendFile" | "claim" | "bufferedAmount" | "reportDecode" | "reportLost" | "state" | "stats"
+>;
+
 export interface ConnectionHandlers {
   /** Formats this browser decodes, best first. */
   decoders(): CodecCap[];
@@ -29,6 +36,11 @@ export interface ConnectionHandlers {
   /** Every control message from the host (Pong is also handled here). */
   onControl(msg: Msg): void;
   onSeat(seat: Seat): void;
+  /** Following: where the driver's pointer is, as fractions of the picture
+   * (rpc-host; the pointer is out of the picture and this tab draws it),
+   * and the picture's pixels per desktop pixel (the followers' stream is
+   * smaller than the desktop: the pointer shape shrinks with it). */
+  onCursorPos?(fx: number, fy: number, pictureScale: number): void;
   onVideo(frame: VideoFrame): void;
   /** A datagram with its kind byte first (audio, microphone, pad...). */
   onDatagram(payload: Uint8Array): void;

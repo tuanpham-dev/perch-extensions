@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
-import { Connection, type ConnState, type ConnectionStats } from "./connection";
+import { Connection, type ConnState, type ConnectionHandlers, type ConnectionStats, type Engine } from "./connection";
+import { RpcConnection } from "./rpc/connection";
 import { createDecoder, hasWebCodecs, probeDecoders, type Decoder } from "./decoder";
 import { Renderer } from "./render";
 import { attachInput } from "./input";
@@ -125,7 +126,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   // Bumped by Retry: each rebuild of the stack gets a fresh canvas element.
   const [generation, setGeneration] = useState(0);
 
-  const connectionRef = useRef<Connection | null>(null);
+  const connectionRef = useRef<Engine | null>(null);
   const decoderRef = useRef<Decoder | null>(null);
   const remoteSizeRef = useRef<Size>({ width: 0, height: 0 });
   const hostSizeRef = useRef<Size>({ width: 0, height: 0 });
@@ -175,7 +176,10 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const fsSuppressClickRef = useRef(false);
   const kbOpenRef = useRef(false);
   const kbRef = useRef<PhoneKeyboard | null>(null);
-  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
+  // The phone keyboard's field: laid over the Keyboard button, so a tap
+  // focuses it natively (Android Chrome opens its keyboard only then, not
+  // for a field focused from script). Toolbar or fullscreen controls.
+  const [field, setField] = useState<HTMLTextAreaElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
 
   // The view transform: created once; its stage is the host minus the
@@ -211,6 +215,25 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Stopped (here or from another tab): watch for the next Start, so an
+  // open tab connects again by itself instead of waiting for a reload.
+  useEffect(() => {
+    if (!status || status.running) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      fetchStatus()
+        .then((s) => {
+          if (!s.running) return;
+          setGeneration((g) => g + 1);
+          setStatus(s);
+        })
+        .catch(() => {
+          // Perch itself is away; try again on the next tick.
+        });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [status]);
 
   useEffect(() => getHost().onSettingsChange(() => setPixelRatio(effectivePixelRatio())), []);
 
@@ -412,11 +435,19 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const [padPos, setPadPos] = useState<{ x: number; y: number } | null>(null);
   const [, setLayoutTick] = useState(0);
   const [padCursor, setPadCursor] = useState<{ url: string; xhot: number; yhot: number; width: number; height: number } | null>(null);
+  // The follower's pointer: CSS px per shape pixel (see its overlay).
+  const pointerScale = (k: number) => Math.max(k * view.scale, padCursor ? 6 / Math.max(1, padCursor.height) : 0);
+  // Following on rpc-host: the driver's pointer, fractions of the picture.
+  // `k`: the picture's pixels per desktop pixel (the shape is in the
+  // desktop's, and is drawn the picture's size, not the tab's).
+  const [followPointer, setFollowPointer] = useState<{ x: number; y: number; k: number } | null>(null);
   const cursorAppliedRef = useRef<{ png: Uint8Array; ratio: number } | null>(null);
   const applyCursor = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const shape = cursorRef.current;
+    // A follower's own mouse is not the desktop's pointer (that one is drawn
+    // where the driver has it): an ordinary arrow.
+    const shape = isDriverRef.current ? cursorRef.current : null;
     const ratio = view.ratio || 1;
     if (!shape) {
       if (cursorUrlRef.current) URL.revokeObjectURL(cursorUrlRef.current);
@@ -479,7 +510,8 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     let detachInput: (() => void) | null = null;
     const port = status.port;
 
-    const conn = new Connection(port, {
+    let conn: Engine;
+    const handlers: ConnectionHandlers = {
       decoders: () => decoders,
       viewerId,
       onControl: (msg: Msg) => {
@@ -535,7 +567,11 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
             break;
         }
       },
+      onCursorPos: (x, y, k) => {
+        if (!isDriverRef.current) setFollowPointer({ x, y, k });
+      },
       onSeat: (seat) => {
+        if (seat.driver) setFollowPointer(null);
         setViewers(seat.viewers);
         setCursorInPicture(seat.cursorInPicture);
         if (seat.cursorInPicture) setCursorShape(null, 0, 0);
@@ -545,7 +581,8 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         // connection opened, never on a later hand-over to another tab.
         const first = firstSeatRef.current;
         firstSeatRef.current = false;
-        if (first && !seat.driver && wasDriverRef.current) conn.claim();
+        // (rpc-host returns the seat itself, and not after someone took over.)
+        if (first && !seat.driver && wasDriverRef.current && status.engine !== "rpc") conn.claim();
       },
       onVideo: (frame) => {
         const { width, height } = frame.meta;
@@ -586,7 +623,18 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           }
         }
       },
-    });
+    };
+    conn =
+      status.engine === "rpc"
+        ? new RpcConnection(port, status.token ?? "", handlers, {
+            maxKbps: status.maxKbps ?? 50000,
+            attach: status.mode === "existing",
+            current: async () => {
+              const s = await fetchStatus();
+              return s.running && s.engine === "rpc" && s.token && s.port ? { port: s.port, token: s.token } : null;
+            },
+          })
+        : new Connection(port, handlers);
     connectionRef.current = conn;
     filesRef.current = createFileTransfer({
       transport: { send: (m) => conn.send(m), sendFile: (c) => conn.sendFile(c), bufferedAmount: () => conn.bufferedAmount() },
@@ -667,7 +715,6 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   // a tab may become after the stream started (a laptop's touch screen,
   // a browser whose pointer type changes), so it is attached on its own.
   useEffect(() => {
-    const field = fieldRef.current;
     if (!field) return;
     const kb = attachPhoneKeyboard({
       field,
@@ -691,7 +738,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       kb.detach();
       if (kbRef.current === kb) kbRef.current = null;
     };
-  }, [touch, layout, requestDisplay]);
+  }, [touch, field, layout, requestDisplay]);
 
   // Pause while nobody can see the tab.
   useEffect(() => {
@@ -783,8 +830,9 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   // move passes the threshold: captured earlier, the click would land on
   // the container instead of the button that was tapped.
   const onFsPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    // Keeps focus where it is (the phone keyboard's field stays open).
-    e.preventDefault();
+    // Keeps focus where it is (the phone keyboard's field stays open),
+    // except on the field itself: a tap there must focus it.
+    if (!(e.target instanceof HTMLTextAreaElement)) e.preventDefault();
     const el = fsControlsRef.current;
     const host = hostRef.current;
     if (!el || !host) return;
@@ -897,18 +945,13 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
               <Icon name={audioOn ? "unmute" : "mute"} />
             </button>
             {touch && (
-              <button
+              <KeyboardButton
                 className={`rd-tool${kbOpen ? " rd-tool-on" : ""}`}
-                title={kbOpen ? "Close the phone keyboard" : "Open the phone keyboard"}
-                aria-pressed={kbOpen}
-                // Taking focus from the field would close the phone keyboard
-                // before the click could.
-                onPointerDown={(e) => e.preventDefault()}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => kbRef.current?.toggle()}
-              >
-                <Icon name="keyboard" />
-              </button>
+                open={kbOpen}
+                // In fullscreen the field is on the fullscreen controls.
+                fieldRef={isFullscreen ? null : setField}
+                toggle={() => kbRef.current?.toggle()}
+              />
             )}
             {document.fullscreenEnabled && (
               <button
@@ -978,7 +1021,25 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         tabIndex={0}
         style={canvasBox ? { left: canvasBox.left, top: canvasBox.top, width: canvasBox.width, height: canvasBox.height } : { left: 0, top: 0, width: "100%", height: "100%" }}
       />
-      {touch && viewSettings.touchMode === "trackpad" && padPos && padCursor && !cursorInPicture && (
+      {!isDriver && followPointer && padCursor && !cursorInPicture && view.picture.width > 0 && (
+        // The driver's pointer, where the host says it is.
+        <img
+          className="rd-view-pad-cursor"
+          src={padCursor.url}
+          alt=""
+          draggable={false}
+          style={{
+            // Drawn at the picture's scale (on a phone the whole desktop
+            // shrinks to fit, and the pointer with it), but never under
+            // 6 px tall, or it would be lost.
+            left: view.x + followPointer.x * view.picture.width * view.scale - padCursor.xhot * pointerScale(followPointer.k),
+            top: view.y + followPointer.y * view.picture.height * view.scale - padCursor.yhot * pointerScale(followPointer.k),
+            width: padCursor.width * pointerScale(followPointer.k),
+            height: padCursor.height * pointerScale(followPointer.k),
+          }}
+        />
+      )}
+      {touch && viewSettings.touchMode === "trackpad" && padPos && padCursor && !cursorInPicture && (isDriver || !followPointer) && (
         <img
           className="rd-view-pad-cursor"
           src={padCursor.url}
@@ -992,19 +1053,6 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           }}
         />
       )}
-      <textarea
-        ref={fieldRef}
-        className="rd-kb-field"
-        aria-label="Type on the desktop"
-        // Chords from a paired hardware keyboard belong to the desktop while
-        // the phone keyboard is open, not to Perch's shortcuts.
-        data-keyboard-capture="always"
-        autoCapitalize="off"
-        autoComplete="off"
-        autoCorrect="off"
-        spellCheck={false}
-        rows={1}
-      />
       {isFullscreen && touch && (
         // Perch's toolbar is outside the fullscreen element, so a phone
         // gets its two controls here.
@@ -1022,7 +1070,9 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           onPointerMove={onFsPointerMove}
           onPointerUp={onFsPointerEnd}
           onPointerCancel={onFsPointerEnd}
-          onMouseDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => {
+            if (!(e.target instanceof HTMLTextAreaElement)) e.preventDefault();
+          }}
           onClickCapture={(e) => {
             if (!fsSuppressClickRef.current) return;
             fsSuppressClickRef.current = false;
@@ -1033,15 +1083,12 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
           <span className="rd-fs-grip" title="Drag to move" aria-hidden="true">
             <Icon name="gripper" />
           </span>
-          <button
-            type="button"
+          <KeyboardButton
             className={`rd-fs-control${kbOpen ? " rd-fs-control-on" : ""}`}
-            title={kbOpen ? "Close the phone keyboard" : "Open the phone keyboard"}
-            aria-pressed={kbOpen}
-            onClick={() => kbRef.current?.toggle()}
-          >
-            <Icon name="keyboard" />
-          </button>
+            open={kbOpen}
+            fieldRef={setField}
+            toggle={() => kbRef.current?.toggle()}
+          />
           <button type="button" className="rd-fs-control" title="Exit fullscreen" onClick={() => void toggleFullscreen()}>
             <Icon name="screen-normal" />
           </button>
@@ -1261,6 +1308,67 @@ function chunk(keys: StripKey[], rows: number): StripKey[][] {
   const out: StripKey[][] = [];
   for (let i = 0; i < keys.length; i += per) out.push(keys.slice(i, i + per));
   return out;
+}
+
+/**
+ * The Keyboard button. With `fieldRef`, the phone keyboard's field lies
+ * over it, transparent: the tap lands on the field and focuses it the way a
+ * tap on any text box does, which is what makes Android Chrome open its
+ * keyboard. Once focused it slides out of the button's clip, so the caret
+ * (and Android's handle under it) is out of sight; a tap on the button
+ * then closes the keyboard.
+ */
+function KeyboardButton({
+  className,
+  open,
+  fieldRef,
+  toggle,
+}: {
+  className: string;
+  open: boolean;
+  fieldRef: ((el: HTMLTextAreaElement | null) => void) | null;
+  toggle: () => void;
+}) {
+  const title = open ? "Close the phone keyboard" : "Open the phone keyboard";
+  if (!fieldRef) {
+    return (
+      <button type="button" className={className} title={title} aria-pressed={open} onClick={toggle}>
+        <Icon name="keyboard" />
+      </button>
+    );
+  }
+  return (
+    <span
+      className={`${className} rd-kb-button${open ? " rd-kb-button-open" : ""}`}
+      title={title}
+      // Open, the field has moved out of the button (so Android shows no
+      // caret handle under it): the button itself takes the closing tap,
+      // without taking focus first.
+      onPointerDown={(e) => {
+        if (!open) return;
+        e.preventDefault();
+        toggle();
+      }}
+      onMouseDown={(e) => {
+        if (open) e.preventDefault();
+      }}
+    >
+      <Icon name="keyboard" />
+      <textarea
+        ref={fieldRef}
+        className="rd-kb-field"
+        aria-label="Type on the desktop"
+        // Chords from a paired hardware keyboard belong to the desktop while
+        // the phone keyboard is open, not to Perch's shortcuts.
+        data-keyboard-capture="always"
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        rows={1}
+      />
+    </span>
+  );
 }
 
 /**

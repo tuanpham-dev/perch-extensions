@@ -4,12 +4,16 @@
 // host offers (its outbox) is accepted, collected and saved through a
 // download link, then confirmed back.
 import { type Msg } from "./qr/proto";
+import { Sha256 } from "./sha256";
 import type { FileChunk } from "./wire";
 
 /** Bytes per chunk when sending. */
 const CHUNK_BYTES = 256 * 1024;
 /** Sending pauses while this much is queued on the socket. */
 const SEND_HIGH_WATER = 4 * 1024 * 1024;
+/** Largest file accepted from the host: it is gathered in memory for the
+ * download link (a phone tab has little to spare). */
+const MAX_INCOMING = 512 * 1024 * 1024;
 
 export interface FileTransport {
   send(msg: Msg): boolean;
@@ -35,8 +39,15 @@ export interface FileTransfer {
   reset(): void;
 }
 
-async function sha256(data: ArrayBuffer): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+/** A file's SHA-256, read as a stream (never whole in memory). */
+async function sha256Of(file: File): Promise<Uint8Array> {
+  const h = new Sha256();
+  const reader = file.stream().getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return h.digest();
+    h.update(value);
+  }
 }
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
@@ -46,7 +57,7 @@ export function createFileTransfer(opts: FileTransferOptions): FileTransfer {
   // Ids this side allocates are odd, the host's even (as its native client does).
   let nextId = 1;
   const outgoing = new Map<number, File>();
-  const incoming = new Map<number, { name: string; size: number; sha256: Uint8Array; parts: Uint8Array[]; received: number }>();
+  const incoming = new Map<number, { name: string; size: number; sha256: Uint8Array; parts: Uint8Array[]; received: number; hash: Sha256 }>();
 
   const notice = (text: string | null) => opts.onNotice(text);
 
@@ -94,7 +105,7 @@ export function createFileTransfer(opts: FileTransferOptions): FileTransfer {
       nextId += 2;
       outgoing.set(id, file);
       notice(`Preparing ${file.name}…`);
-      const digest = await sha256(await file.arrayBuffer());
+      const digest = await sha256Of(file);
       if (!transport.send({ t: "FileOffer", id, name: file.name, size: BigInt(file.size), sha256: digest })) {
         outgoing.delete(id);
         notice("Not connected: the file was not sent.");
@@ -126,7 +137,12 @@ export function createFileTransfer(opts: FileTransferOptions): FileTransfer {
           return true;
         }
         case "FileOffer": {
-          incoming.set(msg.id, { name: msg.name, size: Number(msg.size), sha256: msg.sha256, parts: [], received: 0 });
+          if (Number(msg.size) > MAX_INCOMING) {
+            transport.send({ t: "FileCancel", id: msg.id, reason: `over ${MAX_INCOMING >> 20} MB: too large for a browser tab` });
+            notice(`${msg.name} is over ${MAX_INCOMING >> 20} MB: not downloaded here.`);
+            return true;
+          }
+          incoming.set(msg.id, { name: msg.name, size: Number(msg.size), sha256: msg.sha256, parts: [], received: 0, hash: new Sha256() });
           transport.send({ t: "FileAccept", id: msg.id });
           notice(`Receiving ${msg.name}…`);
           return true;
@@ -139,26 +155,24 @@ export function createFileTransfer(opts: FileTransferOptions): FileTransfer {
       const f = incoming.get(chunk.id);
       if (!f) return;
       if (chunk.data.length) {
+        if (f.received + chunk.data.length > f.size) {
+          incoming.delete(chunk.id);
+          transport.send({ t: "FileDone", id: chunk.id, ok: false });
+          notice(`${f.name} came longer than offered and was discarded.`);
+          return;
+        }
         f.parts.push(chunk.data.slice());
+        f.hash.update(chunk.data);
         f.received += chunk.data.length;
         notice(`Receiving ${f.name}: ${Math.round((f.received / Math.max(1, f.size)) * 100)}%`);
       }
       if (!chunk.last) return;
       incoming.delete(chunk.id);
-      const whole = new Blob(f.parts as BlobPart[]);
-      whole
-        .arrayBuffer()
-        .then(sha256)
-        .then((digest) => {
-          const ok = sameBytes(digest, f.sha256);
-          if (ok) save(f.name, f.parts);
-          transport.send({ t: "FileDone", id: chunk.id, ok });
-          notice(ok ? `Received ${f.name}.` : `${f.name} arrived damaged and was discarded.`);
-        })
-        .catch(() => {
-          transport.send({ t: "FileDone", id: chunk.id, ok: false });
-          notice(`${f.name} could not be checked.`);
-        });
+      // Hashed as it came: no second copy of the file to check it.
+      const ok = sameBytes(f.hash.digest(), f.sha256);
+      if (ok) save(f.name, f.parts);
+      transport.send({ t: "FileDone", id: chunk.id, ok });
+      notice(ok ? `Received ${f.name}.` : `${f.name} arrived damaged and was discarded.`);
     },
     reset() {
       outgoing.clear();

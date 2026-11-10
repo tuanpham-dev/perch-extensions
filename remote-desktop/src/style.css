@@ -424,6 +424,27 @@
   caret-color: transparent;
 }
 
+/* On the Keyboard button the field covers it, unseen, and takes the tap. */
+.rd-kb-button {
+  position: relative;
+  /* clip, not hidden: a hidden overflow can still be scrolled, and the
+     browser would scroll the caret back into view. */
+  overflow: clip;
+}
+
+.rd-kb-button-open .rd-kb-field {
+  transform: translateY(150%);
+  pointer-events: none;
+}
+
+.rd-kb-button .rd-kb-field {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  cursor: pointer;
+  overflow: hidden;
+}
+
 .rd-keys {
   position: absolute;
   left: 0;

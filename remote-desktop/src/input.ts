@@ -108,7 +108,11 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
   let dragging = false;
   let longTimer: number | null = null;
   let longFired = false;
-  let pinch: { dist: number; mx: number; my: number } | null = null;
+  // `dist`/`mx`/`my`: at the last move; `start`: the spread when the two
+  // fingers landed, and `zooming` once it changed by over 8 % (from the
+  // start: between two moves it never does, so a slow pinch at 100 %
+  // never zoomed).
+  let pinch: { dist: number; mx: number; my: number; start: number; zooming: boolean } | null = null;
   const scrollAcc = { x: 0, y: 0 };
   let lastTap: { t: number; x: number; y: number } | null = null;
   // Trackpad mode: where the pointer is (remote pixels), and whether the
@@ -419,7 +423,7 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
         dragging = false;
       }
       const m = fingerMid();
-      pinch = { dist: fingerSpread(), mx: m.x, my: m.y };
+      pinch = { dist: fingerSpread(), mx: m.x, my: m.y, start: fingerSpread(), zooming: false };
     }
   };
 
@@ -464,7 +468,8 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
     } else if (fingers.size === 2 && pinch) {
       const m = fingerMid();
       const d = fingerSpread();
-      if (!view.zoomLocked && pinch.dist > 0 && (Math.abs(d - pinch.dist) > pinch.dist * 0.08 || view.zoom !== 1)) {
+      if (!pinch.zooming && pinch.start > 0 && (Math.abs(d - pinch.start) > pinch.start * 0.08 || view.zoom !== 1)) pinch.zooming = true;
+      if (!view.zoomLocked && pinch.zooming && pinch.dist > 0) {
         view.setZoom(view.zoom * (d / pinch.dist), [m.x, m.y]);
       }
       const dx = m.x - pinch.mx;
@@ -482,7 +487,7 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
           target.sendInput({ t: "Wheel", dx: -nx * 120, dy: ny * 120 });
         }
       }
-      pinch = { dist: d, mx: m.x, my: m.y };
+      pinch = { ...pinch, dist: d, mx: m.x, my: m.y };
     }
   };
 
@@ -493,7 +498,7 @@ export function attachInput(canvas: HTMLCanvasElement, target: InputTarget): () 
     e.preventDefault();
     if (fingers.size === 2) {
       const m = fingerMid();
-      pinch = { dist: fingerSpread(), mx: m.x, my: m.y };
+      pinch = { dist: fingerSpread(), mx: m.x, my: m.y, start: fingerSpread(), zooming: false };
     }
     if (fingers.size > 0) return;
     cancelLong();

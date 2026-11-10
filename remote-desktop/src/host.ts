@@ -51,6 +51,12 @@ export interface RdStatus {
   /** The managed display's environment, for Launch. */
   displayEnv: { DISPLAY?: string; WAYLAND_DISPLAY?: string } | null;
   download: DownloadStatus;
+  /** Which host runs: qr-host or rpc-host (remote-pc). */
+  engine?: "qr" | "rpc";
+  /** rpc-host: the viewer's per-Start token, sent as the WebSocket's first message. */
+  token?: string | null;
+  /** rpc-host: its bitrate setting (kbit/s), for the quality presets. */
+  maxKbps?: number;
 }
 
 export interface HostBindings {

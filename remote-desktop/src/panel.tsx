@@ -124,15 +124,15 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
         <span className="rd-panel-label">Engine</span>
         {status.engineVersion ? (
           <span>
-            qr-host {status.engineVersion} <span className="rd-panel-muted">({sourceLabel})</span>
+            {status.engine === "rpc" ? "rpc-host" : "qr-host"} {status.engineVersion} <span className="rd-panel-muted">({sourceLabel})</span>
           </span>
         ) : (
-          <span className="rd-panel-muted">qr-host not found</span>
+          <span className="rd-panel-muted">rpc-host not found</span>
         )}
       </div>
       {status.settingIgnored && (
         <div className="rd-panel-status">
-          Settings point at <code>{status.settingIgnored}</code>, which is not qr-host (a QuicDesk server from an earlier version); it is
+          Settings point at <code>{status.settingIgnored}</code>, which is neither rpc-host nor qr-host; it is
           ignored. Clear <code>remoteDesktop.serverPath</code> to silence this note.
         </div>
       )}
@@ -152,13 +152,13 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
       {(!status.installed || outdated) && !status.running && (
         <div className="rd-panel-row">
           <button className="rd-btn rd-btn-primary" disabled={busy || downloading} onClick={() => void startDownload()}>
-            <Icon name="cloud-download" /> {outdated ? `Update to ${status.requiredVersion}` : "Download qr-host"}
+            <Icon name="cloud-download" /> {outdated ? `Update to ${status.requiredVersion}` : "Download rpc-host"}
           </button>
         </div>
       )}
       {downloading && (
         <div className="rd-panel-download">
-          <div className="rd-panel-muted">Downloading qr-host {download?.version ?? ""}… {download?.percent ?? 0}%</div>
+          <div className="rd-panel-muted">Downloading rpc-host {download?.version ?? ""}… {download?.percent ?? 0}%</div>
           <div className="rd-progress" role="progressbar" aria-valuenow={download?.percent ?? 0} aria-valuemin={0} aria-valuemax={100}>
             <div className="rd-progress-bar" style={{ width: `${download?.percent ?? 0}%` }} />
           </div>
@@ -207,7 +207,9 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
           </div>
           {status.viewers > 1 && (
             <div className="rd-panel-muted">
-              {status.viewers} viewers share this desktop; one drives its size and scale, the others follow.
+              {status.engine === "rpc"
+                ? `${status.viewers} viewers share this desktop: one drives (its size, keyboard and mouse); the others watch a lighter stream and can take over.`
+                : `${status.viewers} viewers share this desktop; one drives its size and scale, the others follow.`}
             </div>
           )}
           {status.mode === "managed" && (
