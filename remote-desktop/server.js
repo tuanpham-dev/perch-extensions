@@ -1,12 +1,11 @@
 // Server hook for the Remote Desktop extension: finds (or downloads)
-// qr-host and runs it inside its own terminal session, so the streaming
-// port is owned by a terminal's process tree; the core proxy only forwards
-// ports it can attribute to a terminal (server/src/ports.ts's
+// rpc-host (remote-pc) and runs it inside its own terminal session, so the
+// streaming port is owned by a terminal's process tree; the core proxy only
+// forwards ports it can attribute to a terminal (server/src/ports.ts's
 // getTunnelablePorts), and a plain detached child here would get a 403
 // from /proxy/<port>/. In managed mode the host itself starts the virtual
-// display and the desktop session (--source vdisplay --desktop) and takes
-// them down when it exits, however it exits, so stopping the session is
-// all the cleanup there is. The session is created, typed into and killed
+// display and the desktop session and takes them down when it exits; Stop
+// asks it to exit first, then closes the session. The session is created, typed into and killed
 // through the host session API, so this works on whichever terminal
 // backend runs it. Ground truth for "running" is what answers on the
 // port's /status, never an in-memory flag.
@@ -30,22 +29,16 @@ const STATUS_TIMEOUT_MS = 800;
 const BIN_CHECK_TIMEOUT_MS = 5000;
 const MAX_PORT_SCAN = 200;
 const MAX_COMMAND_LENGTH = 500;
-const INITIAL_SIZE = "1920x1080";
-// The oldest qr-host this extension's viewer speaks to (the WebSocket
-// gateway, seats and cursor shapes arrived in 0.2.0).
-const REQUIRED_VERSION = "0.2.0";
-// The first qr-host that can run the managed desktop on the user's own
-// config directory (--desktop-user-config), and that streams a codec named
-// with --codec to WebSocket viewers (older ones keep them on H.264).
-const USER_CONFIG_VERSION = "0.2.1";
-const CODEC_VERSION = "0.2.1";
-const CODECS = ["auto", "h264", "h265", "av1"];
-// rpc-host (remote-pc), picked by pointing remoteDesktop.serverPath at it:
-// the oldest one with the browser gateway, and its private desktop's
-// folders. The runtime folder holds the session's sockets (short paths:
-// unix sockets allow ~108 bytes), the WebSocket token (0600) and the
-// desktop's own config; the state folder keeps paired native clients.
-const RPC_REQUIRED_VERSION = "0.1.0";
+const CODECS = ["auto", "h264", "h265"];
+// The oldest rpc-host this extension speaks to, and the run options it
+// needs (an older build of the same version, such as a machine's own host
+// service installed earlier, lacks them and is passed over).
+const REQUIRED_VERSION = "0.1.0";
+const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach"];
+// Its private desktop's folders: the runtime folder holds the session's
+// sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token
+// (0600) and the desktop's own config; the state folder keeps paired
+// native clients.
 // The user's runtime directory, else a private one in their home (never the
 // shared /tmp: another user could make the folder first).
 const RPC_RUNTIME_BASE =
@@ -120,8 +113,6 @@ const DOWNLOAD_DIR = path.join(os.homedir(), ".local", "share", "perch-remote-de
 // rate controller's decisions are kept, since "why is it slow" is the
 // question this file answers.
 const HOST_LOG = path.join(DOWNLOAD_DIR, "host.log");
-const HOST_LOG_LEVEL = process.env.PERCH_REMOTE_DESKTOP_LOG || "info,qr_host::ratectl=debug,qr_host::input=debug";
-const CONFIG_DIR = path.join(os.homedir(), ".config", "perch-remote-desktop");
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 // Applied when a setting is missing from the settings document (a fresh
 // install before the Settings UI ever wrote it).
@@ -131,11 +122,8 @@ const DEFAULTS = {
   desktopCommand: "xfce4-session",
   useGlobalConfig: false,
   keyboardLayout: "us",
-  renderer: "auto",
   port: 14600,
-  fps: 60,
   bitrateKbps: 40000,
-  dpi: 96,
   codec: "auto",
   serverPath: "",
   // rpc-host: the UDP port native clients connect to (0: this machine only).
@@ -160,7 +148,7 @@ function shellQuote(word) {
   return `'${String(word).replace(/'/g, `'\\''`)}'`;
 }
 
-// The commands this file runs itself (qr-host --version, tar), while they
+// The commands this file runs itself (rpc-host --version, tar), while they
 // run, so deactivate() can end exactly these and nothing else.
 const children = new Set();
 
@@ -229,14 +217,25 @@ async function probeStatus(port) {
   }
 }
 
-async function waitForStatus(port, totalMs = START_TIMEOUT_MS) {
+/** The host's status once it answers; `{ failed }` as soon as `failed()`
+ * names a reason (the host exited with an error); null at the timeout. */
+async function waitForStatus(port, totalMs = START_TIMEOUT_MS, failed = async () => null) {
   const deadline = Date.now() + totalMs;
   while (Date.now() < deadline) {
     const status = await probeStatus(port);
     if (status) return status;
+    const why = await failed();
+    if (why) return { failed: why };
     await new Promise((r) => setTimeout(r, START_POLL_INTERVAL_MS));
   }
   return null;
+}
+
+/** The first error line in the host's log (it printed one and exited). */
+async function hostLogError() {
+  const text = await readFile(HOST_LOG, "utf8").catch(() => "");
+  const line = text.split("\n").find((l) => /^(Error|error)(\[|:)/.test(l.trim()));
+  return line ? line.trim().slice(0, 300) : null;
 }
 
 // True once nothing answers on the port any more.
@@ -255,18 +254,14 @@ function readSettings(raw) {
     return v === undefined || v === null || v === "" ? fallback : v;
   };
   const mode = get("mode", DEFAULTS.mode) === "existing" ? "existing" : "managed";
-  const renderer = ["auto", "gpu", "software"].includes(get("renderer", DEFAULTS.renderer)) ? get("renderer", DEFAULTS.renderer) : DEFAULTS.renderer;
   return {
     mode,
     display: String(get("display", DEFAULTS.display)).trim(),
     desktopCommand: String(get("desktopCommand", DEFAULTS.desktopCommand)),
     useGlobalConfig: get("useGlobalConfig", DEFAULTS.useGlobalConfig) === true,
     keyboardLayout: String(get("keyboardLayout", DEFAULTS.keyboardLayout)),
-    renderer,
     port: Number(get("port", DEFAULTS.port)) || DEFAULTS.port,
-    fps: Number(get("fps", DEFAULTS.fps)) || DEFAULTS.fps,
     bitrateKbps: Number(get("bitrateKbps", DEFAULTS.bitrateKbps)) || DEFAULTS.bitrateKbps,
-    dpi: Number(get("dpi", DEFAULTS.dpi)) || DEFAULTS.dpi,
     codec: CODECS.includes(get("codec", DEFAULTS.codec)) ? get("codec", DEFAULTS.codec) : DEFAULTS.codec,
     serverPath: String(raw["remoteDesktop.serverPath"] ?? "").trim(),
     udpPort: Math.max(0, Math.min(65535, Number(get("udpPort", DEFAULTS.udpPort)) || 0)),
@@ -302,10 +297,9 @@ function forgetBinary() {
   binaryCache = { key: null, result: null };
 }
 async function findServerBinary(serverPath) {
-  // rpc-host by default (the download, PATH, cargo's bin dir); qr-host
-  // only where the setting names it. A setting that names neither (say a
-  // QuicDesk server from long ago) is skipped and reported rather than
-  // hiding a perfectly good download behind it.
+  // The setting first, then the download, PATH and cargo's bin dir. A
+  // setting that names another program (a leftover path) is skipped and
+  // reported rather than hiding a perfectly good download behind it.
   const defaults = [
     ["downloaded", downloadedBinary()],
     ["path", "rpc-host"],
@@ -324,20 +318,22 @@ async function findServerBinary(serverPath) {
     } catch {
       continue; // try the next one
     }
-    const engine = /^rpc-host\b/.test(out.trim()) ? "rpc" : source === "setting" && /^qr-host\b/.test(out.trim()) ? "qr" : null;
-    if (!engine) {
+    if (!/^rpc-host\b/.test(out.trim())) {
       if (source === "setting") settingIgnored = candidate;
       continue;
     }
     if (source !== "setting" && settingIgnored === null && serverPath) settingIgnored = serverPath;
     const found = parseVersion(out);
     const version = found ? found.join(".") : null;
-    const need = engine === "rpc" ? parseVersion(RPC_REQUIRED_VERSION) : required;
-    if (found && versionAtLeast(found, need)) {
-      binaryCache = { key, result: { installed: true, path: candidate, source, version, reason: null, settingIgnored, engine } };
+    // An older build of the same version lacks the options this extension
+    // runs it with: passed over (with why), never started to fail.
+    const help = await run(candidate, ["run", "--help"]).catch(() => "");
+    const lacking = REQUIRED_FLAGS.filter((f) => !help.includes(f));
+    if (found && versionAtLeast(found, required) && lacking.length === 0) {
+      binaryCache = { key, result: { installed: true, path: candidate, source, version, reason: null, settingIgnored } };
       return binaryCache.result;
     }
-    outdated ??= { installed: false, path: candidate, source, version, reason: "outdated", settingIgnored, engine };
+    outdated ??= { installed: false, path: candidate, source, version, reason: lacking.length ? "old-build" : "outdated", lacking, settingIgnored };
   }
   binaryCache = {
     key,
@@ -473,7 +469,6 @@ function fromHostStatus(port, status) {
   return {
     running: true,
     port,
-    runningEngine: status.engine === "rpc-host" ? "rpc" : "qr",
     viewers: status.viewers,
     width: Number(status.width) || 0,
     height: Number(status.height) || 0,
@@ -539,26 +534,23 @@ export function activate({ router, log, getSettings, host }) {
   }
 
   async function statusBody(settings, binary, running) {
-    // The running host decides the engine (a setting changed while it runs
-    // takes effect at the next Start). The token goes to this user's own
-    // viewer only, through Perch's authenticated API.
-    const engine = running.running ? running.runningEngine : (binary.engine ?? "qr");
-    const token = running.running && engine === "rpc" ? await rpcToken(running.port) : null;
+    // The token goes to this user's own viewer only, through Perch's
+    // authenticated API.
+    const token = running.running ? await rpcToken(running.port) : null;
     return {
-      engine,
       token,
       maxKbps: settings.bitrateKbps,
       installed: binary.installed,
       serverPath: binary.path,
       serverReason: binary.reason ?? null,
       engineVersion: binary.version ?? null,
-      requiredVersion: binary.engine === "qr" ? REQUIRED_VERSION : RPC_REQUIRED_VERSION,
+      requiredVersion: REQUIRED_VERSION,
+      lacking: binary.lacking ?? [],
       engineSource: binary.source ?? null,
       settingIgnored: binary.settingIgnored ?? null,
       mode: settings.mode,
       display: settings.display,
       desktopCommand: settings.desktopCommand,
-      renderer: settings.renderer,
       missing: await missingPackages(settings),
       download: { ...download },
       ...running,
@@ -615,106 +607,16 @@ export function activate({ router, log, getSettings, host }) {
       if (!binary.installed) {
         res.status(400).json({
           error:
-            binary.reason === "outdated"
-              ? `${binary.path} is ${binary.engine === "qr" ? "qr-host" : "rpc-host"} ${binary.version}; this extension needs ${binary.engine === "qr" ? REQUIRED_VERSION : RPC_REQUIRED_VERSION} or newer. Update it from the Remote Desktop panel.`
-              : "rpc-host was not found. Download it from the Remote Desktop panel (see this extension's README) or set its path in Settings.",
+            binary.reason === "old-build"
+              ? `${binary.path} is an older rpc-host build (it lacks ${binary.lacking.join(", ")}). Download the current one from the Remote Desktop panel, or set Server path to a newer build.`
+              : binary.reason === "outdated"
+                ? `${binary.path} is rpc-host ${binary.version}; this extension needs ${REQUIRED_VERSION} or newer. Update it from the Remote Desktop panel.`
+                : "rpc-host was not found. Download it from the Remote Desktop panel (see this extension's README) or set its path in Settings.",
         });
         return;
       }
       const userConfig = settings.mode === "managed" && settings.useGlobalConfig;
-      if (binary.engine === "rpc") {
-        await startRpc(settings, binary, userConfig, res);
-        return;
-      }
-      if (userConfig && !versionAtLeast(parseVersion(binary.version) ?? [0, 0, 0], parseVersion(USER_CONFIG_VERSION))) {
-        res.status(400).json({
-          error: `Use global config needs qr-host ${USER_CONFIG_VERSION} or newer; ${binary.path} is ${binary.version}. Update it from the Remote Desktop panel, or turn the setting off.`,
-        });
-        return;
-      }
-      if (settings.codec !== "auto" && !versionAtLeast(parseVersion(binary.version) ?? [0, 0, 0], parseVersion(CODEC_VERSION))) {
-        res.status(400).json({
-          error: `Codec ${settings.codec} needs qr-host ${CODEC_VERSION} or newer; ${binary.path} is ${binary.version}. Update it from the Remote Desktop panel, or set Codec to auto.`,
-        });
-        return;
-      }
-      if ((await getRunningInfo()).running) {
-        res.status(409).json({ error: "Remote Desktop is already running." });
-        return;
-      }
-      if (await findSession()) {
-        // A leftover session with nothing listening: start clean.
-        await stopEverything();
-      }
-      const port = await pickPort(settings.port);
-      const args = [
-        "--ws-listen", `127.0.0.1:${port}`,
-        "--listen", "127.0.0.1:0",
-        "--no-mdns",
-        "--fps", String(settings.fps),
-        "--max-kbps", String(settings.bitrateKbps),
-        "--config-dir", CONFIG_DIR,
-      ];
-      // Every viewer shares one stream: a codec other than auto (H.264)
-      // must be one each viewing browser decodes.
-      if (settings.codec !== "auto") args.push("--codec", settings.codec);
-      if (settings.mode === "managed") {
-        // The host owns the virtual display and the desktop: it starts
-        // them, resizes the display to the tab, keeps the desktop's scale
-        // in step, and ends them with itself.
-        args.push(
-          "--source", "vdisplay",
-          "--desktop", settings.desktopCommand,
-          "--size", INITIAL_SIZE,
-          "--keyboard-layout", settings.keyboardLayout,
-          "--dpi", String(settings.dpi),
-        );
-        if (settings.renderer === "software") args.push("--vd-software");
-        // The desktop's settings (theme, panel, window manager) from
-        // ~/.config instead of a fresh directory per Start.
-        if (userConfig) args.push("--desktop-user-config");
-      } else {
-        args.push("--source", settings.display ? `x11:${settings.display}` : "auto");
-      }
-      // The log's folder exists only after a download; a qr-host found on
-      // PATH still logs there.
-      await mkdir(DOWNLOAD_DIR, { recursive: true });
-      await host.sessions.create(SESSION_NAME, os.homedir(), true);
-      // The host's output goes to the session and to a file (its log is
-      // on stdout), so a failed start or a rate-control question can be
-      // read after the fact. No `exec` with a pipeline: closing the window
-      // still hangs the host up, and Stop kills the session anyway.
-      const line = [
-        ":",
-        ">",
-        shellQuote(HOST_LOG),
-        ";",
-        "env",
-        `RUST_LOG=${shellQuote(HOST_LOG_LEVEL)}`,
-        shellQuote(binary.path),
-        ...args.map(shellQuote),
-        "2>&1",
-        "|",
-        "tee",
-        "-a",
-        shellQuote(HOST_LOG),
-        ";",
-        "exit",
-      ].join(" ");
-      await host.sessions.sendText(SESSION_NAME, line, true);
-      lastPort = port;
-      stopOwnSession = stopEverything;
-
-      const status = await waitForStatus(port);
-      if (!status) {
-        await stopEverything();
-        log(`qr-host did not answer on ${port} in time; its output is in the ${SESSION_NAME} session`);
-        res.status(502).json({
-          error: `Remote Desktop did not start in time; see ${HOST_LOG} or the ${SESSION_NAME} session.`,
-        });
-        return;
-      }
-      res.json(await statusBody(settings, binary, fromHostStatus(port, status)));
+      await startRpc(settings, binary, userConfig, res);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -773,7 +675,6 @@ export function activate({ router, log, getSettings, host }) {
       args.push("--ui-scale", "2", "--desktop-command", settings.desktopCommand);
       if (!userConfig) args.push("--fresh-config");
     }
-    // AV1 isn't an rpc-host codec: auto then.
     if (settings.codec === "h264" || settings.codec === "h265") args.push("--codec", settings.codec === "h265" ? "hevc" : "h264");
     await mkdir(DOWNLOAD_DIR, { recursive: true });
     await host.sessions.create(SESSION_NAME, os.homedir(), true);
@@ -786,7 +687,14 @@ export function activate({ router, log, getSettings, host }) {
     await host.sessions.sendText(SESSION_NAME, line, true);
     lastPort = port;
     stopOwnSession = stopEverything;
-    const status = await waitForStatus(port);
+    // An error the host printed ends the wait at once, with its words.
+    const status = await waitForStatus(port, START_TIMEOUT_MS, hostLogError);
+    if (status?.failed) {
+      await stopEverything();
+      log(`rpc-host did not start: ${status.failed}`);
+      res.status(502).json({ error: `rpc-host did not start: ${status.failed} (more in ${HOST_LOG})` });
+      return;
+    }
     if (!status) {
       await stopEverything();
       log(`rpc-host did not answer on ${port} in time; its output is in the ${SESSION_NAME} session`);

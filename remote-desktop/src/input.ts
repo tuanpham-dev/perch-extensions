@@ -1,12 +1,12 @@
 // Keyboard, pointer, wheel, touch and paste capture on the viewer canvas,
-// turned into QuickRemote input events. Keys travel by physical position
+// turned into input events for the host. Keys travel by physical position
 // (keymap.ts); a paste shortcut waits for the paste event so the clipboard
 // reaches the host before the keystroke does. Ctrl+wheel and a pinch zoom
 // the view; two fingers pan a zoomed picture (or scroll otherwise); a
 // mouse near the stage's edge pans a zoomed picture.
 import { type Action, GESTURE_DEFAULTS, type GestureSettings, actionButton, backButton, gain } from "./gestures";
 import { evdevForCode } from "./keymap";
-import { ClipKind, type InputEvent } from "./qr/proto";
+import { ClipKind, type InputEvent } from "./messages";
 import { clipClipboardText } from "./wire";
 import type { View } from "./view";
 

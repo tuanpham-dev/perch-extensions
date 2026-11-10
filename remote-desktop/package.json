@@ -2,9 +2,9 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "displayName": "Remote Desktop",
-  "description": "A Linux desktop streamed into a tab as low-latency video (AV1, H.265 or H.264 from the GPU where the host has one) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing X11 or Wayland desktop (no audio there yet, and no clipboard on Wayland). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
+  "description": "A Linux desktop streamed into a tab as low-latency video (H.265 or H.264 from the GPU) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing X11 or Wayland desktop (no audio there yet, and no clipboard on Wayland). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
   "icon": "./icon.svg",
   "perch": {
     "client": "./dist/client.js",
@@ -17,9 +17,15 @@
         "remoteDesktop.mode": {
           "type": "string",
           "default": "managed",
-          "enum": ["managed", "existing"],
-          "enumItemLabels": ["Managed display (virtual desktop that follows the tab)", "Existing display"],
-          "description": "Managed: start a virtual display (headless sway) with a desktop session on it, and let the desktop follow the tab's size and scale. Existing: attach to the desktop already running on this machine (qr-host: KDE, GNOME or wlroots on Wayland, else X11; rpc-host: wlroots on Wayland, else X11); input goes to that real screen and its size is never changed. Takes effect on the next Start."
+          "enum": [
+            "managed",
+            "existing"
+          ],
+          "enumItemLabels": [
+            "Managed display (virtual desktop that follows the tab)",
+            "Existing display"
+          ],
+          "description": "Managed: start a virtual display (headless sway) with a desktop session on it, and let the desktop follow the tab's size and scale. Existing: attach to the desktop already running on this machine (an X11 desktop, or a wlroots compositor such as sway); input goes to that real screen and its size is never changed. Takes effect on the next Start."
         },
         "remoteDesktop.display": {
           "type": "string",
@@ -34,19 +40,12 @@
         "remoteDesktop.useGlobalConfig": {
           "type": "boolean",
           "default": false,
-          "description": "Managed mode only: run the desktop with your own config directory (~/.config) instead of a fresh one each Start, so your theme, panel and window manager settings apply and changes made on the virtual desktop are kept. If the same desktop also runs on this machine's screen at the same time, both sessions share those files. Needs rpc-host, or qr-host 0.2.1 or newer. Takes effect on the next Start."
+          "description": "Managed mode only: run the desktop with your own config directory (~/.config) instead of a fresh one each Start, so your theme, panel and window manager settings apply and changes made on the virtual desktop are kept. If the same desktop also runs on this machine's screen at the same time, both sessions share those files. Takes effect on the next Start."
         },
         "remoteDesktop.keyboardLayout": {
           "type": "string",
           "default": "us",
-          "description": "XKB layout for the virtual display (managed mode; with rpc-host also the keyboard it adds to an existing Wayland desktop), e.g. us, de, fr. Keys are forwarded by physical position, so this should match the keyboard you type on. Text from phone keyboards is typed as characters whatever the layout (rpc-host)."
-        },
-        "remoteDesktop.renderer": {
-          "type": "string",
-          "default": "auto",
-          "enum": ["auto", "gpu", "software"],
-          "enumItemLabels": ["Auto (GPU when a render node is usable)", "GPU", "Software (pixman)"],
-          "description": "Managed mode with qr-host only (rpc-host always renders on the GPU): how the virtual display renders apps. GPU uses a render node (/dev/dri/renderD*, which needs the render group) so OpenGL, Vulkan and WebGL apps run on it; software renders in pixman and encodes on the CPU. Takes effect on the next Start."
+          "description": "XKB layout for the virtual display (managed mode; also the keyboard added to an existing Wayland desktop), e.g. us, de, fr. Keys are forwarded by physical position, so this should match the keyboard you type on. Text from phone keyboards is typed as characters whatever the layout."
         },
         "remoteDesktop.port": {
           "type": "integer",
@@ -54,13 +53,6 @@
           "minimum": 1024,
           "maximum": 65535,
           "description": "Preferred loopback port for the stream. If it is taken, the next free port is used."
-        },
-        "remoteDesktop.fps": {
-          "type": "integer",
-          "default": 60,
-          "minimum": 5,
-          "maximum": 120,
-          "description": "Frame rate cap (qr-host; rpc-host follows the viewer's display). A still screen costs almost nothing regardless. Takes effect on the next Start."
         },
         "remoteDesktop.bitrateKbps": {
           "type": "integer",
@@ -72,42 +64,53 @@
         "remoteDesktop.codec": {
           "type": "string",
           "default": "auto",
-          "enum": ["auto", "h264", "h265", "av1"],
-          "enumItemLabels": ["Auto (H.264, which every browser decodes)", "H.264", "H.265 (HEVC)", "AV1"],
-          "description": "Video codec for the stream. Every tab and device viewing the desktop shares the codec (rpc-host sends viewers who don't drive a separate, smaller stream in the same codec), so Auto keeps it on H.264; H.265 or AV1 look sharper at the same bitrate, but each viewing browser must decode them (one that can't shows \"No common codec\"). Needs qr-host 0.2.1 or newer for anything but Auto; rpc-host has no AV1 (it uses Auto then). Takes effect on the next Start."
+          "enum": [
+            "auto",
+            "h264",
+            "h265"
+          ],
+          "enumItemLabels": [
+            "Auto (H.264, which every browser decodes)",
+            "H.264",
+            "H.265 (HEVC)"
+          ],
+          "description": "Video codec for the stream. Every tab and device viewing the desktop shares the codec (viewers who don't drive get a separate, smaller stream in the same codec), so Auto keeps it on H.264; H.265 looks sharper at the same bitrate, but each viewing browser must decode it (one that can't shows \"No common codec\"). Takes effect on the next Start."
         },
         "remoteDesktop.pixelRatio": {
           "type": "string",
           "default": "auto",
-          "enum": ["auto", "1", "1.5", "2"],
-          "enumItemLabels": ["Auto (device pixels)", "1 remote pixel per CSS pixel", "1.5", "2"],
+          "enum": [
+            "auto",
+            "1",
+            "1.5",
+            "2"
+          ],
+          "enumItemLabels": [
+            "Auto (device pixels)",
+            "1 remote pixel per CSS pixel",
+            "1.5",
+            "2"
+          ],
           "description": "Default remote pixels per CSS pixel for your devices. Auto detects each device's pixel ratio (capped at 2, so a 3x phone gets a 2x desktop). Each browser can override this for itself from the viewer tab's view settings; the desktop follows the ratio of the tab that drives it."
-        },
-        "remoteDesktop.dpi": {
-          "type": "integer",
-          "default": 96,
-          "minimum": 48,
-          "maximum": 240,
-          "description": "Managed mode with qr-host only: font DPI reported to apps on the virtual display (rpc-host scales its desktop to the viewer)."
         },
         "remoteDesktop.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to your own rpc-host build, or to a qr-host (QuickRemote) to use that engine instead. Leave empty to use the rpc-host downloaded from the Remote Desktop panel (or one on PATH or in ~/.cargo/bin). Takes effect on the next Start."
+          "description": "Path to your own rpc-host build. Leave empty to use the rpc-host downloaded from the Remote Desktop panel (or one on PATH or in ~/.cargo/bin). Takes effect on the next Start."
         },
         "remoteDesktop.udpPort": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "maximum": 65535,
-          "description": "rpc-host only: the UDP port native remote-pc clients connect to from other machines. 0 keeps it on this machine (browser tabs don't need it). Takes effect on the next Start."
+          "description": "the UDP port native remote-pc clients connect to from other machines. 0 keeps it on this machine (browser tabs don't need it). Takes effect on the next Start."
         },
         "remoteDesktop.followerFps": {
           "type": "integer",
           "default": 15,
           "minimum": 1,
           "maximum": 30,
-          "description": "rpc-host only: frame rate of the stream sent to viewers who watch while someone else drives (1–30). Their stream is a separate, smaller one, so the driver keeps most of the bandwidth; fewer frames take less still. Takes effect on the next Start."
+          "description": "frame rate of the stream sent to viewers who watch while someone else drives (1–30). Their stream is a separate, smaller one, so the driver keeps most of the bandwidth; fewer frames take less still. Takes effect on the next Start."
         }
       }
     }

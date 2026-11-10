@@ -7,13 +7,12 @@
 // Backspace has something to delete (keyboards send none into an empty
 // field); after every edit the difference is sent and the field reset.
 //
-// Ported from QuicDesk's own web viewer (web/src/keyboard.ts). The page
-// layout is Perch's here: the app already sizes itself to the visual
+// The page layout is Perch's: the app already sizes itself to the visual
 // viewport while a phone keyboard is up, so this module only reports the
 // open state and never styles the document.
 import { MODIFIER_CODES } from "./gestures";
 import { evdevForCode } from "./keymap";
-import type { InputEvent } from "./qr/proto";
+import type { InputEvent } from "./messages";
 import { chunkText } from "./wire";
 
 const SENTINEL = " ";

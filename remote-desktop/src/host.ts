@@ -17,22 +17,24 @@ export interface DownloadStatus {
 }
 
 export interface RdStatus {
-  /** A usable qr-host was found: at least the required version. */
+  /** A usable rpc-host was found: the required version, with the run
+   * options this extension uses. */
   installed: boolean;
   serverPath: string;
-  serverReason: "missing" | "outdated" | null;
+  serverReason: "missing" | "outdated" | "old-build" | null;
+  /** An older build's missing run options (`old-build`). */
+  lacking: string[];
   /** The found binary's version, usable or not. */
   engineVersion: string | null;
   requiredVersion: string;
   /** Where the binary came from. */
   engineSource: "setting" | "downloaded" | "path" | "cargo" | null;
-  /** A remoteDesktop.serverPath that is not qr-host (a leftover
-   * quicdesk-server path), skipped in favour of the other candidates. */
+  /** A remoteDesktop.serverPath that is not rpc-host (a leftover path),
+   * skipped in favour of the other candidates. */
   settingIgnored: string | null;
   mode: "managed" | "existing";
   display: string;
   desktopCommand: string;
-  renderer: "auto" | "gpu" | "software";
   running: boolean;
   port: number | null;
   viewers: number;
@@ -51,11 +53,9 @@ export interface RdStatus {
   /** The managed display's environment, for Launch. */
   displayEnv: { DISPLAY?: string; WAYLAND_DISPLAY?: string } | null;
   download: DownloadStatus;
-  /** Which host runs: qr-host or rpc-host (remote-pc). */
-  engine?: "qr" | "rpc";
-  /** rpc-host: the viewer's per-Start token, sent as the WebSocket's first message. */
+  /** The viewer's per-Start token, sent as the WebSocket's first message. */
   token?: string | null;
-  /** rpc-host: its bitrate setting (kbit/s), for the quality presets. */
+  /** The bitrate setting (kbit/s), for the quality presets. */
   maxKbps?: number;
 }
 
@@ -90,9 +90,9 @@ export function getHostOrNull(): HostBindings | null {
 // otherwise leave the tab on "Loading…" forever.
 const FETCH_TIMEOUT_MS = 10000;
 
-async function fetchWithTimeout(path: string, init?: RequestInit): Promise<Response> {
+async function fetchWithTimeout(path: string, init?: RequestInit, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
   const ctl = new AbortController();
-  const timer = window.setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  const timer = window.setTimeout(() => ctl.abort(), timeoutMs);
   try {
     return await getHost().serverFetch(path, { ...init, signal: ctl.signal });
   } catch (err) {
@@ -117,12 +117,16 @@ export async function fetchDownloadStatus(): Promise<DownloadStatus> {
   return body as DownloadStatus;
 }
 
-export async function postJson<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
-  const res = await fetchWithTimeout(path, {
-    method: "POST",
-    headers: body ? { "content-type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+export async function postJson<T = Record<string, unknown>>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(
+    path,
+    {
+      method: "POST",
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    },
+    timeoutMs,
+  );
   const parsed = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
   if (!res.ok) throw new Error(parsed?.error ?? `${res.status} ${res.statusText}`);
   return (parsed ?? {}) as T;

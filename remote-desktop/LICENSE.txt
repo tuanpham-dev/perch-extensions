@@ -22,12 +22,6 @@ SOFTWARE.
 
 ----------------------------------------------------------------------
 
-This extension streams a desktop through QuickRemote
-(https://github.com/tuanpham-dev/quick-remote), whose host binary `qr-host`
-is downloaded from that project's releases (or built by you); it is not
-part of this package. The viewer vendors QuickRemote's TypeScript wire
-protocol (src/qr/proto.ts) and its conformance vectors, and ports its view
-transform and audio playout.
-
-QuickRemote: MIT License or Apache License, Version 2.0, at your option.
-Copyright (c) 2026 Tuan Pham.
+This extension streams a desktop through remote-pc's host, `rpc-host`, which
+is downloaded from https://github.com/tuanpham-dev/remote-pc-releases (or
+built by you); it is not part of this package and comes with its own terms.

@@ -1,11 +1,10 @@
-// The rpc engine: one viewer's WebSocket to rpc-host (remote-pc) through
-// Perch's proxy. It has the same surface as the qr engine's Connection and
-// speaks remote-pc's protocol underneath, translating to and from the
-// qr-shaped messages viewer.tsx already handles, so the viewer works with
-// either host. The token goes first (nothing arrives before it), then
-// Hello; feedback every 100 ms and a ping every second for the host's rate
-// control; reconnect with backoff while enabled.
-import { ClipKind, Codec as QrCodec, DisplayKind, QualityLevel, encodeAudio as encodeQrAudio, type CodecCap, type InputEvent, type Msg as QrMsg } from "../qr/proto";
+// One viewer's WebSocket to rpc-host (remote-pc) through Perch's proxy. It
+// speaks remote-pc's protocol (rpc/proto.ts) and translates to and from the
+// in-page messages (messages.ts) viewer.tsx handles. The token goes first
+// (nothing arrives before it), then Hello; feedback every 100 ms and a ping
+// every second for the host's rate control; reconnect with backoff while
+// enabled.
+import { ClipKind, Codec as PageCodec, DisplayKind, QualityLevel, type CodecCap, type InputEvent, type Msg as PageMsg } from "../messages";
 import type { ConnState, ConnectionHandlers, ConnectionStats } from "../connection";
 import type { FileChunk, VideoFrame } from "../wire";
 import * as P from "./proto";
@@ -16,7 +15,7 @@ const BACKOFF_MS = [1000, 2000, 4000, 8000, 10000];
 const FEEDBACK_MS = 100;
 const PING_MS = 1000;
 const STATS_MS = 1000;
-/// qr's Error codes the viewer shows specially.
+/// Error codes the viewer shows specially.
 const ERROR_REPLACED = 10;
 
 /// The viewer's button numbers (1 left, 2 middle, 3 right, 4 back, 5
@@ -141,8 +140,8 @@ export class RpcConnection {
     return this.sendRaw(P.wsControl(m));
   }
 
-  /** A qr-shaped control message from the viewer, in remote-pc's terms. */
-  send(msg: QrMsg): boolean {
+  /** A control message from the viewer, in remote-pc's terms. */
+  send(msg: PageMsg): boolean {
     switch (msg.t) {
       case "DisplayRequest":
         return this.sendMsg({ t: "ModeRequest", width: msg.width, height: msg.height, hz: msg.refresh, scale: msg.scalePct });
@@ -304,8 +303,8 @@ export class RpcConnection {
       this.penDown = false;
       let decoders = P.Dec.AUDIO | P.Dec.CURSOR | P.Dec.CURSOR_POS | P.Dec.BULK;
       for (const c of this.handlers.decoders() as CodecCap[]) {
-        if (c.codec === QrCodec.H264) decoders |= P.Dec.H264;
-        if (c.codec === QrCodec.H265) decoders |= P.Dec.HEVC;
+        if (c.codec === PageCodec.H264) decoders |= P.Dec.H264;
+        if (c.codec === PageCodec.H265) decoders |= P.Dec.HEVC;
       }
       this.sendMsg({ t: "Hello", version: P.VERSION, name: `perch:${this.handlers.viewerId()}`, decoders, width: 0, height: 0, hz: 0, scale: 0 });
     };
@@ -383,7 +382,7 @@ export class RpcConnection {
           return;
         case P.Chan.AUDIO: {
           const a = P.decodeAudio(b);
-          if (a.cur.length) this.handlers.onDatagram(encodeQrAudio({ mic: false, seq: a.seq, tsUs: a.tCapture / 1000n, data: a.cur }));
+          if (a.cur.length) this.handlers.onAudio({ seq: a.seq, tsUs: a.tCapture / 1000n, data: a.cur });
           return;
         }
         case P.Chan.PONG: {
@@ -415,13 +414,13 @@ export class RpcConnection {
         this.size = { width: m.width, height: m.height };
         this.setState("open");
         this.startTicking();
-        h.onControl({ t: "HelloAck", major: 1, minor: 0, name: m.hostName, hostId: "", needPin: false, rendezvous: "" });
-        h.onControl({ t: "StreamStarted", stream: 0, monitor: 0, codec: m.codec, chroma444: false, width: m.width, height: m.height, fps: m.hz });
+        h.onControl({ t: "HelloAck", name: m.hostName });
+        h.onControl({ t: "StreamStarted", stream: 0, codec: m.codec, width: m.width, height: m.height, fps: m.hz });
         // A private desktop follows the driver's size.
         h.onControl({ t: "DisplayInfo", stream: 0, kind: this.opts.attach ? DisplayKind.FIXED : DisplayKind.OWN, width: m.width, height: m.height, scalePct: 100, note: "" });
         h.onControl({ t: "CursorInfo", inPicture: false });
         // For the stats panel's "from <encoder>".
-        h.onControl({ t: "HostStats", stream: 0, bitrateKbps: 0, fps: m.hz, parityPct: 0, profile: 0, encoder: `rpc-host VA-API ${m.codec === P.Codec.HEVC ? "H.265" : "H.264"}`, captureUs: 0, encodeUs: 0, droppedByBackpressure: 0 });
+        h.onControl({ t: "HostStats", stream: 0, bitrateKbps: 0, fps: m.hz, encoder: `rpc-host VA-API ${m.codec === P.Codec.HEVC ? "H.265" : "H.264"}` });
         return;
       }
       case "ModeApplied":

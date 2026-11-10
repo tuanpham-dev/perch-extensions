@@ -1,8 +1,6 @@
 // Touch, mouse and keys-strip options, kept per device in localStorage:
 // what each touch gesture does, trackpad speed and acceleration, scrolling,
 // the mouse's Back button, and which keys the phone-keyboard strip holds.
-// The same options, defaults and acceleration curve as QuickRemote's
-// Android app and web page, so a desktop feels the same from each.
 
 export type Action = "none" | "left" | "right" | "middle" | "double" | "keyboard" | "drag";
 
@@ -137,7 +135,7 @@ export function stripKeys(s: GestureSettings): StripKey[] {
 }
 
 /**
- * Trackpad acceleration, the same curve on every QuickRemote viewer: finger
+ * Trackpad acceleration: finger
  * speed `v` in CSS px per ms → a gain on the finger's travel.
  */
 export function gain(v: number, accel: boolean, speed: number): number {

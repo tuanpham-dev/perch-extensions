@@ -1,8 +1,7 @@
 // How the remote picture sits in the tab: a base scale from the view mode
 // (Fit, Fill, 100%), times the user's zoom, and a pan offset when the
 // picture is larger than the stage. The single source for mapping page
-// positions to remote pixels. Ported from quick-remote web/src/view.ts;
-// here the stage is measured through callbacks (the viewer takes the
+// positions to remote pixels. The stage is measured through callbacks (the viewer takes the
 // phone keyboard's strip off the bottom) and the result is a box the
 // React component applies to the canvas.
 import type { ViewMode } from "./settings";

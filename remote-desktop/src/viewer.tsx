@@ -1,11 +1,11 @@
-// The viewer tab: connects to the running qr-host through the proxy,
+// The viewer tab: connects to the running rpc-host through the proxy,
 // decodes and draws frames, forwards input, asks for the display size and
 // scale it wants while it drives, relays clipboard, cursor shapes, audio
 // and files, pauses while hidden, and reconnects on its own.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "./Icon";
-import { Connection, type ConnState, type ConnectionHandlers, type ConnectionStats, type Engine } from "./connection";
+import type { ConnState, ConnectionHandlers, ConnectionStats } from "./connection";
 import { RpcConnection } from "./rpc/connection";
 import { createDecoder, hasWebCodecs, probeDecoders, type Decoder } from "./decoder";
 import { Renderer } from "./render";
@@ -51,7 +51,7 @@ import {
   type ViewSettings,
 } from "./settings";
 import { View, ZOOM_MAX, ZOOM_MIN, type Box } from "./view";
-import { ClipKind, DisplayKind, DisplayTarget, Kind, QualityLevel, decodeAudio, type CodecCap, type Msg } from "./qr/proto";
+import { ClipKind, DisplayKind, DisplayTarget, QualityLevel, type CodecCap, type Msg } from "./messages";
 import { codecLabel } from "./wire";
 
 export interface ViewerProps {
@@ -118,15 +118,10 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const [desktopScale, setDesktopScale] = useState(1);
   const isDriverRef = useRef(true);
   const driverRatioRef = useRef(1);
-  const wasDriverRef = useRef(false);
-  // Set on each (re)connect and cleared by the first seat message after
-  // it: only that first seat may trigger a claim-back, so a driver that is
-  // taken over later does not snatch the seat straight back.
-  const firstSeatRef = useRef(false);
   // Bumped by Retry: each rebuild of the stack gets a fresh canvas element.
   const [generation, setGeneration] = useState(0);
 
-  const connectionRef = useRef<Engine | null>(null);
+  const connectionRef = useRef<RpcConnection | null>(null);
   const decoderRef = useRef<Decoder | null>(null);
   const remoteSizeRef = useRef<Size>({ width: 0, height: 0 });
   const hostSizeRef = useRef<Size>({ width: 0, height: 0 });
@@ -415,7 +410,6 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       driverRatioRef.current = driverRatio;
       setIsDriver(you);
       setDesktopScale(scale);
-      if (you) wasDriverRef.current = true;
       layout();
       if (you && !was) {
         lastRequestRef.current = "";
@@ -510,7 +504,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     let detachInput: (() => void) | null = null;
     const port = status.port;
 
-    let conn: Engine;
+    let conn: RpcConnection;
     const handlers: ConnectionHandlers = {
       decoders: () => decoders,
       viewerId,
@@ -518,7 +512,6 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         if (filesRef.current?.onControl(msg)) return;
         switch (msg.t) {
           case "HelloAck":
-            firstSeatRef.current = true;
             infoSeenRef.current = false;
             displayKindRef.current = -1;
             lastRequestRef.current = "";
@@ -577,12 +570,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         if (seat.cursorInPicture) setCursorShape(null, 0, 0);
         applyDriver(seat.driver, seat.scalePct / 100, seat.driverRatioPct / 100);
         // A driver that lost its seat to a reconnect (a Perch restart, a
-        // network blip) takes it back: judged on the first seat after the
-        // connection opened, never on a later hand-over to another tab.
-        const first = firstSeatRef.current;
-        firstSeatRef.current = false;
-        // (rpc-host returns the seat itself, and not after someone took over.)
-        if (first && !seat.driver && wasDriverRef.current && status.engine !== "rpc") conn.claim();
+        // network blip, a reload) gets it back from the host itself.
       },
       onVideo: (frame) => {
         const { width, height } = frame.meta;
@@ -594,16 +582,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         renderer?.setSize(width, height);
         decoderRef.current?.decode(frame);
       },
-      onDatagram: (payload) => {
-        if (payload[0] !== Kind.AUDIO) return;
-        const audio = audioRef.current;
-        if (!audio) return;
-        try {
-          audio.push(decodeAudio(payload));
-        } catch {
-          // a malformed packet
-        }
-      },
+      onAudio: (packet) => audioRef.current?.push(packet),
       onFile: (chunk) => filesRef.current?.onChunk(chunk),
       onState: (state, attempt) => {
         setConnState(state);
@@ -624,17 +603,14 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         }
       },
     };
-    conn =
-      status.engine === "rpc"
-        ? new RpcConnection(port, status.token ?? "", handlers, {
-            maxKbps: status.maxKbps ?? 50000,
-            attach: status.mode === "existing",
-            current: async () => {
-              const s = await fetchStatus();
-              return s.running && s.engine === "rpc" && s.token && s.port ? { port: s.port, token: s.token } : null;
-            },
-          })
-        : new Connection(port, handlers);
+    conn = new RpcConnection(port, status.token ?? "", handlers, {
+      maxKbps: status.maxKbps ?? 50000,
+      attach: status.mode === "existing",
+      current: async () => {
+        const s = await fetchStatus();
+        return s.running && s.token && s.port ? { port: s.port, token: s.token } : null;
+      },
+    });
     connectionRef.current = conn;
     filesRef.current = createFileTransfer({
       transport: { send: (m) => conn.send(m), sendFile: (c) => conn.sendFile(c), bufferedAmount: () => conn.bufferedAmount() },
@@ -646,7 +622,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
         if (disposed) return;
         decoders = caps;
         if (caps.length === 0) {
-          setError("This browser's WebCodecs decodes none of AV1, H.265 or H.264.");
+          setError("This browser's WebCodecs decodes neither H.265 nor H.264.");
           return;
         }
         const decoder = createDecoder({
@@ -879,8 +855,6 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   };
 
   const takeOver = () => {
-    wasDriverRef.current = true;
-
     connectionRef.current?.claim();
   };
 

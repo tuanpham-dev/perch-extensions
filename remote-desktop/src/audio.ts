@@ -1,8 +1,8 @@
 // The desktop's sound: Opus packets (48 kHz stereo) decoded with WebCodecs
-// and scheduled 20 ms ahead on an AudioContext. Ported from quick-remote
-// web/src/main.ts. Browsers only let sound start from a user gesture, so
-// the pipe is created inside the toolbar button's click handler.
-import type { AudioPacket } from "./qr/proto";
+// and scheduled 20 ms ahead on an AudioContext. Browsers only let sound
+// start from a user gesture, so the pipe is created inside the toolbar
+// button's click handler.
+import type { AudioPacket } from "./messages";
 
 export class AudioPipe {
   private readonly ctx: AudioContext;
@@ -47,7 +47,7 @@ export class AudioPipe {
   }
 
   push(a: AudioPacket): void {
-    if (a.mic || this.dec.state !== "configured") return;
+    if (this.dec.state !== "configured") return;
     this.packets += 1;
     try {
       this.dec.decode(new EncodedAudioChunk({ type: "key", timestamp: a.seq * 5000, data: a.data }));

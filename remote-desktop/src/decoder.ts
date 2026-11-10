@@ -2,7 +2,7 @@
 // parameter sets (the codec string can change when the host restarts the
 // stream with another encoder). Hardware where the browser has it. There
 // is no software fallback: a browser without WebCodecs gets a banner.
-import { Codec, type CodecCap } from "./qr/proto";
+import { Codec, type CodecCap } from "./messages";
 import { codecString, type VideoFrame as WireFrame } from "./wire";
 
 /** Frames a decoder may hold before the viewer skips to the next keyframe. */
@@ -27,13 +27,11 @@ export function hasWebCodecs(): boolean {
   return typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined";
 }
 
-/** What this browser decodes, best first, as the hello carries it. Ported
- * from quick-remote web/src/main.ts (`decoderCaps`). */
+/** What this browser decodes, best first, as the hello carries it. */
 export async function probeDecoders(): Promise<CodecCap[]> {
   const out: CodecCap[] = [];
   if (!hasWebCodecs()) return out;
   const tries: [number, string][] = [
-    [Codec.AV1, "av01.0.08M.08"],
     [Codec.H265, "hev1.1.6.L153.B0"],
     [Codec.H264, "avc1.640033"],
   ];
@@ -60,7 +58,7 @@ export async function probeDecoders(): Promise<CodecCap[]> {
             break;
           }
         }
-        out.push({ codec, hw, maxWidth, maxHeight, chroma444: false });
+        out.push({ codec, hw, maxWidth, maxHeight });
         break;
       } catch {
         // unsupported here

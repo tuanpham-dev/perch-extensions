@@ -8,7 +8,7 @@ Compared with the GUI Apps extension (xpra): a whole screen as one video stream 
 
 `rpc-host` is not inside this package; it comes as a release build. Open the **Remote Desktop** sidebar tab and click **Download rpc-host**. The extension fetches the latest release from [remote-pc-releases](https://github.com/tuanpham-dev/remote-pc-releases/releases) (Linux x86_64, built on Debian 13), checks it against the release's `SHA256SUMS`, and unpacks it into `~/.local/share/perch-remote-desktop/rpc-host/`. It holds `bin/rpc-host` and a patched wlroots for its headless sway (frames on time, about 13 ms less latency; rpc-host uses it when it suits the installed sway, Debian 13's sway 1.10). When a newer version is required the button becomes **Update**.
 
-To use another build, set `remoteDesktop.serverPath`, or leave it empty and put `rpc-host` on PATH or in `~/.cargo/bin`. The setting may also name a QuickRemote `qr-host`, the engine this extension used before; the panel shows which engine runs.
+To use another build, set `remoteDesktop.serverPath`, or leave it empty and put `rpc-host` on PATH or in `~/.cargo/bin`. An older rpc-host build without the options this extension runs it with (a machine's own host service installed earlier, say) is passed over, and the panel says so.
 
 The host needs these packages (Debian and Ubuntu names). Managed mode needs sway, Xwayland, xdg-desktop-portal-wlr, PipeWire, WirePlumber and a desktop:
 
@@ -57,9 +57,9 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 | `remoteDesktop.followerFps` | `15` | Frame rate of the followers' lighter stream (1–30). |
 | `remoteDesktop.udpPort` | `0` | The UDP port native `rpc-client`s connect to from other machines; 0 keeps the host on this machine. |
 | `remoteDesktop.pixelRatio` | `auto` | Default remote pixels per CSS pixel for your devices: `auto` (each device's own ratio, capped at 2), `1`, `1.5` or `2`. Any browser can override it for itself in the view settings. |
-| `remoteDesktop.serverPath` | empty | Path to your own `rpc-host` (or a `qr-host`); empty means the downloaded one, then PATH, then `~/.cargo/bin`. |
+| `remoteDesktop.serverPath` | empty | Path to your own `rpc-host`; empty means the downloaded one, then PATH, then `~/.cargo/bin`. |
 
-`renderer`, `fps` and `dpi` apply to qr-host only. Changes apply on the next Start.
+Changes apply on the next Start.
 
 ## The viewer tab
 
@@ -81,7 +81,7 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 
 - Keyboard forwarding by physical position assumes the desktop's layout matches your keyboard; set `remoteDesktop.keyboardLayout`.
 - No microphone, gamepads or pen from the browser.
-- Existing mode: no sound yet, no clipboard on Wayland desktops, and KDE or GNOME Wayland sessions are not supported (they need a qr-host).
+- Existing mode: no sound yet, no clipboard on Wayland desktops, and KDE or GNOME Wayland sessions are not supported.
 - Pasting multi-line text into an existing desktop can lose its last line.
 - A browser keeps a downloaded file in memory until it is saved, so files from the host are limited to 512 MB there.
 

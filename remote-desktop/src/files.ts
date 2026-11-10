@@ -3,7 +3,7 @@
 // in chunks once accepted, and confirmed by the host's FileDone. A file the
 // host offers (its outbox) is accepted, collected and saved through a
 // download link, then confirmed back.
-import { type Msg } from "./qr/proto";
+import { type Msg } from "./messages";
 import { Sha256 } from "./sha256";
 import type { FileChunk } from "./wire";
 

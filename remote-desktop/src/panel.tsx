@@ -65,7 +65,9 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
     }
   };
 
-  const start = () => act(async () => setStatus(await postJson<RdStatus>("/start")));
+  // Start waits for the host (up to 20 s on the server): longer than the
+  // usual request timeout.
+  const start = () => act(async () => setStatus(await postJson<RdStatus>("/start", undefined, 45000)));
   const stop = () =>
     act(async () => {
       await postJson("/stop");
@@ -115,6 +117,7 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
       : `Managed display · ${status.desktopCommand}`;
   const sourceLabel = { setting: "from Settings", downloaded: "downloaded", path: "on PATH", cargo: "in ~/.cargo/bin" }[status.engineSource ?? "path"];
   const outdated = status.serverReason === "outdated";
+  const oldBuild = status.serverReason === "old-build";
   const canStart = status.installed && !status.running;
 
   return (
@@ -124,7 +127,7 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
         <span className="rd-panel-label">Engine</span>
         {status.engineVersion ? (
           <span>
-            {status.engine === "rpc" ? "rpc-host" : "qr-host"} {status.engineVersion} <span className="rd-panel-muted">({sourceLabel})</span>
+            rpc-host {status.engineVersion} <span className="rd-panel-muted">({sourceLabel})</span>
           </span>
         ) : (
           <span className="rd-panel-muted">rpc-host not found</span>
@@ -132,13 +135,17 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
       </div>
       {status.settingIgnored && (
         <div className="rd-panel-status">
-          Settings point at <code>{status.settingIgnored}</code>, which is neither rpc-host nor qr-host; it is
+          Settings point at <code>{status.settingIgnored}</code>, which is not rpc-host; it is
           ignored. Clear <code>remoteDesktop.serverPath</code> to silence this note.
         </div>
       )}
       {!status.installed && !downloading && (
         <div className="rd-panel-status">
-          {outdated ? (
+          {oldBuild ? (
+            <>
+              <code>{status.serverPath}</code> is an older rpc-host build (it lacks {status.lacking.join(", ")}); download the current one.
+            </>
+          ) : outdated ? (
             <>
               The engine at <code>{status.serverPath}</code> is {status.engineVersion}; this extension needs {status.requiredVersion} or newer.
             </>
@@ -207,9 +214,7 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
           </div>
           {status.viewers > 1 && (
             <div className="rd-panel-muted">
-              {status.engine === "rpc"
-                ? `${status.viewers} viewers share this desktop: one drives (its size, keyboard and mouse); the others watch a lighter stream and can take over.`
-                : `${status.viewers} viewers share this desktop; one drives its size and scale, the others follow.`}
+              {status.viewers} viewers share this desktop: one drives (its size, keyboard and mouse); the others watch a lighter stream and can take over.
             </div>
           )}
           {status.mode === "managed" && (
