@@ -33,8 +33,8 @@ const CODECS = ["auto", "h264", "h265"];
 // The oldest rpc-host this extension speaks to, and the run options it
 // needs (an older build of the same version, such as a machine's own host
 // service installed earlier, lacks them and is passed over).
-const REQUIRED_VERSION = "0.1.0";
-const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach"];
+const REQUIRED_VERSION = "0.2.0";
+const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions"];
 // Its private desktop's folders: the runtime folder holds the session's
 // sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token
 // (0600) and the desktop's own config; the state folder keeps paired
@@ -126,8 +126,10 @@ const DEFAULTS = {
   bitrateKbps: 40000,
   codec: "auto",
   serverPath: "",
-  // rpc-host: the UDP port native clients connect to (0: this machine only).
-  udpPort: 0,
+  // rpc-host: the UDP port native clients on the network connect to (0:
+  // this machine only). 47998 is the always-on service's, 47999 the
+  // rendezvous server's.
+  udpPort: 48000,
   followerFps: 15,
 };
 
@@ -461,6 +463,7 @@ const NOT_RUNNING = {
   hostRenderer: null,
   source: null,
   cursorInPicture: false,
+  lan: null,
   displayEnv: null,
 };
 
@@ -478,6 +481,11 @@ function fromHostStatus(port, status) {
     hostRenderer: status.renderer === "gpu" || status.renderer === "software" ? status.renderer : null,
     source: typeof status.source === "string" ? status.source : null,
     cursorInPicture: status.cursorInPicture === true,
+    // Where native clients on the network reach it (null: this machine only).
+    lan:
+      status.lan && typeof status.lan.name === "string" && Number.isInteger(status.lan.port)
+        ? { name: status.lan.name, port: status.lan.port }
+        : null,
     // Everything the host says an app on the managed display needs: the X
     // and Wayland displays, the display's own runtime directory and session
     // bus (sound, portals, xfconf), and the toolkit scale variables.
@@ -564,6 +572,24 @@ export function activate({ router, log, getSettings, host }) {
       res.json(await statusBody(settings, binary, running));
     } catch (err) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // A PIN for pairing a native client (open for 2 minutes).
+  router.post("/pin", async (_req, res) => {
+    try {
+      const running = await getRunningInfo();
+      if (!running.running) {
+        res.status(409).json({ error: "Remote Desktop is not running." });
+        return;
+      }
+      const token = await rpcToken(running.port);
+      const r = await fetch(`http://127.0.0.1:${running.port}/pin`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) });
+      if (!r.ok) throw new Error(`rpc-host answered ${r.status}`);
+      const body = await r.json();
+      res.json({ pin: String(body.pin), seconds: Number(body.seconds) || 120 });
+    } catch (err) {
+      res.status(502).json({ error: `No PIN: ${err.message}` });
     }
   });
 
@@ -657,7 +683,11 @@ export function activate({ router, log, getSettings, host }) {
       "--runtime-dir", runtime,
       "--state-dir", RPC_STATE_DIR,
       "--listen", settings.udpPort ? `0.0.0.0:${settings.udpPort}` : "127.0.0.1:0",
-      "--no-mdns",
+      // On the network it is found by name (mDNS); a Stop ends native
+      // viewers' sessions (they don't retry).
+      "--name", `${os.hostname()} (Perch)`,
+      ...(settings.udpPort ? [] : ["--no-mdns"]),
+      "--stop-ends-sessions",
       "--no-power-hold",
       "--input", "virtual",
       "--ws-listen", `127.0.0.1:${port}`,

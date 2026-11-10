@@ -592,3 +592,18 @@ details.rd-popover-section > summary {
 .rd-keys-editor li span {
   flex: 1;
 }
+
+.rd-panel-native,
+.rd-panel-pin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rd-pin {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  user-select: all;
+}

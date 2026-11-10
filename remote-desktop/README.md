@@ -35,6 +35,17 @@ Any number of tabs or browsers can view the same desktop at once. One viewer is 
 
 The desktop scale follows the driver's pixel ratio: on a managed display the host sets XFCE's window scaling to match, which GTK apps pick up at once.
 
+## Native clients
+
+The remote-pc viewer, `rpc-client` (from the same [releases](https://github.com/tuanpham-dev/remote-pc-releases/releases)), can join the desktop from another Linux machine: a native window with the lowest latency, files by drag and drop, and sound. While the desktop runs, the panel shows its network name (`<hostname> (Perch)`) and UDP port. **Pair a native client** shows a PIN for two minutes and the commands to type on the other machine:
+
+```sh
+rpc-client pair "tuan-server (Perch)" --pin 123456     # once; kept across Starts
+rpc-client connect "tuan-server (Perch)"
+```
+
+It joins like a tab: the driver, or a follower with a **Take over** button in its toolbar. When the desktop is stopped, the client says the session ended (it doesn't keep retrying). If it can't reach the desktop, open the UDP port on this machine (`sudo ufw allow 48000/udp`). Set `remoteDesktop.udpPort` to 0 to keep the desktop to this machine's browser tabs.
+
 ## Managed and existing displays
 
 - **Managed** (default): the host starts a headless sway on the GPU, a rootful Xwayland inside it with the keyboard layout applied, and the desktop command on that. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later. Everything the host started ends with it, so **Stop** leaves no sway, Xwayland or desktop behind.
@@ -55,7 +66,7 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 | `remoteDesktop.bitrateKbps` | `40000` | Upper bitrate limit; the stream adapts below it, and the viewer's quality preset caps it further. |
 | `remoteDesktop.codec` | `auto` | `auto` (H.264, which every browser decodes), `h264` or `h265`. All viewers share the codec. |
 | `remoteDesktop.followerFps` | `15` | Frame rate of the followers' lighter stream (1–30). |
-| `remoteDesktop.udpPort` | `0` | The UDP port native `rpc-client`s connect to from other machines; 0 keeps the host on this machine. |
+| `remoteDesktop.udpPort` | `48000` | The UDP port native `rpc-client`s on other machines connect to (open it in the firewall); 0 keeps the desktop on this machine. |
 | `remoteDesktop.pixelRatio` | `auto` | Default remote pixels per CSS pixel for your devices: `auto` (each device's own ratio, capped at 2), `1`, `1.5` or `2`. Any browser can override it for itself in the view settings. |
 | `remoteDesktop.serverPath` | empty | Path to your own `rpc-host`; empty means the downloaded one, then PATH, then `~/.cargo/bin`. |
 

@@ -2,7 +2,7 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "displayName": "Remote Desktop",
   "description": "A Linux desktop streamed into a tab as low-latency video (H.265 or H.264 from the GPU) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing X11 or Wayland desktop (no audio there yet, and no clipboard on Wayland). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
   "icon": "./icon.svg",
@@ -100,10 +100,10 @@
         },
         "remoteDesktop.udpPort": {
           "type": "integer",
-          "default": 0,
+          "default": 48000,
           "minimum": 0,
           "maximum": 65535,
-          "description": "the UDP port native remote-pc clients connect to from other machines. 0 keeps it on this machine (browser tabs don't need it). Takes effect on the next Start."
+          "description": "The UDP port native remote-pc clients (rpc-client) on other machines connect to; the panel shows it with a PIN for pairing. Open it in the firewall. 0 keeps the desktop on this machine (browser tabs don't need the port). Takes effect on the next Start."
         },
         "remoteDesktop.followerFps": {
           "type": "integer",

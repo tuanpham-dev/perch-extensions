@@ -48,6 +48,9 @@ export interface RdStatus {
   hostRenderer: "gpu" | "software" | null;
   source: string | null;
   cursorInPicture: boolean;
+  /** Where native clients on the network reach the desktop (its mDNS name
+   * and UDP port); null when it listens on this machine only. */
+  lan: { name: string; port: number } | null;
   /** Host packages managed mode needs that are not installed. */
   missing: string[];
   /** The managed display's environment, for Launch. */

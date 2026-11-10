@@ -18,6 +18,17 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [command, setCommand] = useState("");
+  const [pin, setPin] = useState<{ pin: string; until: number } | null>(null);
+  const [now, setNow] = useState(Date.now());
+  // The PIN's countdown.
+  useEffect(() => {
+    if (!pin) return;
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+      if (Date.now() >= pin.until) setPin(null);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [pin]);
 
   const poll = useCallback(() => {
     fetchStatus()
@@ -76,6 +87,12 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
   const startDownload = () =>
     act(async () => {
       setDownload(await postJson<DownloadStatus>("/download"));
+    });
+  const pairDevice = () =>
+    act(async () => {
+      const r = await postJson<{ pin: string; seconds: number }>("/pin");
+      setPin({ pin: r.pin, until: Date.now() + r.seconds * 1000 });
+      setNow(Date.now());
     });
   const openDisplay = () => getHost().openViewerTab("remoteDesktopView", "remote-desktop://display", { title: "Remote Desktop" });
   const launch = (e: React.FormEvent) => {
@@ -216,6 +233,32 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
             <div className="rd-panel-muted">
               {status.viewers} viewers share this desktop: one drives (its size, keyboard and mouse); the others watch a lighter stream and can take over.
             </div>
+          )}
+          {status.lan ? (
+            <div className="rd-panel-native">
+              <div className="rd-panel-muted">
+                Native clients: <strong>{status.lan.name}</strong>, UDP port {status.lan.port}
+              </div>
+              {pin ? (
+                <div className="rd-panel-pin">
+                  <div>
+                    PIN <code className="rd-pin">{pin.pin}</code>{" "}
+                    <span className="rd-panel-muted">({Math.max(0, Math.round((pin.until - now) / 1000))} s)</span>
+                  </div>
+                  <code className="rd-panel-code">rpc-client pair "{status.lan.name}" --pin {pin.pin}</code>
+                  <div className="rd-panel-muted">
+                    Then <code>rpc-client connect "{status.lan.name}"</code>. The pairing is kept across Starts. If the client can't reach
+                    this machine, open the port here: <code>sudo ufw allow {status.lan.port}/udp</code>
+                  </div>
+                </div>
+              ) : (
+                <button className="rd-btn" disabled={busy} onClick={() => void pairDevice()}>
+                  <Icon name="key" /> Pair a native client
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="rd-panel-muted">Native clients: off (set remoteDesktop.udpPort to a port to let rpc-client on other machines connect).</div>
           )}
           {status.mode === "managed" && (
             <form className="rd-launch-form" onSubmit={launch}>
