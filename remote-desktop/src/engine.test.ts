@@ -16,7 +16,7 @@ const { activate } = await import("../server.js");
 // older one must be passed over with why, never started to fail.
 function fakeHost(dir: string, name: string, help: string): string {
   const p = path.join(dir, name);
-  writeFileSync(p, `#!/bin/sh\nif [ "$1" = --version ]; then echo "rpc-host 0.3.0"; exit 0; fi\nif [ "$1" = run ]; then echo "${help}"; exit 0; fi\nexit 2\n`);
+  writeFileSync(p, `#!/bin/sh\nif [ "$1" = --version ]; then echo "rpc-host 0.4.0"; exit 0; fi\nif [ "$1" = run ]; then echo "${help}"; exit 0; fi\nexit 2\n`);
   chmodSync(p, 0o755);
   return p;
 }

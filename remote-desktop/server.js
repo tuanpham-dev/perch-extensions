@@ -36,7 +36,7 @@ const CODECS = ["auto", "h264", "h265"];
 // The oldest rpc-host this extension speaks to, and the run options it
 // needs (an older build of the same version, such as a machine's own host
 // service installed earlier, lacks them and is passed over).
-const REQUIRED_VERSION = "0.3.0";
+const REQUIRED_VERSION = "0.4.0";
 const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer"];
 // Its private desktop's folders: the runtime folder holds the session's
 // sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token

@@ -49,7 +49,7 @@ It joins like a tab: the driver, or a follower with a **Take over** button in it
 ## Managed and existing displays
 
 - **Managed** (default): the host starts a headless sway on the GPU, a rootful Xwayland inside it with the keyboard layout applied, and the desktop command on that. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later. Everything the host started ends with it, so **Stop** leaves no sway, Xwayland or desktop behind.
-- **Existing**: the host attaches to the desktop that already runs: an X display (captured through shared memory, input through XTEST) or a wlroots compositor such as sway (captured through screencopy, input through its virtual keyboard and pointer, so no extra permissions are needed). The size is never changed; a screen larger than the tab is scaled down to fit. Empty `remoteDesktop.display` finds the running desktop, skipping the host's own managed ones; set it to force one (`:0`, or a socket such as `wayland-1`). No sound yet in this mode, and no clipboard on a Wayland desktop. Launch is not offered.
+- **Existing**: the host attaches to the desktop that already runs: an X display (captured through shared memory, input through XTEST), a wlroots compositor such as sway, GNOME (through Mutter's remote desktop interface) or KDE Plasma (through its desktop portal, which asks its user once) (captured through screencopy, input through its virtual keyboard and pointer, so no extra permissions are needed). The size is never changed; a screen larger than the tab is scaled down to fit. Empty `remoteDesktop.display` finds the running desktop, skipping the host's own managed ones; set it to force one (`:0`, a socket such as `wayland-1`, `gnome` or `kde`). Its sound is your session's own (what its default output plays), and the clipboard is shared on X11 and on wlroots desktops (through wlr-data-control). Launch is not offered.
 
 ## Settings
 
@@ -58,7 +58,7 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 | Setting | Default | Description |
 |---|---|---|
 | `remoteDesktop.mode` | `managed` | `managed` starts a virtual display and a desktop; `existing` attaches to the running one. |
-| `remoteDesktop.display` | empty | Existing mode: the desktop to attach to (`:0`, `wayland-1`); empty finds it. |
+| `remoteDesktop.display` | empty | Existing mode: the desktop to attach to (`:0`, `wayland-1`, `gnome`, `kde`); empty finds it. |
 | `remoteDesktop.desktopCommand` | `xfce4-session` | Managed: the desktop session command. |
 | `remoteDesktop.useGlobalConfig` | `false` | Managed: run the desktop with your own `~/.config` instead of a fresh config directory each Start. |
 | `remoteDesktop.keyboardLayout` | `us` | XKB layout for the virtual display (and the keyboard added to an existing Wayland desktop). |
@@ -94,8 +94,7 @@ Changes apply on the next Start.
 
 - Keyboard forwarding by physical position assumes the desktop's layout matches your keyboard; set `remoteDesktop.keyboardLayout`.
 - No microphone, gamepads or pen from the browser.
-- Existing mode: no sound yet, no clipboard on Wayland desktops, and KDE or GNOME Wayland sessions are not supported.
-- Pasting multi-line text into an existing desktop can lose its last line.
+- Existing mode on GNOME and KDE: no shared clipboard yet; KDE asks its user to approve the first time (the approval is remembered).
 - A browser keeps a downloaded file in memory until it is saved, so files from the host are limited to 512 MB there.
 
 ## When something is off

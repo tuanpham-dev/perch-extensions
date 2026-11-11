@@ -2,9 +2,9 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "4.3.1",
+  "version": "4.4.0",
   "displayName": "Remote Desktop",
-  "description": "A Linux desktop streamed into a tab as low-latency video (H.265 or H.264 from the GPU) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing X11 or Wayland desktop (no audio there yet, and no clipboard on Wayland). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
+  "description": "A Linux desktop streamed into a tab as low-latency video (H.265 or H.264 from the GPU) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing desktop (X11, wlroots, GNOME or KDE, with its sound). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
   "icon": "./icon.svg",
   "perch": {
     "client": "./dist/client.js",
@@ -30,7 +30,7 @@
         "remoteDesktop.display": {
           "type": "string",
           "default": "",
-          "description": "Existing mode only: the desktop to attach to: an X display, e.g. \":0\", or with rpc-host also a wlroots compositor's socket, e.g. \"wayland-1\". Leave empty to detect the running desktop (Wayland or X11)."
+          "description": "Existing mode only: the desktop to attach to: an X display, e.g. \":0\", a wlroots compositor's socket, e.g. \"wayland-1\", \"gnome\" or \"kde\". Leave empty to detect the running desktop."
         },
         "remoteDesktop.desktopCommand": {
           "type": "string",
