@@ -390,6 +390,31 @@ const ARCH_ASSET = { x64: "rpc-host-linux-x86_64.tar.gz", arm64: "rpc-host-linux
 
 const download = { state: "idle", percent: 0, error: null, version: null };
 
+// The newest release, looked up at most every 6 hours (or when asked): a
+// downloaded engine older than it can be updated from the panel, whatever
+// this extension requires.
+const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+const latest = { version: null, checkedAt: 0, error: null, checking: null };
+
+function checkLatest(force) {
+  if (latest.checking) return latest.checking;
+  if (!force && Date.now() - latest.checkedAt < UPDATE_CHECK_MS) return Promise.resolve();
+  latest.checking = fetchJson(RELEASE_API, AbortSignal.timeout(10000))
+    .then((r) => {
+      const v = String(r?.tag_name ?? "").replace(/^v/, "");
+      latest.version = parseVersion(v) ? v : null;
+      latest.error = null;
+    })
+    .catch((err) => {
+      latest.error = err.message;
+    })
+    .finally(() => {
+      latest.checkedAt = Date.now();
+      latest.checking = null;
+    });
+  return latest.checking;
+}
+
 async function fetchJson(url, signal) {
   const res = await fetch(url, { signal, headers: { accept: "application/vnd.github+json", "user-agent": "perch-remote-desktop" } });
   if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
@@ -614,8 +639,15 @@ export function activate({ router, log, getSettings, host }) {
     // The token goes to this user's own viewer only, through Perch's
     // authenticated API.
     const token = running.running ? await rpcToken(running.port) : null;
+    // In the background: the panel's next poll shows what it found.
+    void checkLatest(false);
+    const found = parseVersion(binary.version ?? "");
+    const newest = parseVersion(latest.version ?? "");
+    const updateAvailable = binary.source === "downloaded" && binary.installed && !!found && !!newest && versionAtLeast(newest, found) && newest.join(".") !== found.join(".");
     return {
       token,
+      latestVersion: latest.version,
+      updateAvailable,
       maxKbps: settings.bitrateKbps,
       installed: binary.installed,
       serverPath: binary.path,
@@ -660,6 +692,12 @@ export function activate({ router, log, getSettings, host }) {
     } catch (err) {
       res.status(502).json({ error: `No PIN: ${err.message}` });
     }
+  });
+
+  // Look for a newer release now (the panel's "Check for updates").
+  router.post("/check-update", async (_req, res) => {
+    await checkLatest(true);
+    res.json({ latestVersion: latest.version, error: latest.error });
   });
 
   router.post("/download", async (_req, res) => {

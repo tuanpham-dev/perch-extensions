@@ -88,6 +88,13 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
     act(async () => {
       setDownload(await postJson<DownloadStatus>("/download"));
     });
+  const [checkNote, setCheckNote] = useState<string | null>(null);
+  const checkUpdate = () =>
+    act(async () => {
+      const r = await postJson<{ latestVersion: string | null; error: string | null }>("/check-update", undefined, 15000);
+      setCheckNote(r.error ? `Couldn't check: ${r.error}` : r.latestVersion ? `Newest release: ${r.latestVersion}` : "No release found");
+      poll();
+    });
   const pairDevice = () =>
     act(async () => {
       const r = await postJson<{ pin: string; seconds: number }>("/pin");
@@ -182,6 +189,21 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
           <button className="rd-btn rd-btn-primary" disabled={busy || downloading} onClick={() => void startDownload()}>
             <Icon name="cloud-download" /> {outdated ? `Update to ${status.requiredVersion}` : "Download rpc-host"}
           </button>
+        </div>
+      )}
+      {status.installed && status.engineSource === "downloaded" && !downloading && (
+        <div className="rd-panel-row">
+          {status.updateAvailable ? (
+            <button className="rd-btn" disabled={busy} onClick={() => void startDownload()} title={status.running ? "The new engine runs from the next Start" : undefined}>
+              <Icon name="cloud-download" /> Update to {status.latestVersion}
+              {status.running ? " (next Start)" : ""}
+            </button>
+          ) : (
+            <button className="rd-btn rd-btn-link" disabled={busy} onClick={() => void checkUpdate()}>
+              Check for updates
+            </button>
+          )}
+          {checkNote && !status.updateAvailable && <span className="rd-panel-muted">{checkNote}</span>}
         </div>
       )}
       {downloading && (

@@ -607,3 +607,15 @@ details.rd-popover-section > summary {
   letter-spacing: 0.12em;
   user-select: all;
 }
+
+.rd-btn-link {
+  background: transparent;
+  border-color: transparent;
+  padding-left: 0;
+  opacity: 0.8;
+}
+
+.rd-btn-link:hover:not(:disabled) {
+  opacity: 1;
+  text-decoration: underline;
+}

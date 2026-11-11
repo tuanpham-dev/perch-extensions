@@ -281,7 +281,17 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     kbInsetRef.current = inset;
     setKbInset(inset);
     if (remoteSizeRef.current.width === 0 || hostSizeRef.current.width === 0) return;
-    view.ratio = (isDriverRef.current ? pixelRatioRef.current : driverRatioRef.current) || 1;
+    let ratio = (isDriverRef.current ? pixelRatioRef.current : driverRatioRef.current) || 1;
+    // The host may give a smaller desktop than this tab asked for (software
+    // encoding stops at 4K worth of pixels; the GPU at 5K): its picture
+    // then fills the tab, enlarged by that much, as the tab's own size would.
+    if (isDriverRef.current && viewSettingsRef.current.sizeMode === "follow") {
+      const host = hostSizeRef.current;
+      const [ww, wh] = followSize(host.width, host.height, ratio);
+      const f = Math.min(remoteSizeRef.current.width / ww, remoteSizeRef.current.height / wh);
+      if (f > 0 && f < 0.97) ratio *= f;
+    }
+    view.ratio = ratio;
     view.mode = viewSettingsRef.current.view;
     view.zoomLocked = viewSettingsRef.current.lockZoom;
     view.picture = { ...remoteSizeRef.current };
