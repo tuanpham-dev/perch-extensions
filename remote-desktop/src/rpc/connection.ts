@@ -439,7 +439,7 @@ export class RpcConnection {
         // In the picture only when a follower can't draw the driver's pointer
         // (an older native one); otherwise the driver draws its own and
         // followers get CursorPos.
-        h.onSeat({ driver: m.driver, scalePct: m.scale || 100, driverRatioPct: m.scale || 100, viewers: m.viewers, cursorInPicture: m.inPicture });
+        h.onSeat({ driver: m.driver, driverName: m.driverName, width: m.width, height: m.height, scalePct: m.scale || 100, driverRatioPct: m.scale || 100, viewers: m.viewers, cursorInPicture: m.inPicture });
         return;
       case "CursorPos":
         h.onCursorPos?.(m.x / 65535, m.y / 65535, this.desktopWidth > 0 && this.size.width > 0 ? this.size.width / this.desktopWidth : 1);

@@ -31,7 +31,7 @@ The tab pauses the stream while it is hidden (another Perch tab active, or the b
 
 ## Several viewers: one driver
 
-Any number of tabs or browsers can view the same desktop at once. One viewer is the **driver**: the desktop follows its size and pixel ratio, and only its keyboard and mouse reach the desktop. Every other tab is a follower: it shows a banner ("Following another viewer…") with a **Take over** button, watches a lighter stream of the same picture (at most 1280×720 worth of pixels, `remoteDesktop.followerFps` frames per second, and a fraction of the driver's bandwidth, so a phone watching costs the driver little), and draws the driver's pointer where it is. A driver tab that reloads gets its seat back, unless someone took over meanwhile.
+Any number of tabs or browsers can view the same desktop at once. One viewer is the **driver**: the desktop follows its size and pixel ratio, and only its keyboard and mouse reach the desktop. Every other tab is a follower: it shows a banner ("Following <who> at <size>…") with a **Take over** button, watches a lighter stream of the same picture (at most 1920×1080 worth of pixels by default, `remoteDesktop.followerSize`; `remoteDesktop.followerFps` frames per second, and a fraction of the driver's bandwidth, so a phone watching costs the driver little), and draws the driver's pointer where it is. A driver tab that reloads gets its seat back, unless someone took over meanwhile.
 
 The desktop scale follows the driver's pixel ratio: on a managed display the host sets XFCE's window scaling to match, which GTK apps pick up at once.
 
@@ -66,6 +66,7 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 | `remoteDesktop.bitrateKbps` | `40000` | Upper bitrate limit; the stream adapts below it, and the viewer's quality preset caps it further. |
 | `remoteDesktop.codec` | `auto` | `auto` (H.264, which every browser decodes), `h264` or `h265`. All viewers share the codec. |
 | `remoteDesktop.followerFps` | `15` | Frame rate of the followers' lighter stream (1–30). |
+| `remoteDesktop.followerSize` | `1080p` | Size of the followers' stream: `720p`, `1080p`, `1440p` or `full` (the driver's resolution; the most encoding and bandwidth). |
 | `remoteDesktop.udpPort` | `48000` | The UDP port native `rpc-client`s on other machines connect to (open it in the firewall); 0 keeps the desktop on this machine. |
 | `remoteDesktop.pixelRatio` | `auto` | Default remote pixels per CSS pixel for your devices: `auto` (each device's own ratio, capped at 2), `1`, `1.5` or `2`. Any browser can override it for itself in the view settings. |
 | `remoteDesktop.serverPath` | empty | Path to your own `rpc-host`; empty means the downloaded one, then PATH, then `~/.cargo/bin`. |

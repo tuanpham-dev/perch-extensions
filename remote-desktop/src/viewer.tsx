@@ -98,6 +98,9 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
   const [remoteSize, setRemoteSize] = useState<Size>({ width: 0, height: 0 });
   const [canvasBox, setCanvasBox] = useState<Box | null>(null);
   const [viewers, setViewers] = useState(0);
+  // Who drives and the desktop's size, from the host (a follower's own
+  // stream is smaller).
+  const [driverInfo, setDriverInfo] = useState<{ name: string; width: number; height: number }>({ name: "", width: 0, height: 0 });
   const [clipboardPending, setClipboardPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -566,6 +569,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       onSeat: (seat) => {
         if (seat.driver) setFollowPointer(null);
         setViewers(seat.viewers);
+        setDriverInfo({ name: seat.driverName, width: seat.width, height: seat.height });
         setCursorInPicture(seat.cursorInPicture);
         if (seat.cursorInPicture) setCursorShape(null, 0, 0);
         applyDriver(seat.driver, seat.scalePct / 100, seat.driverRatioPct / 100);
@@ -1252,7 +1256,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
       )}
       {!isDriver && connState === "open" && (
         <div className="rd-view-follow">
-          Following another viewer at {remoteSize.width}x{remoteSize.height}, scale {desktopScale}x.
+          Following {driverInfo.name || "another viewer"} at {driverInfo.width || remoteSize.width}x{driverInfo.height || remoteSize.height}, scale {desktopScale}x.
           <button className="rd-btn rd-btn-small" onClick={takeOver}>
             Take over
           </button>

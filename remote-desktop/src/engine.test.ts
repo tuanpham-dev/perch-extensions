@@ -3,14 +3,20 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { it } from "node:test";
-import { activate } from "../server.js";
+
+// A home and PATH of its own: the machine's downloaded or installed
+// rpc-host must not stand in for the fakes (server.js reads HOME on load).
+const home = mkdtempSync(path.join(os.tmpdir(), "rd-engine-home-"));
+process.env.HOME = home;
+process.env.PATH = "/nonexistent";
+const { activate } = await import("../server.js");
 
 // Two rpc-hosts of the same version: an older build (a machine's own host
 // service installed before the browser gateway) and a current one. The
 // older one must be passed over with why, never started to fail.
 function fakeHost(dir: string, name: string, help: string): string {
   const p = path.join(dir, name);
-  writeFileSync(p, `#!/bin/sh\nif [ "$1" = --version ]; then echo "rpc-host 0.2.0"; exit 0; fi\nif [ "$1" = run ]; then echo "${help}"; exit 0; fi\nexit 2\n`);
+  writeFileSync(p, `#!/bin/sh\nif [ "$1" = --version ]; then echo "rpc-host 0.2.1"; exit 0; fi\nif [ "$1" = run ]; then echo "${help}"; exit 0; fi\nexit 2\n`);
   chmodSync(p, 0o755);
   return p;
 }
@@ -19,7 +25,7 @@ it("passes over an older rpc-host build and says what it lacks", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "rd-engine-"));
   try {
     const old = fakeHost(dir, "old", "Usage: rpc-host run [OPTIONS] --listen --source");
-    const current = fakeHost(dir, "current", "Usage: rpc-host run [OPTIONS] --ws-listen --follower-fps --attach --stop-ends-sessions");
+    const current = fakeHost(dir, "current", "Usage: rpc-host run [OPTIONS] --ws-listen --follower-fps --attach --stop-ends-sessions --follower-size");
     let serverPath = old;
     const routes = new Map<string, (req: unknown, res: unknown) => Promise<void>>();
     const router = { get: (p: string, fn: never) => routes.set(`GET ${p}`, fn), post: (p: string, fn: never) => routes.set(`POST ${p}`, fn) };
@@ -35,7 +41,7 @@ it("passes over an older rpc-host build and says what it lacks", async () => {
     let s = (await call("GET /status")).body;
     assert.equal(s.installed, false);
     assert.equal(s.serverReason, "old-build");
-    assert.deepEqual(s.lacking, ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions"]);
+    assert.deepEqual(s.lacking, ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size"]);
     // Start refuses at once, naming the build and what it lacks.
     const started = await call("POST /start");
     assert.equal(started.code, 400);

@@ -6,6 +6,11 @@ import type { FileChunk, VideoFrame } from "./wire";
 /** Who drives and how many watch (from the host's Seat). */
 export interface Seat {
   driver: boolean;
+  /** Who drives, and the desktop's size (not this tab's stream: a
+   * follower watches a lighter one). */
+  driverName: string;
+  width: number;
+  height: number;
   scalePct: number;
   driverRatioPct: number;
   viewers: number;

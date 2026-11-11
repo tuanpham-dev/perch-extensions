@@ -33,8 +33,8 @@ const CODECS = ["auto", "h264", "h265"];
 // The oldest rpc-host this extension speaks to, and the run options it
 // needs (an older build of the same version, such as a machine's own host
 // service installed earlier, lacks them and is passed over).
-const REQUIRED_VERSION = "0.2.0";
-const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions"];
+const REQUIRED_VERSION = "0.2.1";
+const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size"];
 // Its private desktop's folders: the runtime folder holds the session's
 // sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token
 // (0600) and the desktop's own config; the state folder keeps paired
@@ -131,7 +131,9 @@ const DEFAULTS = {
   // rendezvous server's.
   udpPort: 48000,
   followerFps: 15,
+  followerSize: "1080p",
 };
+const FOLLOWER_SIZES = { "720p": "720", "1080p": "1080", "1440p": "1440", full: "full" };
 
 // Environment for a toolkit started at the desktop's current scale: GTK
 // takes an integer window scale plus a fractional font scale, Qt one factor.
@@ -268,6 +270,7 @@ function readSettings(raw) {
     serverPath: String(raw["remoteDesktop.serverPath"] ?? "").trim(),
     udpPort: Math.max(0, Math.min(65535, Number(get("udpPort", DEFAULTS.udpPort)) || 0)),
     followerFps: Math.max(1, Math.min(30, Math.round(Number(get("followerFps", DEFAULTS.followerFps)) || DEFAULTS.followerFps))),
+    followerSize: Object.hasOwn(FOLLOWER_SIZES, get("followerSize", DEFAULTS.followerSize)) ? get("followerSize", DEFAULTS.followerSize) : DEFAULTS.followerSize,
   };
 }
 
@@ -695,6 +698,7 @@ export function activate({ router, log, getSettings, host }) {
       "--keyboard-layout", settings.keyboardLayout,
       "--max-kbps", String(settings.bitrateKbps),
       "--follower-fps", String(settings.followerFps),
+      "--follower-size", FOLLOWER_SIZES[settings.followerSize],
     ];
     if (attach) {
       // The desktop already on this machine (X11 or a wlroots compositor;
