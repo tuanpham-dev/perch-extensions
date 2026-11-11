@@ -1,6 +1,6 @@
 # Remote Desktop
 
-A Linux desktop inside a Perch tab, streamed as low-latency video with full keyboard, mouse, clipboard, files, cursor and audio. In managed mode the desktop is a virtual display that follows the size and scale of your tab, so apps reflow like they would on a real monitor; in existing mode it attaches to the desktop already running on the machine (X11, or a wlroots compositor such as sway). It is powered by [remote-pc](https://github.com/tuanpham-dev/remote-pc-releases)'s host, `rpc-host`, which encodes on the GPU with VA-API (H.264 and H.265), or on a machine without a usable GPU on the CPU with OpenH264 (H.264, up to 3840x2160 at 30 fps), and serves Perch over a loopback WebSocket that Perch's own proxy carries.
+A Linux desktop inside a Perch tab, streamed as low-latency video with full keyboard, mouse, clipboard, files, cursor and audio. In managed mode the desktop is a virtual display that follows the size and scale of your tab, so apps reflow like they would on a real monitor; in existing mode it attaches to the desktop already running on the machine (X11, a wlroots compositor such as sway, GNOME or KDE Plasma). It is powered by [remote-pc](https://github.com/tuanpham-dev/remote-pc-releases)'s host, `rpc-host`, which encodes on the GPU with VA-API (H.264 and H.265), or on a machine without a usable GPU on the CPU with OpenH264 (H.264, up to 3840x2160 at 30 fps), and serves Perch over a loopback WebSocket that Perch's own proxy carries.
 
 Compared with the GUI Apps extension (xpra): a whole screen as one video stream instead of per-window image updates, hardware-decoded in the browser, lower and steadier latency for scrolling, animation and video, one cursor instead of two, and every key reaching the desktop. GUI Apps remains the better fit when you want individual app windows composited into your own desktop.
 
@@ -49,7 +49,7 @@ It joins like a tab: the driver, or a follower with a **Take over** button in it
 ## Managed and existing displays
 
 - **Managed** (default): the host starts a headless sway on the GPU, a rootful Xwayland inside it with the keyboard layout applied, and the desktop command on that. The display resizes to the tab: drag the sidebar or resize the window and the desktop reflows a moment later. Everything the host started ends with it, so **Stop** leaves no sway, Xwayland or desktop behind.
-- **Existing**: the host attaches to the desktop that already runs: an X display (captured through shared memory, input through XTEST), a wlroots compositor such as sway, GNOME (through Mutter's remote desktop interface) or KDE Plasma (through its desktop portal, which asks its user once) (captured through screencopy, input through its virtual keyboard and pointer, so no extra permissions are needed). The size is never changed; a screen larger than the tab is scaled down to fit. Empty `remoteDesktop.display` finds the running desktop, skipping the host's own managed ones; set it to force one (`:0`, a socket such as `wayland-1`, `gnome` or `kde`). Its sound is your session's own (what its default output plays), and the clipboard is shared on X11 and on wlroots desktops (through wlr-data-control). Launch is not offered.
+- **Existing**: the host attaches to the desktop that already runs: an X display (captured through shared memory, input through XTEST), a wlroots compositor such as sway (captured through screencopy, input through its virtual keyboard and pointer, so no extra permissions are needed), GNOME (through Mutter's remote desktop interface, no prompt) or KDE Plasma (through its desktop portal, which asks its user once); GNOME's and KDE's screens arrive as GPU buffers, without a copy, when the GPU encodes. The size is never changed; a screen larger than the tab is scaled down to fit. Empty `remoteDesktop.display` finds the running desktop, skipping the host's own managed ones; set it to force one (`:0`, a socket such as `wayland-1`, `gnome` or `kde`). Its sound is your session's own (what its default output plays), and the clipboard is shared on all of them (on wlroots and KDE through wlr-data-control, on GNOME through Mutter). Launch is not offered.
 
 ## Settings
 
@@ -94,7 +94,7 @@ Changes apply on the next Start.
 
 - Keyboard forwarding by physical position assumes the desktop's layout matches your keyboard; set `remoteDesktop.keyboardLayout`.
 - No microphone, gamepads or pen from the browser.
-- Existing mode on GNOME and KDE: no shared clipboard yet; KDE asks its user to approve the first time (the approval is remembered).
+- Existing mode on KDE: its user approves sharing the first time (the approval is remembered).
 - A browser keeps a downloaded file in memory until it is saved, so files from the host are limited to 512 MB there.
 
 ## When something is off
