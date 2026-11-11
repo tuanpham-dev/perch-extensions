@@ -610,6 +610,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
     conn = new RpcConnection(port, status.token ?? "", handlers, {
       maxKbps: status.maxKbps ?? 50000,
       attach: status.mode === "existing",
+      encoder: status.encoder,
       current: async () => {
         const s = await fetchStatus();
         return s.running && s.token && s.port ? { port: s.port, token: s.token } : null;
@@ -642,6 +643,7 @@ export function RemoteDesktopView({ active, toolbarTarget }: ViewerProps) {
             conn.reportLost();
             conn.send({ t: "KeyframeReq", stream: 0 });
           },
+          onUnsupported: (message) => setError(message),
         });
         decoderRef.current = decoder;
         renderer = new Renderer(canvas);

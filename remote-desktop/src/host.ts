@@ -51,6 +51,9 @@ export interface RdStatus {
   /** Where native clients on the network reach the desktop (its mDNS name
    * and UDP port); null when it listens on this machine only. */
   lan: { name: string; port: number } | null;
+  /** The managed desktop's wlroots: the patched one shipped with rpc-host,
+   * or the system's (a sway it doesn't suit; frames ~13 ms later). */
+  wlroots: "patched" | "system" | null;
   /** Host packages managed mode needs that are not installed. */
   missing: string[];
   /** The managed display's environment, for Launch. */

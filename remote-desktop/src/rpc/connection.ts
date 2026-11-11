@@ -56,6 +56,8 @@ export interface RpcOptions {
   current?: () => Promise<{ port: number; token: string } | null>;
   /** The host streams a desktop already running there (its size is its own). */
   attach?: boolean;
+  /** The host's encoder ("vaapi", "openh264"), for the stats. */
+  encoder?: string | null;
 }
 
 /** Clipboard images: at most 16 MB, sent in 256 KB pieces, ids with the top bit. */
@@ -89,7 +91,7 @@ export class RpcConnection {
   private penDown = false;
   /** This tab drives (until a Seat says otherwise): a follower's input
    * isn't sent (the host ignores it; Take over to use the desktop). */
-  private driver = true;
+  private driver = false;
   /** Chunks sent so far per file this tab sends. */
   private fileIndex = new Map<number, number>();
   /** Clipboard images coming in: their size and pieces. */
@@ -420,7 +422,7 @@ export class RpcConnection {
         h.onControl({ t: "DisplayInfo", stream: 0, kind: this.opts.attach ? DisplayKind.FIXED : DisplayKind.OWN, width: m.width, height: m.height, scalePct: 100, note: "" });
         h.onControl({ t: "CursorInfo", inPicture: false });
         // For the stats panel's "from <encoder>".
-        h.onControl({ t: "HostStats", stream: 0, bitrateKbps: 0, fps: m.hz, encoder: `rpc-host VA-API ${m.codec === P.Codec.HEVC ? "H.265" : "H.264"}` });
+        h.onControl({ t: "HostStats", stream: 0, bitrateKbps: 0, fps: m.hz, encoder: `rpc-host ${this.opts.encoder === "openh264" ? "OpenH264" : "VA-API"} ${m.codec === P.Codec.HEVC ? "H.265" : "H.264"}` });
         return;
       }
       case "ModeApplied":

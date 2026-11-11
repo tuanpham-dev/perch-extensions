@@ -21,6 +21,9 @@ export interface DecoderOptions {
   onPicture(frame: VideoFrame, decodeMs: number): void;
   /** The decoder lost its way: the host should send a keyframe. */
   onNeedKeyframe(): void;
+  /** This browser won't decode the stream at all (its codec string was
+   * refused): say so instead of a black picture. */
+  onUnsupported?(message: string): void;
 }
 
 export function hasWebCodecs(): boolean {
@@ -83,7 +86,7 @@ class WebCodecsDecoder implements Decoder {
   constructor(private readonly opts: DecoderOptions) {}
 
 
-  private build(codec: string): VideoDecoder {
+  private build(codec: string): VideoDecoder | null {
     const decoder = new VideoDecoder({
       output: (frame) => {
         const started = this.submitted.get(frame.timestamp);
@@ -101,7 +104,17 @@ class WebCodecsDecoder implements Decoder {
         this.needKeyframe();
       },
     });
-    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
+    try {
+      decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
+    } catch (err) {
+      try {
+        decoder.close();
+      } catch {
+        // Already closed.
+      }
+      this.opts.onUnsupported?.(`This browser can't decode the stream (${codec}): ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
     return decoder;
   }
 
@@ -121,6 +134,7 @@ class WebCodecsDecoder implements Decoder {
         this.reset();
         this.codec = s;
         this.decoder = this.build(s);
+        if (!this.decoder) return;
       }
       this.seenKeyframe = true;
     } else if (!this.seenKeyframe || !this.decoder || this.decoder.state !== "configured") {

@@ -158,7 +158,11 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
       )}
       {!status.installed && !downloading && (
         <div className="rd-panel-status">
-          {oldBuild ? (
+          {status.engineSource === "setting" && (oldBuild || outdated) ? (
+            <>
+              <code>{status.serverPath}</code> (your Server path setting) is {oldBuild ? `an older build (it lacks ${status.lacking.join(", ")})` : `rpc-host ${status.engineVersion}`}; this extension needs {status.requiredVersion} or newer. Update that build, or clear <code>remoteDesktop.serverPath</code> to use the downloaded one.
+            </>
+          ) : oldBuild ? (
             <>
               <code>{status.serverPath}</code> is an older rpc-host build (it lacks {status.lacking.join(", ")}); download the current one.
             </>
@@ -173,7 +177,7 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
           )}
         </div>
       )}
-      {(!status.installed || outdated) && !status.running && (
+      {(!status.installed || outdated) && !status.running && status.engineSource !== "setting" && (
         <div className="rd-panel-row">
           <button className="rd-btn rd-btn-primary" disabled={busy || downloading} onClick={() => void startDownload()}>
             <Icon name="cloud-download" /> {outdated ? `Update to ${status.requiredVersion}` : "Download rpc-host"}
@@ -219,6 +223,11 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
               {status.encoder ? ` · ${status.encoder}` : ""}
               {status.codec ? ` · ${status.codec}` : ""}
               {status.hostRenderer === "software" ? " · software rendering" : ""}
+            </div>
+          )}
+          {status.wlroots === "system" && (
+            <div className="rd-panel-muted">
+              The patched wlroots shipped with rpc-host is not in use (it suits sway 1.10 with wlroots 0.18): the desktop works, with frames about 13 ms later.
             </div>
           )}
           <div className="rd-panel-row">

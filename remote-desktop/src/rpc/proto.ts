@@ -14,7 +14,7 @@ export const Dec = { H264: 1, HEVC: 2, BULK: 0x08, CURSOR_POS: 0x10, CURSOR: 0x2
 /// rpc_va codec ids.
 export const Codec = { H264: 1, HEVC: 2 } as const;
 /// Bye reasons.
-export const ByeReason = { QUIT: 0, REPLACED: 1, NOT_PAIRED: 2, VERSION: 3, ERROR: 4, UNPAIRED: 5, NO_CODEC: 6 } as const;
+export const ByeReason = { QUIT: 0, REPLACED: 1, NOT_PAIRED: 2, VERSION: 3, ERROR: 4, UNPAIRED: 5, NO_CODEC: 6, STOPPED: 7 } as const;
 /// WebSocket channels (first byte of every binary message).
 export const Chan = { CONTROL: 1, VIDEO: 2, AUDIO: 3, FEEDBACK: 4, PING: 5, PONG: 6, BULK: 7 } as const;
 /// Chunk size of clipboard and cursor messages.

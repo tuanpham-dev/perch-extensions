@@ -1,12 +1,12 @@
 # Remote Desktop
 
-A Linux desktop inside a Perch tab, streamed as low-latency video with full keyboard, mouse, clipboard, files, cursor and audio. In managed mode the desktop is a virtual display that follows the size and scale of your tab, so apps reflow like they would on a real monitor; in existing mode it attaches to the desktop already running on the machine (X11, or a wlroots compositor such as sway). It is powered by [remote-pc](https://github.com/tuanpham-dev/remote-pc-releases)'s host, `rpc-host`, which encodes on the GPU with VA-API (H.264 and H.265) and serves Perch over a loopback WebSocket that Perch's own proxy carries.
+A Linux desktop inside a Perch tab, streamed as low-latency video with full keyboard, mouse, clipboard, files, cursor and audio. In managed mode the desktop is a virtual display that follows the size and scale of your tab, so apps reflow like they would on a real monitor; in existing mode it attaches to the desktop already running on the machine (X11, or a wlroots compositor such as sway). It is powered by [remote-pc](https://github.com/tuanpham-dev/remote-pc-releases)'s host, `rpc-host`, which encodes on the GPU with VA-API (H.264 and H.265), or on a machine without a usable GPU on the CPU with OpenH264 (H.264, up to 1080p at 30 fps), and serves Perch over a loopback WebSocket that Perch's own proxy carries.
 
 Compared with the GUI Apps extension (xpra): a whole screen as one video stream instead of per-window image updates, hardware-decoded in the browser, lower and steadier latency for scrolling, animation and video, one cursor instead of two, and every key reaching the desktop. GUI Apps remains the better fit when you want individual app windows composited into your own desktop.
 
 ## The engine
 
-`rpc-host` is not inside this package; it comes as a release build. Open the **Remote Desktop** sidebar tab and click **Download rpc-host**. The extension fetches the latest release from [remote-pc-releases](https://github.com/tuanpham-dev/remote-pc-releases/releases) (Linux x86_64, built on Debian 13), checks it against the release's `SHA256SUMS`, and unpacks it into `~/.local/share/perch-remote-desktop/rpc-host/`. It holds `bin/rpc-host` and a patched wlroots for its headless sway (frames on time, about 13 ms less latency; rpc-host uses it when it suits the installed sway, Debian 13's sway 1.10). When a newer version is required the button becomes **Update**.
+`rpc-host` is not inside this package; it comes as a release build. Open the **Remote Desktop** sidebar tab and click **Download rpc-host**. The extension fetches the latest release from [remote-pc-releases](https://github.com/tuanpham-dev/remote-pc-releases/releases) (Linux x86_64, built on Debian 13, or arm64, e.g. an Oracle Cloud Ampere machine, which has no GPU: there rpc-host encodes and renders on the CPU), checks it against the release's `SHA256SUMS`, and unpacks it into `~/.local/share/perch-remote-desktop/rpc-host/`. It holds `bin/rpc-host` and (x86_64) a patched wlroots for its headless sway (frames on time, about 13 ms less latency; rpc-host uses it when it suits the installed sway, Debian 13's sway 1.10). When a newer version is required the button becomes **Update**.
 
 To use another build, set `remoteDesktop.serverPath`, or leave it empty and put `rpc-host` on PATH or in `~/.cargo/bin`. An older rpc-host build without the options this extension runs it with (a machine's own host service installed earlier, say) is passed over, and the panel says so.
 
@@ -17,7 +17,7 @@ sudo apt install -y sway xwayland xdg-desktop-portal-wlr pipewire wireplumber pi
   libva2 libva-drm2 mesa-va-drivers
 ```
 
-For the GPU the user running Perch needs the `render` group (`sudo usermod -aG render $USER`, then log in again) and a VA-API driver that encodes (`mesa-va-drivers` for AMD, `intel-media-va-driver-non-free` for Intel). `vainfo` should list `VAEntrypointEncSlice` for H.264 or HEVC.
+Without a GPU encoder (or render node) the host falls back to the CPU by itself: the panel shows `openh264` and software rendering. For the GPU the user running Perch needs the `render` group (`sudo usermod -aG render $USER`, then log in again) and a VA-API driver that encodes (`mesa-va-drivers` for AMD, `intel-media-va-driver-non-free` for Intel). `vainfo` should list `VAEntrypointEncSlice` for H.264 or HEVC.
 
 ## Usage
 
@@ -66,6 +66,7 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 | `remoteDesktop.bitrateKbps` | `40000` | Upper bitrate limit; the stream adapts below it, and the viewer's quality preset caps it further. |
 | `remoteDesktop.codec` | `auto` | `auto` (H.264, which every browser decodes), `h264` or `h265`. All viewers share the codec. |
 | `remoteDesktop.followerFps` | `15` | Frame rate of the followers' lighter stream (1–30). |
+| `remoteDesktop.renderer` | `auto` | Managed: `gpu`, `software` (pixman, no GPU) or `auto` (the GPU when its render node opens). Without a GPU encoder rpc-host encodes on the CPU (OpenH264, H.264 up to 1080p30) either way. |
 | `remoteDesktop.followerSize` | `1080p` | Size of the followers' stream: `720p`, `1080p`, `1440p` or `full` (the driver's resolution; the most encoding and bandwidth). |
 | `remoteDesktop.udpPort` | `48000` | The UDP port native `rpc-client`s on other machines connect to (open it in the firewall); 0 keeps the desktop on this machine. |
 | `remoteDesktop.pixelRatio` | `auto` | Default remote pixels per CSS pixel for your devices: `auto` (each device's own ratio, capped at 2), `1`, `1.5` or `2`. Any browser can override it for itself in the view settings. |

@@ -151,18 +151,54 @@ export function setFsControlsPos(pos: ControlsPos): void {
  * tab: two tabs of one browser are two viewers. */
 const VIEWER_ID_KEY = "remoteDesktop.viewerId";
 
-export function viewerId(): string {
-  try {
-    const v = sessionStorage.getItem(VIEWER_ID_KEY);
-    if (v) return v;
-  } catch {
-    // Storage blocked: a fresh id for this page.
-  }
+function newViewerId(): string {
   const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   try {
     sessionStorage.setItem(VIEWER_ID_KEY, id);
   } catch {
     // Not kept.
   }
+  return id;
+}
+
+let claimed = false;
+
+/** A duplicated browser tab copies sessionStorage, and with it the id: two
+ * tabs with one id would keep replacing each other on the host. Each tab
+ * announces its id once; one that hears its id is taken by an older tab
+ * takes a new one (the next Hello uses it). */
+function claimViewerId(id: string): void {
+  if (claimed || typeof BroadcastChannel === "undefined") return;
+  claimed = true;
+  try {
+    const ch = new BroadcastChannel("remoteDesktop.viewerId");
+    const born = Date.now();
+    ch.onmessage = (e: MessageEvent) => {
+      const m = e.data as { hello?: string; born?: number; taken?: string };
+      const mine = (() => {
+        try {
+          return sessionStorage.getItem(VIEWER_ID_KEY);
+        } catch {
+          return null;
+        }
+      })();
+      if (m.hello && m.hello === mine && (m.born ?? 0) > born) ch.postMessage({ taken: mine });
+      else if (m.taken && m.taken === mine) newViewerId();
+    };
+    ch.postMessage({ hello: id, born });
+  } catch {
+    // No channel: duplicates stay rare.
+  }
+}
+
+export function viewerId(): string {
+  let v: string | null = null;
+  try {
+    v = sessionStorage.getItem(VIEWER_ID_KEY);
+  } catch {
+    // Storage blocked: a fresh id for this page.
+  }
+  const id = v || newViewerId();
+  claimViewerId(id);
   return id;
 }

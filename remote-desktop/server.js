@@ -21,6 +21,9 @@ import { pipeline } from "node:stream/promises";
 
 const SESSION_NAME = "remote-desktop";
 const START_TIMEOUT_MS = 20000;
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+// What Launch takes from the host's display environment.
+const LAUNCH_ENV = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"];
 const START_POLL_INTERVAL_MS = 250;
 // The host tears its virtual display down before it exits, which frees
 // the port; Stop waits for that so the next Start finds everything free.
@@ -33,8 +36,8 @@ const CODECS = ["auto", "h264", "h265"];
 // The oldest rpc-host this extension speaks to, and the run options it
 // needs (an older build of the same version, such as a machine's own host
 // service installed earlier, lacks them and is passed over).
-const REQUIRED_VERSION = "0.2.1";
-const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size"];
+const REQUIRED_VERSION = "0.3.0";
+const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer"];
 // Its private desktop's folders: the runtime folder holds the session's
 // sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token
 // (0600) and the desktop's own config; the state folder keeps paired
@@ -132,6 +135,7 @@ const DEFAULTS = {
   udpPort: 48000,
   followerFps: 15,
   followerSize: "1080p",
+  renderer: "auto",
 };
 const FOLLOWER_SIZES = { "720p": "720", "1080p": "1080", "1440p": "1440", full: "full" };
 
@@ -203,8 +207,31 @@ async function rpcToken(port) {
   }
 }
 
-// The host's own status line: null when nothing answers there.
+// The uid owning the loopback TCP listener on `port`, from /proc/net/tcp
+// (null: none, or not readable). Another local user can listen on a port
+// we expect: only our own listener counts as our host.
+async function listenerUid(port) {
+  const hex = port.toString(16).toUpperCase().padStart(4, "0");
+  for (const file of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split("\n").slice(1)) {
+      const f = line.trim().split(/\s+/);
+      // sl local rem st ... uid: local "0100007F:3909", state 0A = LISTEN
+      if (f.length > 7 && f[3] === "0A" && f[1].endsWith(`:${hex}`)) return Number(f[7]);
+    }
+  }
+  return null;
+}
+
+// The host's own status line: null when nothing answers there, or when
+// what listens there isn't this user's.
 async function probeStatus(port) {
+  if (process.getuid && (await listenerUid(port)) !== process.getuid()) return null;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), STATUS_TIMEOUT_MS);
   try {
@@ -260,16 +287,19 @@ function readSettings(raw) {
   const mode = get("mode", DEFAULTS.mode) === "existing" ? "existing" : "managed";
   return {
     mode,
-    display: String(get("display", DEFAULTS.display)).trim(),
-    desktopCommand: String(get("desktopCommand", DEFAULTS.desktopCommand)),
+    // Typed into a terminal: a control character (a newline is Enter)
+    // never gets there.
+    display: String(get("display", DEFAULTS.display)).replace(CONTROL_CHARS, "").trim(),
+    desktopCommand: String(get("desktopCommand", DEFAULTS.desktopCommand)).replace(CONTROL_CHARS, "").trim() || DEFAULTS.desktopCommand,
     useGlobalConfig: get("useGlobalConfig", DEFAULTS.useGlobalConfig) === true,
-    keyboardLayout: String(get("keyboardLayout", DEFAULTS.keyboardLayout)),
-    port: Number(get("port", DEFAULTS.port)) || DEFAULTS.port,
+    keyboardLayout: String(get("keyboardLayout", DEFAULTS.keyboardLayout)).replace(CONTROL_CHARS, "").trim() || DEFAULTS.keyboardLayout,
+    port: ((p) => (Number.isInteger(p) && p >= 1024 && p <= 65535 ? p : DEFAULTS.port))(Number(get("port", DEFAULTS.port))),
     bitrateKbps: Number(get("bitrateKbps", DEFAULTS.bitrateKbps)) || DEFAULTS.bitrateKbps,
     codec: CODECS.includes(get("codec", DEFAULTS.codec)) ? get("codec", DEFAULTS.codec) : DEFAULTS.codec,
     serverPath: String(raw["remoteDesktop.serverPath"] ?? "").trim(),
     udpPort: Math.max(0, Math.min(65535, Number(get("udpPort", DEFAULTS.udpPort)) || 0)),
     followerFps: Math.max(1, Math.min(30, Math.round(Number(get("followerFps", DEFAULTS.followerFps)) || DEFAULTS.followerFps))),
+    renderer: ["auto", "gpu", "software"].includes(get("renderer", DEFAULTS.renderer)) ? get("renderer", DEFAULTS.renderer) : DEFAULTS.renderer,
     followerSize: Object.hasOwn(FOLLOWER_SIZES, get("followerSize", DEFAULTS.followerSize)) ? get("followerSize", DEFAULTS.followerSize) : DEFAULTS.followerSize,
   };
 }
@@ -304,7 +334,9 @@ function forgetBinary() {
 async function findServerBinary(serverPath) {
   // The setting first, then the download, PATH and cargo's bin dir. A
   // setting that names another program (a leftover path) is skipped and
-  // reported rather than hiding a perfectly good download behind it.
+  // reported rather than hiding a perfectly good download behind it; one
+  // that names an rpc-host too old is refused. Older builds elsewhere (a
+  // host service's on PATH) are passed over.
   const defaults = [
     ["downloaded", downloadedBinary()],
     ["path", "rpc-host"],
@@ -339,6 +371,9 @@ async function findServerBinary(serverPath) {
       return binaryCache.result;
     }
     outdated ??= { installed: false, path: candidate, source, version, reason: lacking.length ? "old-build" : "outdated", lacking, settingIgnored };
+    // The Server path setting is an explicit choice: an rpc-host there that
+    // is too old is refused (with why), not quietly swapped for another.
+    if (source === "setting") break;
   }
   binaryCache = {
     key,
@@ -349,7 +384,9 @@ async function findServerBinary(serverPath) {
 
 // ---- Downloading a release ----
 
-const ARCH_ASSET = { x64: "rpc-host-linux-x86_64.tar.gz" };
+// The release build for this machine (arm64: e.g. an Oracle Cloud Ampere
+// instance, which has no GPU: rpc-host encodes and renders on the CPU).
+const ARCH_ASSET = { x64: "rpc-host-linux-x86_64.tar.gz", arm64: "rpc-host-linux-arm64.tar.gz" };
 
 const download = { state: "idle", percent: 0, error: null, version: null };
 
@@ -384,6 +421,8 @@ async function downloadEngine(log, signal) {
     if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) throw new Error(`SHA256SUMS has no entry for ${asset}`);
     return hash.toLowerCase();
   });
+  // Awaited after the archive; an early failure must not go unhandled.
+  expected.catch(() => {});
 
   const tmpDir = path.join(DOWNLOAD_DIR, ".tmp");
   await rm(tmpDir, { recursive: true, force: true });
@@ -417,6 +456,13 @@ async function downloadEngine(log, signal) {
     const unpacked = path.join(tmpDir, "rpc-host");
     await access(path.join(unpacked, "bin", "rpc-host"), fsConstants.R_OK);
     await chmod(path.join(unpacked, "bin", "rpc-host"), 0o755);
+    // The new build must run, be new enough and have the options this
+    // extension uses before it replaces a working one.
+    const ver = parseVersion(await run(path.join(unpacked, "bin", "rpc-host"), ["--version"]).catch(() => ""));
+    if (!ver || !versionAtLeast(ver, parseVersion(REQUIRED_VERSION))) throw new Error(`the release's rpc-host is ${ver ? ver.join(".") : "not runnable here"}; this extension needs ${REQUIRED_VERSION} or newer`);
+    const help = await run(path.join(unpacked, "bin", "rpc-host"), ["run", "--help"]).catch(() => "");
+    const lacking = REQUIRED_FLAGS.filter((f) => !help.includes(f));
+    if (lacking.length) throw new Error(`the release's rpc-host lacks ${lacking.join(", ")}`);
     await mkdir(DOWNLOAD_DIR, { recursive: true });
     // The old folder goes first (a running host keeps its open files).
     await rm(downloadedDir(), { recursive: true, force: true });
@@ -466,6 +512,7 @@ const NOT_RUNNING = {
   hostRenderer: null,
   source: null,
   cursorInPicture: false,
+  wlroots: null,
   lan: null,
   displayEnv: null,
 };
@@ -484,6 +531,9 @@ function fromHostStatus(port, status) {
     hostRenderer: status.renderer === "gpu" || status.renderer === "software" ? status.renderer : null,
     source: typeof status.source === "string" ? status.source : null,
     cursorInPicture: status.cursorInPicture === true,
+    // The managed desktop's wlroots: "patched" (shipped with rpc-host) or
+    // "system" (this sway isn't one the patched build suits).
+    wlroots: status.wlroots === "patched" || status.wlroots === "system" ? status.wlroots : null,
     // Where native clients on the network reach it (null: this machine only).
     lan:
       status.lan && typeof status.lan.name === "string" && Number.isInteger(status.lan.port)
@@ -530,16 +580,32 @@ export function activate({ router, log, getSettings, host }) {
   // Killing the session hangs up the host's terminal; the host takes its
   // virtual display and desktop down on that and exits, which closes the
   // port.
-  async function stopEverything() {
-    const { port } = await getRunningInfo();
+  // `known`: the port a Start just used (a host that never answered isn't
+  // found by its status, but its folder must still go).
+  async function stopEverything(known) {
+    const port = typeof known === "number" ? known : (await getRunningInfo()).port;
     const stuck = port ? await stopRpcHost(rpcRuntimeDir(port)) : null;
-    if (stuck) log(`rpc-host (pid ${stuck}) did not stop within 8 s`);
+    if (stuck) {
+      log(`rpc-host (pid ${stuck}) did not stop within 8 s; killing it`);
+      try {
+        process.kill(stuck, "SIGKILL");
+      } catch {}
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    // Its folder stays while it still runs (its sockets and token).
+    let alive = false;
+    if (stuck) {
+      try {
+        process.kill(stuck, 0);
+        alive = true;
+      } catch {}
+    }
     await host.sessions.kill(SESSION_NAME).catch(() => {});
     if (port && !(await waitForSilence(port))) {
       log(`the host on ${port} did not exit after its session was killed`);
     }
     // rpc-host's runtime folder (sockets, the token) goes with it.
-    if (port) await removeRuntime(rpcRuntimeDir(port)).catch((err) => log(`could not remove ${rpcRuntimeDir(port)}: ${err.message}`));
+    if (port && !alive) await removeRuntime(rpcRuntimeDir(port)).catch((err) => log(`could not remove ${rpcRuntimeDir(port)}: ${err.message}`));
     lastPort = null;
     if (stopOwnSession === stopEverything) stopOwnSession = null;
   }
@@ -636,7 +702,9 @@ export function activate({ router, log, getSettings, host }) {
       if (!binary.installed) {
         res.status(400).json({
           error:
-            binary.reason === "old-build"
+            binary.source === "setting" && (binary.reason === "old-build" || binary.reason === "outdated")
+              ? `${binary.path} (the Server path setting) is ${binary.reason === "old-build" ? `an older rpc-host build (it lacks ${binary.lacking.join(", ")})` : `rpc-host ${binary.version}`}; this extension needs ${REQUIRED_VERSION} or newer. Update that build, or clear remoteDesktop.serverPath to use the downloaded one.`
+              : binary.reason === "old-build"
               ? `${binary.path} is an older rpc-host build (it lacks ${binary.lacking.join(", ")}). Download the current one from the Remote Desktop panel, or set Server path to a newer build.`
               : binary.reason === "outdated"
                 ? `${binary.path} is rpc-host ${binary.version}; this extension needs ${REQUIRED_VERSION} or newer. Update it from the Remote Desktop panel.`
@@ -695,7 +763,8 @@ export function activate({ router, log, getSettings, host }) {
       "--input", "virtual",
       "--ws-listen", `127.0.0.1:${port}`,
       "--ws-token-file", tokenFile,
-      "--keyboard-layout", settings.keyboardLayout,
+      // `--opt=value`: a value starting with "-" is still a value.
+      `--keyboard-layout=${settings.keyboardLayout}`,
       "--max-kbps", String(settings.bitrateKbps),
       "--follower-fps", String(settings.followerFps),
       "--follower-size", FOLLOWER_SIZES[settings.followerSize],
@@ -704,9 +773,9 @@ export function activate({ router, log, getSettings, host }) {
       // The desktop already on this machine (X11 or a wlroots compositor;
       // the Display setting picks one, else rpc-host finds it), its size kept.
       args.push("--source", "attach");
-      if (settings.display) args.push("--attach", settings.display);
+      if (settings.display) args.push(`--attach=${settings.display}`);
     } else {
-      args.push("--ui-scale", "2", "--desktop-command", settings.desktopCommand);
+      args.push("--ui-scale", "2", `--desktop-command=${settings.desktopCommand}`, "--renderer", settings.renderer);
       if (!userConfig) args.push("--fresh-config");
     }
     if (settings.codec === "h264" || settings.codec === "h265") args.push("--codec", settings.codec === "h265" ? "hevc" : "h264");
@@ -718,19 +787,23 @@ export function activate({ router, log, getSettings, host }) {
       shellQuote(binary.path), ...args.map(shellQuote),
       "2>&1", "|", "tee", "-a", shellQuote(HOST_LOG), ";", "exit",
     ].join(" ");
+    // Emptied here too: the typed line's own truncation runs only once the
+    // terminal's shell has started, and until then the last run's errors
+    // would look like this one's.
+    await writeFile(HOST_LOG, "", { mode: 0o600 }).catch(() => {});
     await host.sessions.sendText(SESSION_NAME, line, true);
     lastPort = port;
     stopOwnSession = stopEverything;
     // An error the host printed ends the wait at once, with its words.
     const status = await waitForStatus(port, START_TIMEOUT_MS, hostLogError);
     if (status?.failed) {
-      await stopEverything();
+      await stopEverything(port);
       log(`rpc-host did not start: ${status.failed}`);
       res.status(502).json({ error: `rpc-host did not start: ${status.failed} (more in ${HOST_LOG})` });
       return;
     }
     if (!status) {
-      await stopEverything();
+      await stopEverything(port);
       log(`rpc-host did not answer on ${port} in time; its output is in the ${SESSION_NAME} session`);
       res.status(502).json({ error: `Remote Desktop did not start in time; see ${HOST_LOG} or the ${SESSION_NAME} session.` });
       return;
@@ -781,9 +854,13 @@ export function activate({ router, log, getSettings, host }) {
       // at startup (Qt; GTK takes it from xsettings but the env is
       // harmless).
       const index = await host.sessions.createWindow(SESSION_NAME, cwd);
+      // Only the display's own variables, and no control characters (the
+      // line is typed into a shell): nothing the host reports can set
+      // LD_PRELOAD, PATH or the like.
       const env = [...scaleEnvironment(info.scale)];
-      for (const [k, v] of Object.entries(info.displayEnv)) {
-        if (/^[A-Z_][A-Z0-9_]*$/.test(k) && v) env.push([k, v]);
+      for (const k of LAUNCH_ENV) {
+        const v = info.displayEnv[k];
+        if (typeof v === "string" && v && !/[\x00-\x1f\x7f]/.test(v)) env.push([k, v]);
       }
       const prefix = env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
       await host.sessions.sendText(SESSION_NAME, `${prefix} ${command}`, true, index);
