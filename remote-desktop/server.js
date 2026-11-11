@@ -36,8 +36,8 @@ const CODECS = ["auto", "h264", "h265"];
 // The oldest rpc-host this extension speaks to, and the run options it
 // needs (an older build of the same version, such as a machine's own host
 // service installed earlier, lacks them and is passed over).
-const REQUIRED_VERSION = "0.4.0";
-const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer"];
+const REQUIRED_VERSION = "0.5.0";
+const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer", "--no-port-map"];
 // Its private desktop's folders: the runtime folder holds the session's
 // sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token
 // (0600) and the desktop's own config; the state folder keeps paired
@@ -136,6 +136,9 @@ const DEFAULTS = {
   followerFps: 15,
   followerSize: "1080p",
   renderer: "auto",
+  // Ask the router to forward udpPort (PCP, NAT-PMP, UPnP) so native
+  // clients outside this network connect directly. Tabs don't need it.
+  portMapping: false,
 };
 const FOLLOWER_SIZES = { "720p": "720", "1080p": "1080", "1440p": "1440", full: "full" };
 
@@ -301,6 +304,7 @@ function readSettings(raw) {
     followerFps: Math.max(1, Math.min(30, Math.round(Number(get("followerFps", DEFAULTS.followerFps)) || DEFAULTS.followerFps))),
     renderer: ["auto", "gpu", "software"].includes(get("renderer", DEFAULTS.renderer)) ? get("renderer", DEFAULTS.renderer) : DEFAULTS.renderer,
     followerSize: Object.hasOwn(FOLLOWER_SIZES, get("followerSize", DEFAULTS.followerSize)) ? get("followerSize", DEFAULTS.followerSize) : DEFAULTS.followerSize,
+    portMapping: get("portMapping", DEFAULTS.portMapping) === true,
   };
 }
 
@@ -539,6 +543,7 @@ const NOT_RUNNING = {
   cursorInPicture: false,
   wlroots: null,
   lan: null,
+  outside: null,
   displayEnv: null,
 };
 
@@ -563,6 +568,18 @@ function fromHostStatus(port, status) {
     lan:
       status.lan && typeof status.lan.name === "string" && Number.isInteger(status.lan.port)
         ? { name: status.lan.name, port: status.lan.port }
+        : null,
+    // What the internet sees of it: the router mapping's state ("off",
+    // "searching", "no-router", "carrier-nat", "mapped", "confirmed"),
+    // public endpoint and protocol, and the host's own sentence.
+    outside:
+      status.outside && typeof status.outside.state === "string"
+        ? {
+            state: status.outside.state,
+            public: typeof status.outside.public === "string" ? status.outside.public : null,
+            proto: typeof status.outside.proto === "string" ? status.outside.proto : null,
+            line: typeof status.outside.line === "string" ? status.outside.line : "",
+          }
         : null,
     // Everything the host says an app on the managed display needs: the X
     // and Wayland displays, the display's own runtime directory and session
@@ -791,7 +808,9 @@ export function activate({ router, log, getSettings, host }) {
       "run",
       "--runtime-dir", runtime,
       "--state-dir", RPC_STATE_DIR,
-      "--listen", settings.udpPort ? `0.0.0.0:${settings.udpPort}` : "127.0.0.1:0",
+      // IPv4 and IPv6 on the network, or this machine only.
+      "--listen", settings.udpPort ? `[::]:${settings.udpPort}` : "127.0.0.1:0",
+      ...(settings.udpPort && settings.portMapping ? [] : ["--no-port-map"]),
       // On the network it is found by name (mDNS); a Stop ends native
       // viewers' sessions (they don't retry).
       "--name", `${os.hostname()} (Perch)`,

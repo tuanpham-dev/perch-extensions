@@ -51,6 +51,9 @@ export interface RdStatus {
   /** Where native clients on the network reach the desktop (its mDNS name
    * and UDP port); null when it listens on this machine only. */
   lan: { name: string; port: number } | null;
+  /** The router port mapping for native clients outside this network
+   * (null: an older host). */
+  outside: { state: string; public: string | null; proto: string | null; line: string } | null;
   /** The newest release (null: not known yet), and whether the downloaded
    * engine is older than it. */
   latestVersion: string | null;

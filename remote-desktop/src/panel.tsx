@@ -12,6 +12,22 @@ const DOWNLOAD_POLL_MS = 500;
 
 const APT_LINE = "sudo apt install -y sway xwayland xdg-desktop-portal-wlr pipewire wireplumber xfce4 dbus-x11 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire";
 
+/** The host's router mapping, in a sentence for the panel. */
+function outsideText(o: { state: string; public: string | null; proto: string | null; line: string }): string {
+  switch (o.state) {
+    case "off":
+      return "off (turn on remoteDesktop.portMapping to let native clients outside this network connect directly)";
+    case "searching":
+      return "asking the router…";
+    case "mapped":
+      return `mapped at ${o.public}${o.proto ? ` (${o.proto})` : ""}; confirmed once a native client connects from outside`;
+    case "confirmed":
+      return `reachable at ${o.public}${o.proto ? ` (${o.proto})` : ""}`;
+    default:
+      return o.line;
+  }
+}
+
 export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivElement | null }) {
   const [status, setStatus] = useState<RdStatus | null>(null);
   const [download, setDownload] = useState<DownloadStatus | null>(null);
@@ -270,6 +286,7 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
               <div className="rd-panel-muted">
                 Native clients: <strong>{status.lan.name}</strong>, UDP port {status.lan.port}
               </div>
+              {status.outside && <div className="rd-panel-muted">Outside access: {outsideText(status.outside)}</div>}
               {pin ? (
                 <div className="rd-panel-pin">
                   <div>

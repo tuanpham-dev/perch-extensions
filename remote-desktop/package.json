@@ -2,7 +2,7 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "4.4.1",
+  "version": "4.5.0",
   "displayName": "Remote Desktop",
   "description": "A Linux desktop streamed into a tab as low-latency video (H.265 or H.264 from the GPU) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing desktop (X11, wlroots, GNOME or KDE, with its sound and clipboard). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
   "icon": "./icon.svg",
@@ -126,6 +126,11 @@
             "Software"
           ],
           "description": "Managed mode only: how the virtual desktop renders. Software (pixman) needs no GPU; without a GPU encoder rpc-host also encodes on the CPU (H.264 with OpenH264, up to 3840x2160 at 30 fps, fewer frames on a slow CPU), whatever this says. Takes effect on the next Start."
+        },
+        "remoteDesktop.portMapping": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask the router to forward the UDP port (PCP, NAT-PMP or UPnP) so native remote-pc clients outside this network connect directly, over IPv4 or IPv6. The panel shows whether it worked. Browser tabs don't need it. Takes effect on the next Start."
         },
         "remoteDesktop.followerSize": {
           "type": "string",

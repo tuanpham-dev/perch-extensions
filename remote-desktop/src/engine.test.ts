@@ -16,7 +16,7 @@ const { activate } = await import("../server.js");
 // older one must be passed over with why, never started to fail.
 function fakeHost(dir: string, name: string, help: string): string {
   const p = path.join(dir, name);
-  writeFileSync(p, `#!/bin/sh\nif [ "$1" = --version ]; then echo "rpc-host 0.4.0"; exit 0; fi\nif [ "$1" = run ]; then echo "${help}"; exit 0; fi\nexit 2\n`);
+  writeFileSync(p, `#!/bin/sh\nif [ "$1" = --version ]; then echo "rpc-host 0.5.0"; exit 0; fi\nif [ "$1" = run ]; then echo "${help}"; exit 0; fi\nexit 2\n`);
   chmodSync(p, 0o755);
   return p;
 }
@@ -25,7 +25,7 @@ it("passes over an older rpc-host build and says what it lacks", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "rd-engine-"));
   try {
     const old = fakeHost(dir, "old", "Usage: rpc-host run [OPTIONS] --listen --source");
-    const current = fakeHost(dir, "current", "Usage: rpc-host run [OPTIONS] --ws-listen --follower-fps --attach --stop-ends-sessions --follower-size --renderer");
+    const current = fakeHost(dir, "current", "Usage: rpc-host run [OPTIONS] --ws-listen --follower-fps --attach --stop-ends-sessions --follower-size --renderer --no-port-map");
     let serverPath = old;
     const routes = new Map<string, (req: unknown, res: unknown) => Promise<void>>();
     const router = { get: (p: string, fn: never) => routes.set(`GET ${p}`, fn), post: (p: string, fn: never) => routes.set(`POST ${p}`, fn) };
@@ -41,7 +41,7 @@ it("passes over an older rpc-host build and says what it lacks", async () => {
     let s = (await call("GET /status")).body;
     assert.equal(s.installed, false);
     assert.equal(s.serverReason, "old-build");
-    assert.deepEqual(s.lacking, ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer"]);
+    assert.deepEqual(s.lacking, ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer", "--no-port-map"]);
     // Start refuses at once, naming the build and what it lacks.
     const started = await call("POST /start");
     assert.equal(started.code, 400);
