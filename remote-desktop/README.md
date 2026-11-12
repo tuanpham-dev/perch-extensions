@@ -70,6 +70,8 @@ The gear in the Remote Desktop panel's header opens these in Settings.
 | `remoteDesktop.followerSize` | `1080p` | Size of the followers' stream: `720p`, `1080p`, `1440p` or `full` (the driver's resolution; the most encoding and bandwidth). |
 | `remoteDesktop.udpPort` | `48000` | The UDP port native `rpc-client`s on other machines connect to (open it in the firewall); 0 keeps the desktop on this machine. |
 | `remoteDesktop.portMapping` | `false` | Ask the router to forward that port (PCP, NAT-PMP or UPnP) so native clients outside this network connect directly, over IPv4 or IPv6; the panel's *Outside access* line shows whether it worked. Tabs don't need it. |
+| `remoteDesktop.rendezvous` | empty | A remote-pc rendezvous server (`NAME#KEY`, from its `rpc-rendezvous key`) for native clients outside this network when the router can't forward the port (carrier NAT, UPnP off): it introduces them, punches a direct path, or relays. Clients learn it from this desktop during any session; the panel's *Rendezvous* line shows whether it registered. |
+| `remoteDesktop.relayUrl` | empty | The rendezvous server's WebSocket relay (`wss://NAME/rpc-relay`), for native clients on networks that block UDP. |
 | `remoteDesktop.pixelRatio` | `auto` | Default remote pixels per CSS pixel for your devices: `auto` (each device's own ratio, capped at 2), `1`, `1.5` or `2`. Any browser can override it for itself in the view settings. |
 | `remoteDesktop.serverPath` | empty | Path to your own `rpc-host`; empty means the downloaded one, then PATH, then `~/.cargo/bin`. |
 

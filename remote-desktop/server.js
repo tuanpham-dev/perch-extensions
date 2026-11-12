@@ -36,8 +36,8 @@ const CODECS = ["auto", "h264", "h265"];
 // The oldest rpc-host this extension speaks to, and the run options it
 // needs (an older build of the same version, such as a machine's own host
 // service installed earlier, lacks them and is passed over).
-const REQUIRED_VERSION = "0.5.0";
-const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer", "--no-port-map"];
+const REQUIRED_VERSION = "0.7.0";
+const REQUIRED_FLAGS = ["--ws-listen", "--follower-fps", "--attach", "--stop-ends-sessions", "--follower-size", "--renderer", "--no-port-map", "--rendezvous", "--relay-url"];
 // Its private desktop's folders: the runtime folder holds the session's
 // sockets (short paths: unix sockets allow ~108 bytes), the WebSocket token
 // (0600) and the desktop's own config; the state folder keeps paired
@@ -139,6 +139,10 @@ const DEFAULTS = {
   // Ask the router to forward udpPort (PCP, NAT-PMP, UPnP) so native
   // clients outside this network connect directly. Tabs don't need it.
   portMapping: false,
+  // A rendezvous server (NAME#KEY) and its WebSocket relay, for native
+  // clients outside when the router can't forward. Empty: none.
+  rendezvous: "",
+  relayUrl: "",
 };
 const FOLLOWER_SIZES = { "720p": "720", "1080p": "1080", "1440p": "1440", full: "full" };
 
@@ -305,6 +309,9 @@ function readSettings(raw) {
     renderer: ["auto", "gpu", "software"].includes(get("renderer", DEFAULTS.renderer)) ? get("renderer", DEFAULTS.renderer) : DEFAULTS.renderer,
     followerSize: Object.hasOwn(FOLLOWER_SIZES, get("followerSize", DEFAULTS.followerSize)) ? get("followerSize", DEFAULTS.followerSize) : DEFAULTS.followerSize,
     portMapping: get("portMapping", DEFAULTS.portMapping) === true,
+    // NAME[:PORT]#64-hex-digits; anything else is ignored (and said so).
+    rendezvous: /^[A-Za-z0-9.\-:\[\]]+#[0-9a-fA-F]{64}$/.test(String(get("rendezvous", "")).trim()) ? String(get("rendezvous", "")).trim() : "",
+    relayUrl: /^wss?:\/\/[^\s]+$/.test(String(get("relayUrl", "")).trim()) ? String(get("relayUrl", "")).trim() : "",
   };
 }
 
@@ -544,6 +551,7 @@ const NOT_RUNNING = {
   wlroots: null,
   lan: null,
   outside: null,
+  rendezvous: null,
   displayEnv: null,
 };
 
@@ -579,6 +587,17 @@ function fromHostStatus(port, status) {
             public: typeof status.outside.public === "string" ? status.outside.public : null,
             proto: typeof status.outside.proto === "string" ? status.outside.proto : null,
             line: typeof status.outside.line === "string" ? status.outside.line : "",
+          }
+        : null,
+    // The rendezvous registration ("starting", "registered", "not-answering",
+    // "refused"), the address the server saw, why it refused.
+    rendezvous:
+      status.rendezvous && typeof status.rendezvous.state === "string"
+        ? {
+            server: typeof status.rendezvous.server === "string" ? status.rendezvous.server : "",
+            state: status.rendezvous.state,
+            seen: typeof status.rendezvous.seen === "string" ? status.rendezvous.seen : null,
+            reason: typeof status.rendezvous.reason === "string" ? status.rendezvous.reason : null,
           }
         : null,
     // Everything the host says an app on the managed display needs: the X
@@ -811,6 +830,8 @@ export function activate({ router, log, getSettings, host }) {
       // IPv4 and IPv6 on the network, or this machine only.
       "--listen", settings.udpPort ? `[::]:${settings.udpPort}` : "127.0.0.1:0",
       ...(settings.udpPort && settings.portMapping ? [] : ["--no-port-map"]),
+      ...(settings.udpPort && settings.rendezvous ? ["--rendezvous", settings.rendezvous] : []),
+      ...(settings.udpPort && settings.rendezvous && settings.relayUrl ? ["--relay-url", settings.relayUrl] : []),
       // On the network it is found by name (mDNS); a Stop ends native
       // viewers' sessions (they don't retry).
       "--name", `${os.hostname()} (Perch)`,

@@ -13,6 +13,19 @@ const DOWNLOAD_POLL_MS = 500;
 const APT_LINE = "sudo apt install -y sway xwayland xdg-desktop-portal-wlr pipewire wireplumber xfce4 dbus-x11 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire";
 
 /** The host's router mapping, in a sentence for the panel. */
+function rendezvousText(r: { server: string; state: string; seen: string | null; reason: string | null }): string {
+  switch (r.state) {
+    case "registered":
+      return `registered at ${r.server}${r.seen ? ` (seen as ${r.seen})` : ""}`;
+    case "not-answering":
+      return `${r.server} is not answering`;
+    case "refused":
+      return `${r.server} refused this desktop${r.reason ? `: ${r.reason}` : ""}`;
+    default:
+      return `registering with ${r.server}`;
+  }
+}
+
 function outsideText(o: { state: string; public: string | null; proto: string | null; line: string }): string {
   switch (o.state) {
     case "off":
@@ -287,6 +300,7 @@ export function RemoteDesktopPanel({ actionsTarget }: { actionsTarget?: HTMLDivE
                 Native clients: <strong>{status.lan.name}</strong>, UDP port {status.lan.port}
               </div>
               {status.outside && <div className="rd-panel-muted">Outside access: {outsideText(status.outside)}</div>}
+              {status.rendezvous && <div className="rd-panel-muted">Rendezvous: {rendezvousText(status.rendezvous)}</div>}
               {pin ? (
                 <div className="rd-panel-pin">
                   <div>

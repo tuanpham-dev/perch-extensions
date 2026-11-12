@@ -54,6 +54,8 @@ export interface RdStatus {
   /** The router port mapping for native clients outside this network
    * (null: an older host). */
   outside: { state: string; public: string | null; proto: string | null; line: string } | null;
+  /** The rendezvous server's registration (null: none set, or an older host). */
+  rendezvous: { server: string; state: string; seen: string | null; reason: string | null } | null;
   /** The newest release (null: not known yet), and whether the downloaded
    * engine is older than it. */
   latestVersion: string | null;

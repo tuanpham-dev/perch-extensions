@@ -2,7 +2,7 @@
   "name": "remote-desktop",
   "private": true,
   "publisher": "perch",
-  "version": "4.5.0",
+  "version": "4.6.0",
   "displayName": "Remote Desktop",
   "description": "A Linux desktop streamed into a tab as low-latency video (H.265 or H.264 from the GPU) with full keyboard, mouse, clipboard, cursor and audio (on its own virtual desktop, which follows the tab's size and scale), or attached to an existing desktop (X11, wlroots, GNOME or KDE, with its sound and clipboard). Powered by remote-pc: its host, rpc-host, downloads from the project's releases with one click.",
   "icon": "./icon.svg",
@@ -131,6 +131,16 @@
           "type": "boolean",
           "default": false,
           "description": "Ask the router to forward the UDP port (PCP, NAT-PMP or UPnP) so native remote-pc clients outside this network connect directly, over IPv4 or IPv6. The panel shows whether it worked. Browser tabs don't need it. Takes effect on the next Start."
+        },
+        "remoteDesktop.rendezvous": {
+          "type": "string",
+          "default": "",
+          "description": "A remote-pc rendezvous server (NAME#KEY, from its `rpc-rendezvous key`), for native clients outside this network when the router can't forward the port (carrier NAT, UPnP off): it introduces them, punches a direct path, or relays. Clients learn it from this desktop during any session. Empty: none. Needs a UDP port above. Takes effect on the next Start."
+        },
+        "remoteDesktop.relayUrl": {
+          "type": "string",
+          "default": "",
+          "description": "The rendezvous server's WebSocket relay (wss://NAME/rpc-relay), for native clients on networks that block UDP. Empty: none. Takes effect on the next Start."
         },
         "remoteDesktop.followerSize": {
           "type": "string",
