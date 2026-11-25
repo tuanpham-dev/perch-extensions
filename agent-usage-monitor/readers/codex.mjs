@@ -15,6 +15,7 @@
 // empty rate_limits) once the account ran out of quota, so the limits come
 // from the CLI itself where it answers — see codexAppServer.mjs — and the
 // files remain the fallback.
+import { execFile } from "node:child_process";
 import { readFile, readdir, readlink, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -228,8 +229,12 @@ export async function usage({ now, blockMs }) {
 // Which rollout this codex process has open. Codex keeps no session index of
 // its own, and consecutive sessions in one folder are written seconds apart,
 // so the folder alone often can't tell them apart - the open file descriptor
-// can. Linux only; elsewhere the folder match below takes over.
+// can: /proc on Linux, lsof on macOS. Elsewhere the folder match below
+// takes over.
 async function rolloutOfProcess(pid) {
+  if (process.platform === "darwin") {
+    return (await openFilesOf(pid)).find((f) => f.startsWith(SESSIONS_DIR) && f.endsWith(".jsonl")) ?? null;
+  }
   if (process.platform !== "linux" || !Number.isFinite(pid)) return null;
   let fds;
   try {
@@ -295,4 +300,15 @@ function sameFolder(a, b) {
 
 function expand(p) {
   return p.startsWith("~") ? path.join(homedir(), p.slice(1)) : p;
+}
+
+// The files a process has open, from lsof. Empty when lsof is missing, the
+// process is gone, or it isn't ours to look at.
+function openFilesOf(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    execFile("lsof", ["-n", "-P", "-a", "-p", String(pid), "-Fn"], { encoding: "utf8", timeout: 2_000, maxBuffer: 4 * 1024 * 1024 }, (_err, stdout) => {
+      resolve(String(stdout ?? "").split("\n").filter((l) => l.startsWith("n/")).map((l) => l.slice(1)));
+    });
+  });
 }
