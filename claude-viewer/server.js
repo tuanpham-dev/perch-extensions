@@ -14,7 +14,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { claudeSessionsByWindow } from "./claudePanes.mjs";
+import { claudeSessionsByPid, claudeSessionsByWindow } from "./claudePanes.mjs";
 import { listCommands, searchProjectFiles } from "./commands.mjs";
 import { MAX_PATHS, resolvePaths } from "./paths.mjs";
 import { KEYS, cursorStepToward, isKeyName, letterKeyFor, nextKeyForChat, nextKeyForOption, typedText } from "./keys.mjs";
@@ -47,13 +47,23 @@ function str(value) {
 
 // Which session a window is running: the CLI's own pid record first (exact,
 // even with two Claude windows in one directory), else the newest transcript
-// in the window's directory.
-async function sessionForWindow(windowId, windowCwd) {
+// in the window's directory. Without /proc (macOS) the window's agent pid,
+// from the host, finds the CLI's record instead.
+async function sessionForWindow(host, windowId, info) {
+  const windowCwd = info ? expandHome(info.cwd) : null;
   let live = null;
   try {
     live = (await claudeSessionsByWindow()).get(windowId) ?? null;
   } catch {
     // No /proc or no sessions dir: fall through.
+  }
+  if (!live && info && typeof host?.agents?.forWindow === "function") {
+    try {
+      const agentPid = (await host.agents.forWindow(info.sessionName, info.windowIndex))?.agentPid;
+      if (typeof agentPid === "number") live = (await claudeSessionsByPid()).get(agentPid) ?? null;
+    } catch {
+      // Fall through to the newest transcript.
+    }
   }
   if (live) {
     const file = await findSessionFile(live.sessionId, live.cwd ?? windowCwd);
@@ -164,7 +174,7 @@ export function activate({ router, log, getSettings, host }) {
       return;
     }
     const info = await windowInfo(host, windowId);
-    const session = await sessionForWindow(windowId, info ? expandHome(info.cwd) : null);
+    const session = await sessionForWindow(host, windowId, info);
     // Running means Claude is still the window's foreground command: the
     // watcher only tracks those windows.
     const running = watcher ? Boolean(watcher.get(windowId) ?? (await watcher.refresh(windowId))) : info?.command === "claude";
