@@ -38,7 +38,7 @@
 // (plans/agent-platform-core.md). Keying on the pane rather than on
 // Claude's own session_id is what makes the hook path work for Codex and
 // Antigravity at all: neither sends a session id.
-import { claudeSessionsByWindow } from "./claudePanes.mjs";
+import { claudeSessionsByPid, claudeSessionsByWindow } from "./claudePanes.mjs";
 import {
   classifyFromHook,
   classifyQuiet,
@@ -339,9 +339,24 @@ async function sendNotification(host, getSettings, kind, event, record) {
 // README says.
 const TRANSCRIPT_PROGRAM = "claude";
 
+// Set by activate(): the host's agent lookup, for placing a window's CLI by
+// its pid where its environment can't be read (macOS has no /proc).
+let agentsApi = null;
+
+async function ownSession(pane) {
+  const own = (await claudeSessionsByWindow()).get(pane.paneId);
+  if (own || typeof agentsApi?.forWindow !== "function") return own ?? null;
+  try {
+    const agentPid = (await agentsApi.forWindow(pane.sessionName, pane.windowIndex))?.agentPid;
+    return typeof agentPid === "number" ? ((await claudeSessionsByPid()).get(agentPid) ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function paneTranscript(pane) {
   if (pane.command !== TRANSCRIPT_PROGRAM) return null;
-  const own = (await claudeSessionsByWindow()).get(pane.paneId);
+  const own = await ownSession(pane);
   if (own) {
     // Null when recorded but nothing written yet (a brand-new session).
     const found = await sessionTranscript(CLAUDE_PROJECTS_DIR, own.cwd ?? pane.cwd, own.sessionId);
@@ -480,6 +495,7 @@ export function heldForWindow(paneId) {
 }
 
 export function activate({ router, getSettings, host }) {
+  agentsApi = host?.agents ?? null;
   // Core installs the hooks (Settings → AI Providers), receives every event at one
   // endpoint and normalizes it; all this extension does is remember the last
   // state per pane. The subscription is dropped for us when this server hook

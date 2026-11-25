@@ -121,16 +121,42 @@ async function readSessionsByWindow(dir) {
       if (windowId) windowOfPid.set(record.pid, windowId);
     }),
   );
-  return sessionsByWindow(records, isPidAlive, windowOfPid);
+  return { byWindow: sessionsByWindow(records, isPidAlive, windowOfPid), byPid: sessionsByPid(records, isPidAlive) };
+}
+
+// pid -> { sessionId, cwd, updatedAt } for every live CLI. Where a window
+// can't be read off a CLI's environment (macOS has no /proc), the host still
+// knows each window's agent pid, and this turns that pid into its session.
+export function sessionsByPid(records, isAlive) {
+  const byPid = new Map();
+  for (const record of records) {
+    if (!record || typeof record !== "object") continue;
+    if (typeof record.sessionId !== "string" || !record.sessionId) continue;
+    if (typeof record.pid !== "number" || !isAlive(record.pid)) continue;
+    byPid.set(record.pid, {
+      sessionId: record.sessionId,
+      cwd: typeof record.cwd === "string" ? record.cwd : null,
+      updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+    });
+  }
+  return byPid;
 }
 
 // windowId -> { sessionId, cwd, updatedAt } for every live Claude CLI in one of
 // the app's terminals. Cached briefly so one poll resolving many windows reads
 // the directory once.
-export function claudeSessionsByWindow(dir = CLAUDE_SESSIONS_DIR) {
+function claudeSessions(dir = CLAUDE_SESSIONS_DIR) {
   const now = Date.now();
   if (!cache || now - cache.at >= CACHE_TTL_MS) {
     cache = { at: now, value: readSessionsByWindow(dir) };
   }
   return cache.value;
+}
+
+export async function claudeSessionsByWindow(dir) {
+  return (await claudeSessions(dir)).byWindow;
+}
+
+export async function claudeSessionsByPid(dir) {
+  return (await claudeSessions(dir)).byPid;
 }
